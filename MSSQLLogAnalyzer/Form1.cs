@@ -56,22 +56,21 @@ namespace MSSQLLogAnalyzer
         private void Readlog()
         {
             string ConnectionString, StartTime, EndTime, TableName;
-            DatabaseLogAnalyzer xc;
-            DatabaseLog[] xx;
-
+            DatabaseLogAnalyzer dbla;
+            DatabaseLog[] logs;
 
             ConnectionString = txtConnectionstring.Text;
             StartTime = dtStarttime.Value.ToString("yyyy-MM-dd HH:mm:ss");
             EndTime = dtEndtime.Value.ToString("yyyy-MM-dd HH:mm:ss");
             TableName = txtTablename.Text.TrimEnd();
 
-            xc = new DatabaseLogAnalyzer(ConnectionString);
-            xx = xc.ReadLog(StartTime, EndTime, TableName);
-            Invoke(new ShowResult(sr), new object[] { xx });
+            dbla = new DatabaseLogAnalyzer(ConnectionString);
+            logs = dbla.ReadLog(StartTime, EndTime, TableName);
+            Invoke(new ShowResult(ResetDataSource), new object[] { logs });
 
         }
 
-        private void sr(object d)
+        private void ResetDataSource(object d)
         {
             bindingSource1.DataSource = d;
             bindingSource1.ResetBindings(false);
