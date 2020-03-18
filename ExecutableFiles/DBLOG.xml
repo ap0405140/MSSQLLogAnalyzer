@@ -1,0 +1,45 @@
+<?xml version="1.0"?>
+<doc>
+    <assembly>
+        <name>DBLOG</name>
+    </assembly>
+    <members>
+        <member name="T:DBLOG.DatabaseLogAnalyzer">
+            <summary>
+            Summary: SQL Server Database Log Analyzer. Author: AP0405140
+            <para></para> 
+            <para>History:</para> 
+            <para>2020/03/08 AP0405140 create.</para> 
+            </summary>
+        </member>
+        <member name="F:DBLOG.DatabaseLogAnalyzer.ReadPercent">
+            <summary>
+            Readed Percent (0-100).
+            </summary>
+        </member>
+        <member name="M:DBLOG.DatabaseLogAnalyzer.#ctor(System.String,System.String,System.String,System.String)">
+            <summary>
+            Initializes a new instance of the DBLOG.DatabaseLogAnalyzer class.
+            </summary>
+            <param name="pservername">The name or network address of the instance of SQL Server to which to connect.</param>
+            <param name="pdatabasename">The name of the database.</param>
+            <param name="plogin">The SQL Server login account.</param>
+            <param name="ppassword">The password for the SQL Server account logging on.</param>
+        </member>
+        <member name="M:DBLOG.DatabaseLogAnalyzer.#ctor(System.String)">
+            <summary>
+            Initializes a new instance of the DBLOG.DatabaseLogAnalyzer class.
+            </summary>
+            <param name="pconnectstring">The string used to open a SQL Server database.</param>
+        </member>
+        <member name="M:DBLOG.DatabaseLogAnalyzer.ReadLog(System.String,System.String,System.String)">
+            <summary>
+            Read database logs.
+            </summary>
+            <param name="pStartTime">Start Time</param>
+            <param name="pEndTime">End Time</param>
+            <param name="pObjectName">Table Name, Blank for query all objects.</param>
+            <returns>DatabaseLog array.</returns>
+        </member>
+    </members>
+</doc>
