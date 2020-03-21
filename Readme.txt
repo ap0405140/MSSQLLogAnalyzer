@@ -12,8 +12,8 @@ Some Tips:
 MSSQLLogAnalyzer.exe use example:
 step1: Execute ExecutableFiles\MSSQLLogAnalyzer.exe.
 step2: Modify [ConnectionString], change it for your environment.
-           Modify [StartTime] and [EndTime] to what time range need to read logs.
-           Modify [TableName], It can  be blank, when blank means read all table logs.
+       Modify [StartTime] and [EndTime] to what time range need to read logs.
+       Modify [TableName], It can  be blank, when blank means read all table logs.
 step3: Click [Readlog] button, wait for analysis results.
 
 
