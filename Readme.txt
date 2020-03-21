@@ -1,4 +1,5 @@
-DBLOG.DatabaseLogAnalyzer can read the SQL Server transaction logs.
+DBLOG.DatabaseLogAnalyzer can read the SQL Server transaction logs online, and return RedoSQL and UndoSQL for every transactions.
+
 
 Some Tips:
 1. The SQL Server to be analyzed needs 2008 or later version.
@@ -7,7 +8,16 @@ Some Tips:
 4. For develop, please install Visual Studio 2017 or later version and .NET Framework 4.8.
 5. Please contact me when have any question: ap0405140@163.com
 
-Use example:
+
+MSSQLLogAnalyzer.exe use example:
+step1: Execute ExecutableFiles\MSSQLLogAnalyzer.exe.
+step2: Modify [ConnectionString], change it for your environment.
+           Modify [StartTime] and [EndTime] to what time range need to read logs.
+           Modify [TableName], It can  be blank, when blank means read all table logs.
+step3: Click [Readlog] button, wait for analysis results.
+
+
+DBLOG.dll use example:
 step1: Start Visual Studio 2017, create a new project.
 step2: Add reference DBLOG.dll to current project.
 step3: At cs file header, add "using DBLOG;"
