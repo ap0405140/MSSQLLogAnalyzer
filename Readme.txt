@@ -7,7 +7,7 @@ Some Tips:
 4. For develop, please install Visual Studio 2017 or later version and .NET Framework 4.8.
 5. Please contact me when have any question: ap0405140@163.com
 
-------------------------------------------------------------------------------------------------------------------------------------------
+------------------------------------------------------------------------------------------------------------------------------
 
 MSSQLLogAnalyzer.exe use example:
 step1: Execute MSSQLLogAnalyzer.exe.
@@ -16,7 +16,7 @@ step2: Modify [ConnectionString], change it for your environment.
        Modify [TableName], It can  be blank, when blank means read all table logs.
 step3: Click [Readlog] button, wait for analysis results.
 
-------------------------------------------------------------------------------------------------------------------------------------------
+------------------------------------------------------------------------------------------------------------------------------
 
 SQLCLR use example:
 --> Deployment to SQLServer with SQLCLR, Then we can use a SQL Function to readlog on SQL Server Management Studio.
@@ -62,7 +62,7 @@ from dbo.DBAReadLog(N'server=[ServerName];database=[DatabaseName];uid=[LoginName
                     null) t  --TableName, Need include schema name(like dbo.Table1), When blank or null means query all tables logs.
 order by LSN
 
-------------------------------------------------------------------------------------------------------------------------------------------
+------------------------------------------------------------------------------------------------------------------------------
 
 DBLOG.dll use example:
 step1: Start Visual Studio 2017, create a new project.
