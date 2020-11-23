@@ -1,0 +1,44 @@
+﻿/*
+-- Deployment to SQLServer with SQLCLR, Then we can use a SQL Function to readlog on SQL Server Management Studio.
+use master
+
+-- enable clr
+exec sys.sp_configure 'clr enabled'
+
+exec sys.sp_configure 'clr enabled',1
+
+reconfigure
+
+-- set trustworthy on
+alter database [DatabaseName] set trustworthy on
+
+use [DatabaseName]
+
+-- function dbo.DBAReadLog
+if exists(select 1 from sys.objects where name=N'DBAReadLog')
+   drop function dbo.DBAReadLog
+
+if exists(select 1 from sys.assemblies where name=N'FCLR')
+   drop assembly FCLR
+
+create assembly FCLR 
+ from 'D:\MSSQLLogAnalyzer\FCLR\bin\Debug\FCLR.dll'
+ with permission_set=unsafe
+
+alter assembly FCLR add file from 'D:\MSSQLLogAnalyzer\FCLR\bin\Debug\FCLR.pdb';
+
+create function dbo.DBAReadLog(@connectionstring nvarchar(max),
+                               @dt0 nvarchar(max),
+                               @dt1 nvarchar(max),
+                               @obj nvarchar(max))
+returns table(LSN nvarchar(max),Type nvarchar(max),TransactionID nvarchar(max),BeginTime nvarchar(max),EndTime nvarchar(max),ObjectName nvarchar(max),Operation nvarchar(max),RedoSQL nvarchar(max),UndoSQL nvarchar(max),Message nvarchar(max))
+as external name FCLR.UserDefinedFunctions.DBAReadLog
+
+-- read log
+select * 
+from dbo.DBAReadLog(N'server=[ServerName];database=[DatabaseName];uid=[LoginName];pwd=[Password];Connection Timeout=5;Integrated Security=false;',  -- Database connection string
+                    N'2020/11/23 10:00:00',  --StartTime, example: 2020/11/23 10:00:00
+                    N'2020/11/23 12:01:00',  --EndTime, example: 2020/11/23 12:01:00
+                    null) t  --TableName, Need include schema name(like dbo.Table1), When blank or null means query all tables logs.
+order by LSN
+*/
