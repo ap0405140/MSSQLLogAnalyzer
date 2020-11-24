@@ -6,6 +6,7 @@ using System.Drawing;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using System.Timers;
 using System.Windows.Forms;
 using DBLOG;
 
@@ -13,7 +14,10 @@ namespace MSSQLLogAnalyzer
 {
     public partial class Form1 : Form
     {
-        private delegate void ShowResult(object x);
+        private delegate void ShowResult(DatabaseLogAnalyzer x);
+        private DatabaseLogAnalyzer dbla;
+        private DatabaseLog[] logs;
+        private System.Timers.Timer timer;
 
         public Form1()
         {
@@ -26,21 +30,31 @@ namespace MSSQLLogAnalyzer
             txtConnectionstring.Text = "server=[ServerName];database=[DatabaseName];uid=[LoginName];pwd=[Password];Connection Timeout=5;Integrated Security=false;";
 
             //Time Range: Default to read at last 10 seconds 's logs, you can change the time range for need.
-            dtStarttime.Value = Convert.ToDateTime(DateTime.Now.AddSeconds(-10).ToString("yyyy/MM/dd HH:mm:ss"));
+            dtStarttime.Value = Convert.ToDateTime(DateTime.Now.AddSeconds(-5).ToString("yyyy/MM/dd HH:mm:ss"));
             dtEndtime.Value = Convert.ToDateTime(DateTime.Now.ToString("yyyy/MM/dd HH:mm:ss"));
 
             //Table Name: Need include schema name(like dbo.Table1), When blank means query all tables 's logs, you can change it for need.
             txtTablename.Text = "";
+
+            timer = new System.Timers.Timer();
+            timer.Interval = 1000;
+            timer.AutoReset = true;
+            timer.Elapsed += new System.Timers.ElapsedEventHandler(timer_elapsed);
+            timer.Enabled = false;
         }
 
         private async void btnReadlog_Click(object sender, EventArgs e)
         {
             Action t;
-            t = new Action(Readlog);
 
             btnReadlog.Enabled = false;
             try
             {
+                logs = new DatabaseLog[] { };
+                bindingSource1.DataSource = logs;
+                bindingSource1.ResetBindings(false);
+
+                t = new Action(Readlog);
                 await Task.Run(t);
             }
             catch(Exception ex)
@@ -56,8 +70,6 @@ namespace MSSQLLogAnalyzer
         private void Readlog()
         {
             string ConnectionString, StartTime, EndTime, TableName;
-            DatabaseLogAnalyzer dbla;
-            DatabaseLog[] logs;
 
             ConnectionString = txtConnectionstring.Text;
             StartTime = dtStarttime.Value.ToString("yyyy-MM-dd HH:mm:ss");
@@ -66,14 +78,26 @@ namespace MSSQLLogAnalyzer
 
             dbla = new DatabaseLogAnalyzer(ConnectionString);
             logs = dbla.ReadLog(StartTime, EndTime, TableName);
-            Invoke(new ShowResult(ResetDataSource), new object[] { logs });
-
+            timer.Enabled = true;
         }
 
-        private void ResetDataSource(object d)
+        private void timer_elapsed(object sender, ElapsedEventArgs e)
         {
-            bindingSource1.DataSource = d;
-            bindingSource1.ResetBindings(false);
+            Invoke(new ShowResult(fshowresult), new object[] { dbla });
+        }
+
+        private void fshowresult(DatabaseLogAnalyzer p)
+        {
+            btnReadlog.Text = "ReadLog\r\n" + p.ReadPercent.ToString() + "%";
+
+            if (p.ReadPercent >= 100)
+            {
+                bindingSource1.DataSource = logs;
+                bindingSource1.ResetBindings(false);
+
+                timer.Enabled = false;
+                btnReadlog.Text = "ReadLog";
+            }
         }
 
     }
