@@ -92,7 +92,7 @@ namespace DBLOG
         {
             string sTsql, sReturn;
 
-            sTsql = "declare @primarykeyColumnList nvarchar(1000),@ClusteredindexColumnList nvarchar(1000), @identityColumn nvarchar(100), @IsHeapTable bit "
+            sTsql = "declare @primarykeyColumnList nvarchar(1000),@ClusteredindexColumnList nvarchar(1000), @identityColumn nvarchar(100), @IsHeapTable bit, @FAllocUnitName nvarchar(1000) "
                       + " select @primarykeyColumnList=isnull(@primarykeyColumnList+N',',N'')+c.name "
                       + "    from sys.indexes a "
                       + "    inner join sys.index_columns b on a.object_id=b.object_id and a.index_id=b.index_id "
@@ -104,6 +104,7 @@ namespace DBLOG
                       + "    and d.type='U' "
                       + $"   and d.name=N'{pTablename}' "
                       + "    order by b.key_ordinal; "
+
                       + " select @ClusteredindexColumnList=isnull(@ClusteredindexColumnList+N',',N'')+c.name "
                       + "    from sys.indexes a "
                       + "    inner join sys.index_columns b on a.object_id=b.object_id and a.index_id=b.index_id "
@@ -116,6 +117,7 @@ namespace DBLOG
                       + "    and d.type='U' "
                       + $"   and d.name=N'{pTablename}' "
                       + "    order by b.key_ordinal; "
+
                       + " select @identityColumn=a.name "
                       + "    from sys.columns a "
                       + "    inner join sys.objects b on a.object_id=b.object_id "
@@ -124,12 +126,22 @@ namespace DBLOG
                       + $"   and s.name=N'{pSchemaName}' "
                       + "    and b.type='U' "
                       + $"   and b.name=N'{pTablename}'; "
+
                       + " select @IsHeapTable=case when exists(select 1 "
                       + "                                       from sys.tables t "
                       + "                                       inner join sys.schemas s on t.schema_id=s.schema_id "
                       + "                                       inner join sys.indexes i on t.object_id=i.object_id "
                       + $"                                      where s.name=N'{pSchemaName}' and t.name=N'{pTablename}' "
                       + "                                       and i.index_id=0) then 1 else 0 end; "
+
+                      + " select @FAllocUnitName=isnull(d.name,N'') "
+                      + "  from sys.tables a "
+                      + "  inner join sys.schemas s on a.schema_id=s.schema_id "
+                      + "  inner join sys.indexes d on a.object_id=d.object_id "
+                      + "  where d.type in(0,1) "
+                      + $" and s.name=N'{pSchemaName}' "
+                      + $" and a.name=N'{pTablename}'; "
+
                       + " select ItemName,ItemValue "
                       + "    from (select ItemName='PrimarykeyColumnList', "
                       + "                 ItemValue=isnull(','+@primarykeyColumnList+',','') "
@@ -141,8 +153,11 @@ namespace DBLOG
                       + "                 ItemValue=isnull(@identityColumn,'') "
                       + "          union all "
                       + "          select ItemName='IsHeapTable', "
-                      + "                 ItemValue=rtrim(isnull(@IsHeapTable,0))) t "
-                      + "    for xml raw('Item'),root('TableInfomation'); ";
+                      + "                 ItemValue=rtrim(isnull(@IsHeapTable,0)) "
+                      + "          union all "
+                      + "          select ItemName='FAllocUnitName', "
+                      + "                 ItemValue=rtrim(isnull(@FAllocUnitName,N'')) "
+                      + "        ) t for xml raw('Item'),root('TableInfomation'); ";
             sReturn = oDB.Query11(sTsql, false);
 
             return sReturn;
@@ -160,6 +175,7 @@ namespace DBLOG
                    SlotID,           // SlotID
                    AllocUnitId,      // AllocUnitId
                    CurrentLSN,       // LSN
+                   AllocUnitName,    // AllocUnitName
                    BeginTime = string.Empty, // 事务开始时间
                    EndTime = string.Empty,   // 事务结束时间
                    REDOSQL = string.Empty,   // redo sql
@@ -209,7 +225,14 @@ namespace DBLOG
                     PageID = dtLogs[i]["PAGE ID"].ToString();
                     SlotID = dtLogs[i]["Slot ID"].ToString();
                     AllocUnitId = dtLogs[i]["AllocUnitId"].ToString();
+                    AllocUnitName = dtLogs[i]["AllocUnitName"].ToString();
                     CurrentLSN = dtLogs[i]["Current LSN"].ToString();
+
+                    if (AllocUnitName != $"{sSchemaName}.{sTableName}" + (TabInfos.FAllocUnitName.Length == 0 ? "" : "." + TabInfos.FAllocUnitName))
+                    {
+                        continue;
+                    }
+
                     lsns.Add(CurrentLSN, PageID);
 
                     sTsql = "select top 1 BeginTime=substring(BeginTime,1,19),EndTime=substring(EndTime,1,19) from #TransactionList where TransactionID='" + TransactionID + "'; ";
@@ -1007,6 +1030,11 @@ namespace DBLOG
                 sNullStatus = sNullStatus.Substring(1, sNullStatus.Length - 1);
             }
 
+            while (sNullStatus.Length < columns3.Length)
+            {
+                sNullStatus = sNullStatus + "0";
+            }
+
             for (i = 0; i <= columns3.Length - 1; i++)
             {
                 if (columns3[i].isNullable == false)
@@ -1331,6 +1359,7 @@ namespace DBLOG
                     case "ClusteredindexColumnList": TabInfo.ClusteredindexColumnList = sItemvalue; break;
                     case "IdentityColumn": TabInfo.IdentityColumn = sItemvalue; break;
                     case "IsHeapTable": TabInfo.IsHeapTable = (sItemvalue == "1" ? true : false); break;
+                    case "FAllocUnitName": TabInfo.FAllocUnitName = sItemvalue; break;
                     default: break;
                 }
             }

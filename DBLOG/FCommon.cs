@@ -75,6 +75,7 @@ namespace DBLOG
         public string ClusteredindexColumnList;
         public string IdentityColumn;
         public bool IsHeapTable;  // 是否堆表
+        public string FAllocUnitName;
 
         public TableInformation()
         {
