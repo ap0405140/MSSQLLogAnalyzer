@@ -515,7 +515,7 @@ namespace DBLOG
                         + "                where LSN=N'" + tl + "') "
                         + " insert into #ModifiedRawData([PAGE ID],[Slot ID],[AllocUnitId],[RowLog Contents 0_var]) "
                         + " select A.[PAGE ID],A.[Slot ID],A.[AllocUnitId],"
-                        + "        [RowLog Contents 0_var]=replace(stuff((select replace(substring(C.[VALUE],charindex(N':',[Value],1)+1,48),N'†','') "
+                        + "        [RowLog Contents 0_var]=replace(stuff((select replace(substring(C.[Value],charindex(N':',[Value],1)+1,48),N'†',N'') "
                         + "                                               from pagedata C "
                         + "                                               where C.[Page ID]=A.[Page ID] "
                         + "                                               and C.[AllocUnitId]=A.[AllocUnitId] "
@@ -1025,7 +1025,7 @@ namespace DBLOG
 
             sNullStatus = sNullStatus.Reverse();  // 字符串反转
 
-            if (sPrimarykeyColumns != sClusteredindexColumns)
+            if (TabInfos.IsHeapTable == false && sPrimarykeyColumns != sClusteredindexColumns)
             {
                 sNullStatus = sNullStatus.Substring(1, sNullStatus.Length - 1);
             }
