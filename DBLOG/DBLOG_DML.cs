@@ -32,8 +32,7 @@ namespace DBLOG
         private DataRow[] drTemp;
         private DataTable dtMRlist;   // 行数据前版本 
         private Dictionary<string, string> lsns; // key:lsn value:pageid
-         
-        public static object Pattern { get; private set; }
+        //private List<FSlotColumnData> slotcolumndata;
 
         public DBLOG_DML(string pDatabasename, string pSchemaName, string pTablename, DatabaseOperation poDB)
         {
@@ -169,6 +168,8 @@ namespace DBLOG
             List<DatabaseLog> logs;
             DatabaseLog tmplog;
             int i, j, k, iR0Minimumlength;
+            short? OffsetinRow,      // Offset in Row
+                   ModifySize;       // Modify Size
             string Operation,        // 操作类型
                    TransactionID,    // 事务ID
                    PageID,           // PageID
@@ -201,6 +202,11 @@ namespace DBLOG
                           create table #temppagedata(LSN nvarchar(1000),ParentObject sysname,Object sysname,Field sysname,Value nvarchar(max)); ";
                 oDB.ExecuteSQL(sTsql, false);
 
+                //sTsql = @"if object_id('tempdb..#slotcolumndata') is not null 
+                //             drop table #slotcolumndata; 
+                //          create table #slotcolumndata(tablename nvarchar(255),columnid int,columnname nvarchar(255),offset nvarchar(255),length nvarchar(255),value nvarchar(max)); ";
+                //oDB.ExecuteSQL(sTsql, false);
+
                 sTsql = @"if object_id('tempdb..#ModifiedRawData') is not null 
                              drop table #ModifiedRawData; 
                           create table #ModifiedRawData([ID] int identity(1,1),[PAGE ID] varchar(max),[Slot ID] int,[AllocUnitId] bigint,[RowLog Contents 0_var] nvarchar(max),[RowLog Contents 0] varbinary(max)); ";
@@ -227,6 +233,8 @@ namespace DBLOG
                     AllocUnitId = dtLogs[i]["AllocUnitId"].ToString();
                     AllocUnitName = dtLogs[i]["AllocUnitName"].ToString();
                     CurrentLSN = dtLogs[i]["Current LSN"].ToString();
+                    OffsetinRow = null; if (dtLogs[i]["Offset in Row"] != null) { OffsetinRow = Convert.ToInt16(dtLogs[i]["Offset in Row"]); }
+                    ModifySize = null; if (dtLogs[i]["Modify Size"] != null) { ModifySize = Convert.ToInt16(dtLogs[i]["Modify Size"]); }
 
                     if (AllocUnitName != $"{sSchemaName}.{sTableName}" + (TabInfos.FAllocUnitName.Length == 0 ? "" : "." + TabInfos.FAllocUnitName))
                     {
@@ -258,7 +266,7 @@ namespace DBLOG
                     {
                         drTemp = dtMRlist.Select("PAGEID='" + PageID + "' and SlotID='" + SlotID + "' and AllocUnitId='" + AllocUnitId + "' ");
 
-                        if (drTemp.Length == 0 
+                        if (drTemp.Length == 0
                             || (Operation == "LOP_MODIFY_ROW" && ((byte[])drTemp[0]["MR1"]).ToText().Contains(R1.ToText()) == false))
                         {
                             MR1 = GetMR1(Operation, PageID, AllocUnitId, CurrentLSN, pStartLSN, pEndLSN, R1.ToText());
@@ -283,6 +291,23 @@ namespace DBLOG
                         {
                             MR1 = (byte[])drTemp[0]["MR1"];
                         }
+
+                        //sTsql = $"select tablename,columnid,columnname,offset,length,value from #slotcolumndata where tablename=N'{sSchemaName}.{sTableName}'; ";
+                        //dtTemp = oDB.Query(sTsql, false);
+                        //slotcolumndata = new List<FSlotColumnData>();
+                        //foreach(DataRow dr in dtTemp.Rows)
+                        //{
+                        //    slotcolumndata.Add(
+                        //        new FSlotColumnData() 
+                        //        { 
+                        //          tablename = dr["tablename"].ToString(),
+                        //          columnid = Convert.ToInt32(dr["columnid"]),
+                        //          columnname = dr["columnname"].ToString(),
+                        //          offset = Convert.ToInt32(dr["offset"].ToString(), 16),
+                        //          length = Convert.ToInt32(dr["length"].ToString()),
+                        //          value = dr["value"].ToString()
+                        //        });
+                        //}
                     }
 
                     stemp = string.Empty;
@@ -373,7 +398,7 @@ namespace DBLOG
                     {
                         if (MR1 != null)
                         {
-                            AnalyzeUpdate(MR1, R0, R1, R3, R4, LogRecord, TableColumns, iColumncount, TabInfos.PrimarykeyColumnList, Operation, ref sValueList1, ref sValueList0, ref sWhereList, ref MR0);
+                            AnalyzeUpdate(MR1, R0, R1, R3, R4, LogRecord, TableColumns, iColumncount, TabInfos.PrimarykeyColumnList, Operation, CurrentLSN, OffsetinRow, ModifySize, ref sValueList1, ref sValueList0, ref sWhereList, ref MR0);
 
                             if (sValueList1.Length > 0)
                             {
@@ -471,12 +496,31 @@ namespace DBLOG
             fileid = pPageID.Substring(0, pPageID.IndexOf(":", 0));
             pageid_dec = Convert.ToInt64(pPageID.Substring(pPageID.IndexOf(":", 0) + 1, pPageID.Length - pPageID.IndexOf(":", 0) - 1), 16).ToString();
 
+            // #temppagedata
             sTsql = "DBCC PAGE(''" + sDatabasename + "''," + fileid + "," + pageid_dec + ",3) with tableresults,no_infomsgs; ";
             sTsql = "insert into #temppagedata(ParentObject,Object,Field,Value) exec('" + sTsql + "'); ";
             oDB.ExecuteSQL(sTsql, false);
 
             sTsql = "update #temppagedata set LSN=N'" + pCurrentLSN + "' where LSN is null; ";
             oDB.ExecuteSQL(sTsql, false);
+
+            // #slotcolumndata
+            //sTsql = "with t as("
+            //      + "select columnid=cast(replace(substring(b.[Object],charindex(N'Column',b.[Object])+6,charindex(N'Offset',b.[Object])-charindex(N'Column',b.[Object])-6),N' ','') as int), "
+            //      + "       columnname=b.Field, "
+            //      + "       offset=replace(substring(b.[Object],charindex(N'Offset',b.[Object])+6,charindex(N'Length',b.[Object])-charindex(N'Offset',b.[Object])-6),N' ',''), "
+            //      + "       length=substring(b.[Object],charindex(N'Length (physical)',b.[Object])+17,1000000000), "
+            //      + "       value=b.[Value] "
+            //      + " from #LogList a "
+            //      + " inner join #temppagedata b on b.[ParentObject] like N'Slot '+ltrim(rtrim(A.[Slot ID]))+' Offset%' "
+            //      + " where a.[Current LSN]='" + pCurrentLSN + "' "
+            //      + " and b.[Object] not like '%Memory Dump%') "
+            //      + "insert into #slotcolumndata(tablename,columnid,columnname,offset,length,value) "
+            //      + $" select tablename=N'{sSchemaName}.{sTableName}',columnid,columnname,offset,length,value "
+            //      + " from t "
+            //      + $" where not exists(select 1 from #slotcolumndata where tablename=N'{sSchemaName}.{sTableName}') "
+            //      + " order by columnid; ";
+            //oDB.ExecuteSQL(sTsql, false);
 
 #if DEBUG
             sTsql = " with pagedata as(select [PAGE ID]='" + pPageID + "',"
@@ -517,7 +561,7 @@ namespace DBLOG
                         + " select A.[PAGE ID],A.[Slot ID],A.[AllocUnitId],"
                         + "        [RowLog Contents 0_var]=replace(stuff((select replace(substring(C.[Value],charindex(N':',[Value],1)+1,48),N'†',N'') "
                         + "                                               from pagedata C "
-                        + "                                               where C.[Page ID]=A.[Page ID] "
+                        + "                                               where C.[PAGE ID]=A.[Page ID] "
                         + "                                               and C.[AllocUnitId]=A.[AllocUnitId] "
                         + "                                               and C.[ParentObject] like 'Slot '+ltrim(rtrim(A.[Slot ID]))+' Offset%' "
                         + "                                               and C.[Object] like '%Memory Dump%' "
@@ -533,7 +577,6 @@ namespace DBLOG
                         + " order by A.[Slot ID]; ";
                 oDB.ExecuteSQL(sTsql, false);
 
-                
                 if (pOperation == "LOP_MODIFY_ROW")
                 {
                     checkvalue = pR1;
@@ -564,7 +607,7 @@ namespace DBLOG
             return mr1;
         }
 
-        public void AnalyzeUpdate(byte[] mr1, byte[] r0, byte[] r1, byte[] r3, byte[] r4, byte[] bLogRecord, TableColumn[] columns, int iColumncount, string sPrimarykeyColumnList, string sOperation,
+        public void AnalyzeUpdate(byte[] mr1, byte[] r0, byte[] r1, byte[] r3, byte[] r4, byte[] bLogRecord, TableColumn[] columns, int iColumncount, string sPrimarykeyColumnList, string sOperation, string pCurrentLSN, short? pOffsetinRow, short? pModifySize,
                                   ref string sValueList1, ref string sValueList0, ref string sWhereList, ref byte[] mr0)
         {
             int i;
@@ -706,7 +749,7 @@ namespace DBLOG
         {
             string mr0_str, rowlogdata, fvalue0, fvalue1, ts;
             int i, j, k, n, fstart0, fstart1, flength0, flength0f4, flength1, flength1f4;
-            List<string> tls, tls2;
+            List<string> tls;
             byte[] mr0;
 
             mr0_str = null;
@@ -718,7 +761,6 @@ namespace DBLOG
             }
 
             tls = new List<string>();
-            tls2 = new List<string>();
             for (i = 0; i <= (int)(Math.Pow(2, (r0.Length / 4)) - 1); i++)
             {
                 ts = Convert.ToString(i, 2).PadLeft(r0.Length / 4, '0');
@@ -781,16 +823,15 @@ namespace DBLOG
 
                     mr0 = mr0_str.ToByteArray();
 
-                    ts = Convert.ToString(mr0.Length, 16).ToUpper().PadLeft(4, '0');
-                    if (sLogRecord.IndexOf(ts) == -1 
-                        && sLogRecord.IndexOf(ts.Substring(2, 2) + ts.Substring(0, 2)) == -1)
-                    {
-                        continue;
-                    }
+                    //ts = Convert.ToString(mr0.Length, 16).ToUpper().PadLeft(4, '0');
+                    //if (sLogRecord.IndexOf(ts) == -1 
+                    //    && sLogRecord.IndexOf(ts.Substring(2, 2) + ts.Substring(0, 2)) == -1)
+                    //{
+                    //    continue;
+                    //}
 
                     TranslateData(mr0, columns0, TabInfos.PrimarykeyColumnList, TabInfos.ClusteredindexColumnList);
-                   
-                    tls2.Add(cc);
+                    
                     break;
                 }
                 catch (Exception ex)
@@ -807,7 +848,7 @@ namespace DBLOG
             if (data == null || data.Length <= 4) { return; }
 
             // 行数据从第5字节开始
-            int index, index2;  // 指针
+            int index, index2, index3;  // 指针
             string sData;
 
             index = 4;
@@ -872,8 +913,7 @@ namespace DBLOG
                   sAllColumnCountLog,           // 列总数_日志里的列总数
                   sMaxColumnID,                 // 最大ColumnID       
                   sNullStatusLength,            // 列null值状态列表存储所需长度(字节)
-                  sVarColumnCount = 0,          // 变长列数量
-                  sReadedVarColumnCount = 0,    // 已读取的变长列数量
+                  sVarColumnCount = 0,          // 变长字段数量
                   sVarColumnStartIndex = 0,     // 变长列字段值开始位置
                   sVarColumnEndIndex = 0;       // 变长列字段值结束位置
 
@@ -883,10 +923,13 @@ namespace DBLOG
             bool isExceed,       // 指针是否已越界
                  hasJumpRowID;   // 是否已跳过RowID,用于无PrimaryKey的表.
 
-            TableColumn[] columns2,  // 补齐ColumnID, 并移除所有计算列 的字段列表
+            TableColumn[] columns2,  // 补齐ColumnID, 并移除所有计算列的字段列表
                           columns3;  // 实际用于解析的字段列表
 
             TableColumn tmpTableColumn;
+
+            List<FVarColumnData> vcs = new List<FVarColumnData>(); // 变长字段数据
+            FVarColumnData tvc;
 
             // 取字段总数
             sAllColumnCount = Convert.ToInt16(columns.Length);
@@ -1035,12 +1078,23 @@ namespace DBLOG
                 sNullStatus = sNullStatus + "0";
             }
 
-            for (i = 0; i <= columns3.Length - 1; i++)
+            foreach (TableColumn c in columns3)
             {
-                if (columns3[i].isNullable == false)
-                { columns3[i].isNull = false; }
+                if (c.isNullable == false)
+                { 
+                    c.isNull = false; 
+                }
                 else
-                { columns3[i].isNull = (sNullStatus.Substring(i, 1) == "1" ? true : false); }
+                {
+                    if (c.LeafNullBit - 1 >= 0)
+                    {
+                        c.isNull = (sNullStatus.Substring(c.LeafNullBit - 1, 1) == "1" ? true : false);
+                    }
+                    else
+                    {
+                        c.isNull = true;
+                    }
+                }
             }
 
             //取定长字段
@@ -1048,6 +1102,11 @@ namespace DBLOG
             {
                 if (c.isVarLenDataType == true || c.isExists == false) { continue; }
 
+                index3 = index;
+                if (index != c.LeafOffset) // slotcolumndata.FirstOrDefault(p => p.columnid == c.ColumnID).offset
+                {
+                    index = c.LeafOffset; // slotcolumndata.FirstOrDefault(p => p.columnid == c.ColumnID).offset;
+                }
                 c.ValueStartIndex = index;
 
                 if (c.isNull == true && c.isNullable == true && c.DataType != System.Data.SqlDbType.Bit)
@@ -1183,6 +1242,7 @@ namespace DBLOG
 
                 c.ValueEndIndex = (c.DataType != SqlDbType.Bit ? index - 1 : c.ValueEndIndex);
                 c.ValueHex = sData.Substring(c.ValueStartIndex * 2, (c.ValueEndIndex - c.ValueStartIndex + 1) * 2);
+                index = index3;
             }
 
             index = index2;
@@ -1191,14 +1251,39 @@ namespace DBLOG
             if (index + 2 < data.Length - 1)
             {
                 isExceed = false;
-                sVarColumnCount = BitConverter.ToInt16(data, index); // 变长字段数量
+                sVarColumnCount = BitConverter.ToInt16(data, index); // 变长字段数量(不一定等于字段类型=变长类型的字段数量)
                 index = index + 2;
 
                 if (index < data.Length - 1)
                 {
-                    // 接下来每2个字节保存一个变长字段的结束位置,第一个变长字段的开始和结束位置可以算出来
+                    // 接下来每2个字节保存一个变长字段的结束位置,第一个变长字段的开始和结束位置可以算出来.
                     sVarColumnStartIndex = (short)(index + sVarColumnCount * 2);
                     sVarColumnEndIndex = BitConverter.ToInt16(data, index);
+
+                    vcs = new List<FVarColumnData>();
+                    for(i = 1, index2 = index; i <= sVarColumnCount; i++)
+                    {
+                        tvc = new FVarColumnData();
+                        tvc.FIndex = Convert.ToInt16(i * -1);
+                        tvc.FEnd = sData.Substring(index2 * 2, 2 * 2);
+                        tvc.FValueStart = sVarColumnStartIndex;
+                        tvc.FValueEnd = sVarColumnEndIndex;
+                        if (sVarColumnStartIndex >=0 && sVarColumnEndIndex - sVarColumnStartIndex >= 0)
+                        {
+                            tvc.IsNullOrEmpty = false;
+                            tvc.FValueHex = sData.Substring(sVarColumnStartIndex * 2, (sVarColumnEndIndex - sVarColumnStartIndex) * 2);
+                        }
+                        else
+                        {
+                            tvc.IsNullOrEmpty = true;
+                            tvc.FValueHex = "";
+                        }
+                        vcs.Add(tvc);
+
+                        index2 = index2 + 2;
+                        sVarColumnStartIndex = sVarColumnEndIndex;
+                        sVarColumnEndIndex = BitConverter.ToInt16(data, index2);
+                    }
                 }
             }
             else
@@ -1215,13 +1300,10 @@ namespace DBLOG
             }
             else
             {
-                sReadedVarColumnCount = 0;
-
                 // 跳过1个变长字段(可能为表的RowID).
                 if (hasJumpRowID == false)
                 {
                     hasJumpRowID = true;
-                    sReadedVarColumnCount++;
 
                     if (isExceed == false)
                     {
@@ -1237,75 +1319,82 @@ namespace DBLOG
                 {
                     if (c.isVarLenDataType == false && c.isExists == true) { continue; }
 
-                    c.ValueStartIndex = sVarColumnStartIndex;
-                    c.ValueEndIndex = sVarColumnEndIndex - 1;
-                    c.EndIndex = sData.Substring(index * 2, 4);
+                    tvc = vcs.FirstOrDefault(p => p.FIndex == c.LeafOffset);
 
-                    if (isExceed || (short)(sReadedVarColumnCount + 1) > sVarColumnCount)
-                    { c.ValueHex = string.Empty; }
-                    else
-                    { c.ValueHex = sData.Substring(c.ValueStartIndex * 2, (c.ValueEndIndex - c.ValueStartIndex + 1) * 2); }
-
-                    if (c.isNull == true || c.isExists == false)
+                    if (c.isNull == true
+                        || c.isExists == false
+                        || (tvc == null && c.isNull == true)
+                        || (tvc != null && tvc.IsNullOrEmpty == true))
                     {
+                        c.isNull = true;
                         c.Value = "nullvalue";
-                        sReadedVarColumnCount++;
+                        c.ValueHex = "";
+                        
+                        continue;
                     }
-                    else
+
+                    if (tvc == null 
+                        && c.isNull == false 
+                        && (c.DataType == System.Data.SqlDbType.VarChar || c.DataType == System.Data.SqlDbType.NVarChar))
                     {
+                        c.Value = "";
+                        c.ValueHex = "";
+
+                        continue;
+                    }
+
+                    if (tvc != null 
+                        && tvc.IsNullOrEmpty == false)
+                    {
+                        c.ValueHex = tvc.FValueHex;
+                        c.ValueStartIndex = tvc.FValueStart;
+                        c.ValueEndIndex = tvc.FValueEnd;
+                        c.EndIndex = tvc.FEnd;
+
                         switch (c.DataType)
                         {
                             case System.Data.SqlDbType.VarChar:
-                                c.Value = (isExceed || (short)(sReadedVarColumnCount + 1) > sVarColumnCount ? "" : System.Text.Encoding.Default.GetString(data, sVarColumnStartIndex, sVarColumnEndIndex - sVarColumnStartIndex).TrimEnd());
-                                sReadedVarColumnCount++;
+                                c.Value = System.Text.Encoding.Default.GetString(tvc.FValueHex.ToByteArray()).TrimEnd();
+                                
                                 break;
 
                             case System.Data.SqlDbType.NVarChar:
-                                c.Value = (isExceed || (short)(sReadedVarColumnCount + 1) > sVarColumnCount ? "" : System.Text.Encoding.Unicode.GetString(data, sVarColumnStartIndex, sVarColumnEndIndex - sVarColumnStartIndex).TrimEnd());
-                                sReadedVarColumnCount++;
+                                c.Value = System.Text.Encoding.Unicode.GetString(tvc.FValueHex.ToByteArray()).TrimEnd();
+                                
                                 break;
 
                             case System.Data.SqlDbType.VarBinary:
-                                short sActualLenthVarBinary;
-                                sActualLenthVarBinary = (short)(sVarColumnEndIndex - sVarColumnStartIndex);
-                                c.Value = (isExceed || (short)(sReadedVarColumnCount + 1) > sVarColumnCount ? "0x" : TranslateData_VarBinary(data, sVarColumnStartIndex, sActualLenthVarBinary));
-                                sReadedVarColumnCount++;
+                                c.Value = TranslateData_VarBinary(data, c.ValueStartIndex, (short)(c.ValueEndIndex - c.ValueStartIndex));
                                 break;
 
                             case System.Data.SqlDbType.Variant:  // 通用型
                                 string sVariantValue;
                                 sVariantValue = string.Empty;
                                 c.Value = sVariantValue;
-                                sReadedVarColumnCount++;
+                                
                                 break;
 
                             case System.Data.SqlDbType.Xml:
-                                c.Value = string.Empty;
+                                c.Value = string.Empty; // TODO
                                 break;
 
                             case System.Data.SqlDbType.Text:
-                                c.Value = string.Empty;
+                                c.Value = string.Empty; // TODO
                                 break;
 
                             case System.Data.SqlDbType.NText:
-                                c.Value = string.Empty;
+                                c.Value = string.Empty; // TODO
                                 break;
 
                             case System.Data.SqlDbType.Image:
-                                c.Value = string.Empty;
+                                c.Value = string.Empty; // TODO
                                 break;
 
                             default:
                                 break;
                         }
-                    }
-
-                    if (isExceed == false)
-                    {
-                        sVarColumnStartIndex = sVarColumnEndIndex;
-                        index = index + 2;
-                        if (index + 2 >= data.Length - 1) { return; }
-                        sVarColumnEndIndex = BitConverter.ToInt16(data, index);
+                        
+                        continue;
                     }
                 }
             }
@@ -1331,7 +1420,7 @@ namespace DBLOG
                 }
             }
         }
-
+        
         // 解析表信息.
         private static TableInformation AnalyzeTableInformation(string sTableInformation)
         {
@@ -1474,7 +1563,7 @@ namespace DBLOG
             bool bNeedSeparatorchar, bIsUnicodeType;
             string[] NoSeparatorchar;
 
-            if (isNull == true)
+            if (isNull == true || oValue == null)
             {
                 sValue = "null";
             }
@@ -1813,18 +1902,20 @@ namespace DBLOG
         // 翻译Decimal类型
         private static string TranslateData_Decimal(byte[] data, int iCurrentIndex, short sLenth, short sScale)
         {
-            byte[] bDecimal = new byte[sLenth];
+            byte[] bDecimal;
+            string sDecimalHex, sDecimal, sTemp;
+            short sSignDecimal;
+            int iDecimal;
+
+            bDecimal = new byte[sLenth];
             Array.Copy(data, iCurrentIndex, bDecimal, 0, sLenth);
 
-            short sSignDecimal;
             sSignDecimal = 1;
             if (bDecimal[0].ToString("X2") == "00")
             {
                 sSignDecimal = -1;
             }
 
-            string sDecimalHex, sDecimal, sTemp;
-            int iDecimal;
             sDecimalHex = "";
             for (iDecimal = 1; iDecimal <= bDecimal.Length - 1; iDecimal++)
             {
@@ -2023,4 +2114,25 @@ namespace DBLOG
 #endregion
 
     }
+
+    //public class FSlotColumnData
+    //{
+    //    public string tablename { get; set; }
+    //    public int columnid { get; set; }
+    //    public string columnname { get; set; }
+    //    public int offset { get; set; }
+    //    public int length { get; set; }
+    //    public string value { get; set; }
+    //}
+
+    public class FVarColumnData
+    {
+        public short FIndex { get; set; }
+        public string FEnd { get; set; }
+        public int FValueStart { get; set; }
+        public int FValueEnd { get; set; }
+        public string FValueHex { get; set; }
+        public bool IsNullOrEmpty { get; set; }
+    }
+
 }
