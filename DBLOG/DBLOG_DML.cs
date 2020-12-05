@@ -732,15 +732,22 @@ namespace DBLOG
                 //mr0_str = mr0_str + r0_str;
                 //mr0_str = mr0_str + mr1_str.Substring(mr1_str.IndexOf(r1_str, 8) + r1_str.Length);
 
-                mr0_str = mr1_str.Stuff(Convert.ToInt32(pOffsetinRow) * 2, Convert.ToInt32(pModifySize) * 2, r0_str);
+                if (mr1_str.Length >= 8)
+                {
+                    mr0_str = mr1_str.Stuff(Convert.ToInt32(pOffsetinRow) * 2,
+                                            r1_str.Length, 
+                                            r0_str);
+                }
+                else
+                {
+                    mr0_str = mr1_str;
+                }
             }
             catch(Exception ex)
             {
 #if DEBUG
-                stemp = $"Message:{(ex.Message ?? "")}  StackTrace:{(ex.StackTrace ?? "")} \r\n  mr1_str={(mr1_str ?? "")}  r1_str={(r1_str ?? "")}  r0_str={(r0_str ?? "")}";
-                throw new Exception(stemp);
-#else
-                mr0_str = null;
+                stemp = $"Message:{(ex.Message ?? "")} \r\nStackTrace:{(ex.StackTrace ?? "")} \r\nmr1_str={(mr1_str ?? "")}  r1_str={(r1_str ?? "")}  r0_str={(r0_str ?? "")}";
+                throw new Exception(stemp);           
 #endif
             }
 
@@ -1278,7 +1285,8 @@ namespace DBLOG
                         if (sVarColumnStartIndex >=0 && sVarColumnEndIndex - sVarColumnStartIndex >= 0)
                         {
                             tvc.IsNullOrEmpty = false;
-                            tvc.FValueHex = sData.Substring(sVarColumnStartIndex * 2, (sVarColumnEndIndex - sVarColumnStartIndex) * 2);
+                            tvc.FValueHex = sData.Substring(sVarColumnStartIndex * 2,
+                                                            (sVarColumnEndIndex - sVarColumnStartIndex) * 2);
                         }
                         else
                         {
