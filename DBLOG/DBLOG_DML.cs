@@ -638,7 +638,7 @@ namespace DBLOG
             switch (sOperation)
             {
                 case "LOP_MODIFY_ROW":
-                    mr0_str = RESTORE_LOP_MODIFY_ROW(mr1_str, r1_str, r0_str);
+                    mr0_str = RESTORE_LOP_MODIFY_ROW(mr1_str, r1_str, r0_str, pOffsetinRow, pModifySize);
                     break;
                 case "LOP_MODIFY_COLUMNS":
                     mr0_str = RESTORE_LOP_MODIFY_COLUMNS(sLogRecord, r3_str, r0, r1, mr1, mr1_str, columns0);
@@ -718,7 +718,7 @@ namespace DBLOG
 
         }
 
-        private string RESTORE_LOP_MODIFY_ROW(string mr1_str, string r1_str, string r0_str)
+        private string RESTORE_LOP_MODIFY_ROW(string mr1_str, string r1_str, string r0_str, short? pOffsetinRow, short? pModifySize)
         {
             string mr0_str, stemp;
           
@@ -727,10 +727,12 @@ namespace DBLOG
                 //mr0_str = mr1_str;
                 //mr0_str = mr0_str.Replace(r1_str, r0_str);
 
-                mr0_str = mr1_str.Substring(0, 8);
-                mr0_str = mr0_str + mr1_str.Substring(8, mr1_str.IndexOf(r1_str, 8) - 8);
-                mr0_str = mr0_str + r0_str;
-                mr0_str = mr0_str + mr1_str.Substring(mr1_str.IndexOf(r1_str, 8) + r1_str.Length);
+                //mr0_str = mr1_str.Substring(0, 8);
+                //mr0_str = mr0_str + mr1_str.Substring(8, mr1_str.IndexOf(r1_str, 8) - 8);
+                //mr0_str = mr0_str + r0_str;
+                //mr0_str = mr0_str + mr1_str.Substring(mr1_str.IndexOf(r1_str, 8) + r1_str.Length);
+
+                mr0_str = mr1_str.Stuff(Convert.ToInt32(pOffsetinRow) * 2, Convert.ToInt32(pModifySize) * 2, r0_str);
             }
             catch(Exception ex)
             {
@@ -838,6 +840,11 @@ namespace DBLOG
                 {
                     continue;
                 }
+            }
+
+            if (string.IsNullOrEmpty(mr0_str) == true)
+            {
+                mr0_str = mr1_str;
             }
 
             return mr0_str;
