@@ -1271,6 +1271,7 @@ namespace DBLOG
                 if (index < data.Length - 1)
                 {
                     // 接下来每2个字节保存一个变长字段的结束位置,第一个变长字段的开始和结束位置可以算出来.
+                    sTemp = sData.Substring(index * 2, 2 * 2);
                     sVarColumnStartIndex = (short)(index + sVarColumnCount * 2);
                     sVarColumnEndIndex = BitConverter.ToInt16(data, index);
 
@@ -1279,10 +1280,19 @@ namespace DBLOG
                     {
                         tvc = new FVarColumnData();
                         tvc.FIndex = Convert.ToInt16(i * -1);
-                        tvc.FEnd = sData.Substring(index2 * 2, 2 * 2);
+                        tvc.FEnd = sTemp;
+                        tvc.InRow = sTemp.Substring(2, 2).ToBinaryString().StartsWith("0");
+
                         tvc.FValueStart = sVarColumnStartIndex;
+                        if (tvc.InRow == false)
+                        {
+                            sVarColumnEndIndex = Convert.ToInt16(sTemp.Substring(2, 2).ToBinaryString().Stuff(0, 1, "0") + sTemp.Substring(0, 2).ToBinaryString(), 2);
+                        }
                         tvc.FValueEnd = sVarColumnEndIndex;
-                        if (sVarColumnStartIndex >=0 && sVarColumnEndIndex - sVarColumnStartIndex >= 0)
+
+                        if (tvc.InRow == true 
+                            && sVarColumnStartIndex >= 0 
+                            && sVarColumnEndIndex - sVarColumnStartIndex >= 0)
                         {
                             tvc.IsNullOrEmpty = false;
                             tvc.FValueHex = sData.Substring(sVarColumnStartIndex * 2,
@@ -1296,6 +1306,7 @@ namespace DBLOG
                         vcs.Add(tvc);
 
                         index2 = index2 + 2;
+                        sTemp = sData.Substring(index2 * 2, 2 * 2);
                         sVarColumnStartIndex = sVarColumnEndIndex;
                         sVarColumnEndIndex = BitConverter.ToInt16(data, index2);
                     }
@@ -1402,7 +1413,7 @@ namespace DBLOG
                                 break;
 
                             case System.Data.SqlDbType.Image:
-                                c.Value = string.Empty; // TODO
+                                c.Value = (tvc.InRow == true ? "0x" + tvc.FValueHex : string.Empty);
                                 break;
 
                             default:
@@ -2147,6 +2158,7 @@ namespace DBLOG
         public int FValueStart { get; set; }
         public int FValueEnd { get; set; }
         public string FValueHex { get; set; }
+        public bool InRow { get; set; }
         public bool IsNullOrEmpty { get; set; }
     }
 

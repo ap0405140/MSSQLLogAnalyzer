@@ -65,6 +65,18 @@ namespace DBLOG
             return r;
         }
 
+        // Hex string to Binary string
+        public static string ToBinaryString(this string phex)
+        {
+            string bs;
+
+            bs = String.Join(String.Empty,
+                             phex.Select(p => Convert.ToString(Convert.ToInt32(p.ToString(), 16), 2).PadLeft(4, '0'))
+                            );
+
+            return bs;
+        }
+
 
     }
 
