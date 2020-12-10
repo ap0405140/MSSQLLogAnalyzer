@@ -745,6 +745,7 @@ namespace DBLOG
             }
             catch(Exception ex)
             {
+                mr0_str = mr1_str;
 #if DEBUG
                 stemp = $"Message:{(ex.Message ?? "")} \r\nStackTrace:{(ex.StackTrace ?? "")} \r\nmr1_str={(mr1_str ?? "")}  r1_str={(r1_str ?? "")}  r0_str={(r0_str ?? "")}";
                 throw new Exception(stemp);           

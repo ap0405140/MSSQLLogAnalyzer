@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Data;
 using System.Data.SqlClient;
 using System.Linq;
+using System.Reflection;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -80,6 +81,55 @@ namespace DBLOG
                 dt = (sds != null && sds.Tables.Count > 0 ? sds.Tables[0] : null);
 
                 return dt;
+            }
+            catch (Exception ex)
+            {
+                throw new Exception("Run SQL: \r\n" + sTsql
+                                    + "\r\n\r\n" + "ExceptionSource: " + ex.Source
+                                    + "\r\n\r\n" + "ExceptionMessage: " + ex.Message);
+            }
+            finally
+            {
+                if (closeconnect == true)
+                {
+                    if (scn.State == ConnectionState.Open)
+                    {
+                        scn.Close();
+                    }
+
+                    scn.Dispose();
+                }
+            }
+        }
+
+        public List<T> Query<T>(string sTsql, bool closeconnect = true)
+        {
+            DataTable dt;
+            List<T> ls;
+            T tt;
+            PropertyInfo[] props;
+
+            try
+            {
+                dt = Query(sTsql, closeconnect);
+
+                props = typeof(T).GetProperties();
+                ls = new List<T>();
+                foreach(DataRow dr in dt.Rows)
+                {
+                    tt = (T)Activator.CreateInstance(typeof(T));
+                    foreach (PropertyInfo pr in props)
+                    {
+                        if (dt.Columns.Cast<DataColumn>().Any(p => p.ColumnName == pr.Name) == true)
+                        {
+                            pr.SetValue(tt, dr[pr.Name]);
+                        }
+                    }
+
+                    ls.Add(tt);
+                }
+
+                return ls;
             }
             catch (Exception ex)
             {
