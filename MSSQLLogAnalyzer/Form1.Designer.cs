@@ -185,8 +185,12 @@
             this.dgLogs.ReadOnly = true;
             this.dgLogs.RowHeadersVisible = false;
             this.dgLogs.RowTemplate.Height = 23;
+            this.dgLogs.ShowCellToolTips = false;
+            this.dgLogs.ShowEditingIcon = false;
+            this.dgLogs.ShowRowErrors = false;
             this.dgLogs.Size = new System.Drawing.Size(1164, 558);
             this.dgLogs.TabIndex = 46;
+            this.dgLogs.CellDoubleClick += new System.Windows.Forms.DataGridViewCellEventHandler(this.dgLogs_CellDoubleClick);
             // 
             // transactionIDDataGridViewTextBoxColumn
             // 
@@ -220,18 +224,18 @@
             // redoSQLDataGridViewTextBoxColumn
             // 
             this.redoSQLDataGridViewTextBoxColumn.DataPropertyName = "RedoSQL";
-            this.redoSQLDataGridViewTextBoxColumn.HeaderText = "RedoSQL";
+            this.redoSQLDataGridViewTextBoxColumn.HeaderText = "RedoSQL  (DoubleClick cell to View full SQL)";
             this.redoSQLDataGridViewTextBoxColumn.Name = "redoSQLDataGridViewTextBoxColumn";
             this.redoSQLDataGridViewTextBoxColumn.ReadOnly = true;
-            this.redoSQLDataGridViewTextBoxColumn.Width = 280;
+            this.redoSQLDataGridViewTextBoxColumn.Width = 320;
             // 
             // undoSQLDataGridViewTextBoxColumn
             // 
             this.undoSQLDataGridViewTextBoxColumn.DataPropertyName = "UndoSQL";
-            this.undoSQLDataGridViewTextBoxColumn.HeaderText = "UndoSQL";
+            this.undoSQLDataGridViewTextBoxColumn.HeaderText = "UndoSQL  (DoubleClick cell to View full SQL)";
             this.undoSQLDataGridViewTextBoxColumn.Name = "undoSQLDataGridViewTextBoxColumn";
             this.undoSQLDataGridViewTextBoxColumn.ReadOnly = true;
-            this.undoSQLDataGridViewTextBoxColumn.Width = 280;
+            this.undoSQLDataGridViewTextBoxColumn.Width = 320;
             // 
             // Form1
             // 
@@ -250,6 +254,7 @@
             this.Controls.Add(this.btnReadlog);
             this.Name = "Form1";
             this.Text = "Form1";
+            this.FormClosed += new System.Windows.Forms.FormClosedEventHandler(this.Form1_FormClosed);
             this.Load += new System.EventHandler(this.Form1_Load);
             ((System.ComponentModel.ISupportInitialize)(this.bindingSource1)).EndInit();
             ((System.ComponentModel.ISupportInitialize)(this.dgLogs)).EndInit();

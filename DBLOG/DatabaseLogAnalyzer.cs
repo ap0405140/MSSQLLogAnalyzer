@@ -159,10 +159,13 @@ namespace DBLOG
 
             // get DML original log list
             _tsql = "if object_id('tempdb..#LogList') is not null drop table #LogList; ";
-            _tsql = _tsql + "select * into #LogList "
+            DB.ExecuteSQL(_tsql, false);
+
+            _tsql = "select * "
+                    + " into #LogList "
                     + " from sys.fn_dblog(" + _startLSN + ", " + _endLSN + ") t "
                     + " where [Transaction ID] in(select [TransactionID] from #TransactionList) "
-                    + " and [Context] in('LCX_HEAP','LCX_CLUSTERED','LCX_MARK_AS_GHOST') "
+                    + " and [Context] in('LCX_HEAP','LCX_CLUSTERED','LCX_MARK_AS_GHOST','LCX_TEXT_TREE','LCX_TEXT_MIX') "
                     + " and [Operation] in('LOP_INSERT_ROWS','LOP_DELETE_ROWS','LOP_MODIFY_ROW','LOP_MODIFY_COLUMNS') "
                     + " and [AllocUnitName]<>'Unknown Alloc Unit' "
                     + " and [AllocUnitName] not like 'sys.%' "
@@ -180,7 +183,7 @@ namespace DBLOG
                     + "select * "
                     + "   from sys.fn_dblog(null,null) t "
                     + "   where [Current LSN]>" + _endLSN_var
-                    + "   and [Context] in('LCX_HEAP','LCX_CLUSTERED','LCX_MARK_AS_GHOST') "
+                    + "   and [Context] in('LCX_HEAP','LCX_CLUSTERED','LCX_MARK_AS_GHOST','LCX_TEXT_TREE','LCX_TEXT_MIX') "
                     + "   and [Operation] in('LOP_MODIFY_ROW','LOP_MODIFY_COLUMNS') "
                     + "   and [AllocUnitName]<>'Unknown Alloc Unit' "
                     + "   and [AllocUnitName] not like 'sys.%' "
@@ -194,16 +197,17 @@ namespace DBLOG
             }
             DB.ExecuteSQL(_tsql, false);
 
-            _tsql = _tsql
-                     .Replace("if object_id('tempdb..#LogList') is not null drop table #LogList; ", "")
-                     .Replace("select * into #LogList", "select *");
-            dtLoglist = DB.Query(_tsql, false);
-
             // get table list
             _tsql = _tsql.Substring(0, _tsql.IndexOf("union all"));
-            _tsql = _tsql.Replace("select * ",
-                                  "select distinct 'TableName'=case when parsename([AllocUnitName],3) is not null then parsename([AllocUnitName],2) else parsename([AllocUnitName],1) end, 'SchemaName'=case when parsename([AllocUnitName],3) is not null then parsename([AllocUnitName],3) else parsename([AllocUnitName],2) end ");
+            _tsql = _tsql.Replace("into #LogList", "")
+                         .Replace("select * ",
+                                  "select distinct 'TableName'=case when parsename([AllocUnitName],3) is not null then parsename([AllocUnitName],2) else parsename([AllocUnitName],1) end, "
+                                  + "              'SchemaName'=case when parsename([AllocUnitName],3) is not null then parsename([AllocUnitName],3) else parsename([AllocUnitName],2) end ");
             dtTables = DB.Query(_tsql, false);
+
+            _tsql = "select * from #LogList; ";
+            dtLoglist = DB.Query(_tsql, false);
+
             ReadPercent = ReadPercent + 5;
 
             tablelist = new DBLOG_DML[dtTables.Rows.Count];
@@ -251,6 +255,9 @@ namespace DBLOG
     [Serializable]
     public class DatabaseLog
     {
+        private string _redosql,
+                       _undosql;
+
         public string LSN { get; set; }
         public string Type { get; set; } // DML / DDL / DCL
         public string TransactionID { get; set; }
@@ -258,8 +265,47 @@ namespace DBLOG
         public string EndTime { get; set; }
         public string ObjectName { get; set; }
         public string Operation { get; set; }
-        public string RedoSQL { get; set; }
-        public string UndoSQL { get; set; }
+
+        public string RedoSQL 
+        { 
+            get
+            {
+                return _redosql;
+            }
+            set
+            {
+                if (value.Length <= 1000)
+                {
+                    _redosql = value;
+                }
+                else
+                {
+                    _redosql = value.Substring(0, 1000) + "...";
+                }
+            }
+        }
+        public byte[] RedoSQLFile { get; set; }
+
+        public string UndoSQL
+        {
+            get
+            {
+                return _undosql;
+            }
+            set
+            {
+                if (value.Length <= 1000)
+                {
+                    _undosql = value;
+                }
+                else
+                {
+                    _undosql = value.Substring(0, 1000) + "...";
+                }
+            }
+        }
+        public byte[] UndoSQLFile { get; set; }
+
         public string Message { get; set; }
     }
 }

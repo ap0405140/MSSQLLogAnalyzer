@@ -27,11 +27,14 @@ namespace DBLOG
 
         public int iColumncount;
         public string sColumnlist;
+        public string CurrentLSN;    // 当前LSN
+        public string TransactionID; // 事务ID
 
         public DataRow[] dtLogs;     // 原始日志信息
         private DataRow[] drTemp;
         private DataTable dtMRlist;   // 行数据前版本 
         private Dictionary<string, string> lsns; // key:lsn value:pageid
+        private Dictionary<string, FPageInfo> lobpagedata; // key:fileid+pageid value:FPageInfo
         //private List<FSlotColumnData> slotcolumndata;
 
         public DBLOG_DML(string pDatabasename, string pSchemaName, string pTablename, DatabaseOperation poDB)
@@ -167,15 +170,14 @@ namespace DBLOG
         {
             List<DatabaseLog> logs;
             DatabaseLog tmplog;
-            int i, j, k, iR0Minimumlength;
+            int i, j, iR0Minimumlength;
             short? OffsetinRow,      // Offset in Row
                    ModifySize;       // Modify Size
             string Operation,        // 操作类型
-                   TransactionID,    // 事务ID
+                   Context,          // Context
                    PageID,           // PageID
                    SlotID,           // SlotID
                    AllocUnitId,      // AllocUnitId
-                   CurrentLSN,       // LSN
                    AllocUnitName,    // AllocUnitName
                    BeginTime = string.Empty, // 事务开始时间
                    EndTime = string.Empty,   // 事务结束时间
@@ -202,6 +204,11 @@ namespace DBLOG
                           create table #temppagedata(LSN nvarchar(1000),ParentObject sysname,Object sysname,Field sysname,Value nvarchar(max)); ";
                 oDB.ExecuteSQL(sTsql, false);
 
+                sTsql = @"if object_id('tempdb..#temppagedatalob') is not null 
+                             drop table #temppagedatalob; 
+                          create table #temppagedatalob(ParentObject sysname,Object sysname,Field sysname,Value nvarchar(max)); ";
+                oDB.ExecuteSQL(sTsql, false);
+
                 //sTsql = @"if object_id('tempdb..#slotcolumndata') is not null 
                 //             drop table #slotcolumndata; 
                 //          create table #slotcolumndata(tablename nvarchar(255),columnid int,columnname nvarchar(255),offset nvarchar(255),length nvarchar(255),value nvarchar(max)); ";
@@ -217,11 +224,13 @@ namespace DBLOG
                 TableColumns = AnalyzeTablelayout(sTableLayout, ref iColumncount, ref sColumnlist);   // 解析表结构定义XML.
                 TabInfos = AnalyzeTableInformation(sTableInfo);  // 解析表信息.
                 lsns = new Dictionary<string, string>();
+                lobpagedata = new Dictionary<string, FPageInfo>();
 
                 for (i = dtLogs.Length - 1; i >= 0; i--)  // 从后往前解析
                 {
                     Operation = dtLogs[i]["Operation"].ToString();
                     TransactionID = dtLogs[i]["Transaction ID"].ToString();
+                    Context = dtLogs[i]["Context"].ToString();
                     R0 = (byte[])dtLogs[i]["RowLog Contents 0"];
                     R1 = (byte[])dtLogs[i]["RowLog Contents 1"];
                     R2 = (byte[])dtLogs[i]["RowLog Contents 2"];
@@ -236,7 +245,9 @@ namespace DBLOG
                     OffsetinRow = null; if (dtLogs[i]["Offset in Row"] != null) { OffsetinRow = Convert.ToInt16(dtLogs[i]["Offset in Row"]); }
                     ModifySize = null; if (dtLogs[i]["Modify Size"] != null) { ModifySize = Convert.ToInt16(dtLogs[i]["Modify Size"]); }
 
-                    if (AllocUnitName != $"{sSchemaName}.{sTableName}" + (TabInfos.FAllocUnitName.Length == 0 ? "" : "." + TabInfos.FAllocUnitName))
+                    if (AllocUnitName != $"{sSchemaName}.{sTableName}" + (TabInfos.FAllocUnitName.Length == 0 ? "" : "." + TabInfos.FAllocUnitName)
+                        || Context == "LCX_TEXT_TREE" 
+                        || Context == "LCX_TEXT_MIX")
                     {
                         continue;
                     }
@@ -446,7 +457,7 @@ namespace DBLOG
 
 #if DEBUG
                     sTsql = "insert into dbo.LogExplorer_AnalysisLog(ADate,TableName,Logdescr,Operation,LSN) "
-                            + " select getdate(),'" + $"[{sSchemaName}].[{sTableName}]" + "', '" + REDOSQL.Replace("'", "''") + "', '" + Operation + "','" + CurrentLSN + "' ";
+                            + $" select ADate=getdate(),TableName=N'[{sSchemaName}].[{sTableName}]',Logdescr='{(REDOSQL.Replace("'", "''").Length<=1000 ? REDOSQL.Replace("'", "''") : REDOSQL.Replace("'", "''").Substring(0, 1000) + "...")}',Operation='{Operation}',LSN='{CurrentLSN}'; ";
                     oDB.ExecuteSQL(sTsql, false);
 #endif
 
@@ -462,6 +473,9 @@ namespace DBLOG
                         tmplog.Operation = Operation;
                         tmplog.RedoSQL = REDOSQL;
                         tmplog.UndoSQL = UNDOSQL;
+
+                        tmplog.RedoSQLFile = REDOSQL.ToFileByteArray();
+                        tmplog.UndoSQLFile = UNDOSQL.ToFileByteArray();
 #if DEBUG
                         tmplog.Message = stemp;
 #else
@@ -489,7 +503,6 @@ namespace DBLOG
         {
             byte[] mr1;
             string fileid, pageid_dec, checkvalue;
-            int i;
             DataTable dtTemp;
             List<string> lsns2;
 
@@ -607,6 +620,35 @@ namespace DBLOG
             return mr1;
         }
 
+        private FPageInfo GetPageInfo(string pPageID)
+        {
+            FPageInfo r;
+            List<DBCCPAGE_DATA> ds;
+
+            r = new FPageInfo();
+            r.FileNum = Convert.ToInt32(pPageID.Split(':')[0], 16).ToString();
+            r.PageNum = Convert.ToInt64(pPageID.Split(':')[1], 16).ToString();
+            r.FileNumPageNum_Hex = pPageID;
+
+            sTsql = "truncate table #temppagedatalob; ";
+            oDB.ExecuteSQL(sTsql, false);
+
+            sTsql = "DBCC PAGE(''" + sDatabasename + "''," + r.FileNum + "," + r.PageNum + ",2) with tableresults,no_infomsgs; ";
+            sTsql = "insert into #temppagedatalob(ParentObject,Object,Field,Value) exec('" + sTsql + "'); ";
+            oDB.ExecuteSQL(sTsql, false);
+
+            // pagedata
+            sTsql = "select rn=row_number() over(order by Value)-1,Value=replace(upper(substring(Value,21,44)),N' ',N'') from #temppagedatalob where ParentObject=N'DATA:'; ";
+            ds = oDB.Query<DBCCPAGE_DATA>(sTsql, false);
+            r.PageData = string.Join("", ds.Select(p => p.Value));
+
+            // pagetype
+            sTsql = "select Value from #temppagedatalob where ParentObject=N'PAGE HEADER:' and Field=N'm_type'; ";
+            r.PageType = oDB.Query11(sTsql, false);
+
+            return r;
+        }
+
         public void AnalyzeUpdate(byte[] mr1, byte[] r0, byte[] r1, byte[] r3, byte[] r4, byte[] bLogRecord, TableColumn[] columns, int iColumncount, string sPrimarykeyColumnList, string sOperation, string pCurrentLSN, short? pOffsetinRow, short? pModifySize,
                                   ref string sValueList1, ref string sValueList0, ref string sWhereList, ref byte[] mr0)
         {
@@ -647,6 +689,8 @@ namespace DBLOG
                     mr0_str = null;
                     break;
             }
+
+            RestoreLobPage();
 
             mr0 = mr0_str.ToByteArray();
             TranslateData(mr0, columns0, TabInfos.PrimarykeyColumnList, TabInfos.ClusteredindexColumnList);
@@ -718,10 +762,62 @@ namespace DBLOG
 
         }
 
+        private void RestoreLobPage()
+        {
+            int i;
+            string PageID, Operation, stemp;
+            DataRow[] lobpagelogs;
+            FPageInfo tpageinfo;
+            byte[] R0, R1;
+            short? OffsetinRow, ModifySize;
+
+            lobpagelogs = dtLogs.Where(p => p["Transaction ID"].ToString() == TransactionID
+                                            && (p["Context"].ToString() == "LCX_TEXT_TREE" || p["Context"].ToString() == "LCX_TEXT_MIX")
+                                      ).ToArray();
+            for (i = lobpagelogs.Length - 1; i >= 0; i--)  // 从后往前解析
+            {
+                PageID = lobpagelogs[i]["PAGE ID"].ToString().ToUpper();
+                Operation = lobpagelogs[i]["Operation"].ToString();
+                R0 = (byte[])lobpagelogs[i]["RowLog Contents 0"];
+                R1 = (byte[])lobpagelogs[i]["RowLog Contents 1"];
+                OffsetinRow = null; if (lobpagelogs[i]["Offset in Row"] != null) { OffsetinRow = Convert.ToInt16(lobpagelogs[i]["Offset in Row"]); }
+                ModifySize = null; if (lobpagelogs[i]["Modify Size"] != null) { ModifySize = Convert.ToInt16(lobpagelogs[i]["Modify Size"]); }
+                CurrentLSN = lobpagelogs[i]["Current LSN"].ToString();
+
+                if (lobpagedata.ContainsKey(PageID) == false)
+                {
+                    tpageinfo = GetPageInfo(PageID);
+                    lobpagedata.Add(PageID, tpageinfo);
+                }
+                else
+                {
+                    tpageinfo = lobpagedata[PageID];
+                }
+
+                stemp = tpageinfo.PageData;
+
+                if (Operation == "LOP_INSERT_ROWS")
+                {
+                    stemp = stemp.Stuff(96 * 2, 
+                                        R0.Length * 2, 
+                                        R0.ToText());
+                }
+
+                if (Operation == "LOP_MODIFY_ROW")
+                {
+                    stemp = stemp.Stuff(Convert.ToInt32((96 + OffsetinRow) * 2), 
+                                        R1.Length * 2,  // (ModifySize ?? 0)
+                                        R0.ToText()); 
+                }
+
+                lobpagedata[PageID].PageData = stemp;
+            }
+        }
+
         private string RESTORE_LOP_MODIFY_ROW(string mr1_str, string r1_str, string r0_str, short? pOffsetinRow, short? pModifySize)
         {
             string mr0_str, stemp;
-          
+            
             try
             {
                 //mr0_str = mr1_str;
@@ -735,7 +831,7 @@ namespace DBLOG
                 if (mr1_str.Length >= 8)
                 {
                     mr0_str = mr1_str.Stuff(Convert.ToInt32(pOffsetinRow) * 2,
-                                            r1_str.Length, 
+                                            r1_str.Length,
                                             r0_str);
                 }
                 else
@@ -841,7 +937,7 @@ namespace DBLOG
                     //}
 
                     TranslateData(mr0, columns0, TabInfos.PrimarykeyColumnList, TabInfos.ClusteredindexColumnList);
-                    
+
                     break;
                 }
                 catch (Exception ex)
@@ -933,7 +1029,8 @@ namespace DBLOG
                   sVarColumnEndIndex = 0;       // 变长列字段值结束位置
 
             string sNullStatus,  // 列null值状态列表
-                   sTemp;
+                   sTemp,
+                   lobpointer;
 
             bool isExceed,       // 指针是否已越界
                  hasJumpRowID;   // 是否已跳过RowID,用于无PrimaryKey的表.
@@ -1096,8 +1193,8 @@ namespace DBLOG
             foreach (TableColumn c in columns3)
             {
                 if (c.isNullable == false)
-                { 
-                    c.isNull = false; 
+                {
+                    c.isNull = false;
                 }
                 else
                 {
@@ -1277,7 +1374,7 @@ namespace DBLOG
                     sVarColumnEndIndex = BitConverter.ToInt16(data, index);
 
                     vcs = new List<FVarColumnData>();
-                    for(i = 1, index2 = index; i <= sVarColumnCount; i++)
+                    for (i = 1, index2 = index; i <= sVarColumnCount; i++)
                     {
                         tvc = new FVarColumnData();
                         tvc.FIndex = Convert.ToInt16(i * -1);
@@ -1291,8 +1388,8 @@ namespace DBLOG
                         }
                         tvc.FValueEnd = sVarColumnEndIndex;
 
-                        if (tvc.InRow == true 
-                            && sVarColumnStartIndex >= 0 
+                        if (tvc.InRow == true
+                            && sVarColumnStartIndex >= 0
                             && sVarColumnEndIndex - sVarColumnStartIndex >= 0)
                         {
                             tvc.IsNullOrEmpty = false;
@@ -1301,8 +1398,18 @@ namespace DBLOG
                         }
                         else
                         {
-                            tvc.IsNullOrEmpty = true;
-                            tvc.FValueHex = "";
+                            if (tvc.InRow == true)
+                            {
+                                tvc.IsNullOrEmpty = true;
+                                tvc.FValueHex = "";
+                            }
+                            else
+                            {
+                                tvc.IsNullOrEmpty = false;
+                                lobpointer = sData.Substring(sVarColumnStartIndex * 2,
+                                                             (sVarColumnEndIndex - sVarColumnStartIndex) * 2);
+                                tvc.FValueHex = GetLobValue(lobpointer);
+                            }
                         }
                         vcs.Add(tvc);
 
@@ -1356,12 +1463,12 @@ namespace DBLOG
                         c.isNull = true;
                         c.Value = "nullvalue";
                         c.ValueHex = "";
-                        
+
                         continue;
                     }
 
-                    if (tvc == null 
-                        && c.isNull == false 
+                    if (tvc == null
+                        && c.isNull == false
                         && (c.DataType == System.Data.SqlDbType.VarChar || c.DataType == System.Data.SqlDbType.NVarChar))
                     {
                         c.Value = "";
@@ -1370,7 +1477,7 @@ namespace DBLOG
                         continue;
                     }
 
-                    if (tvc != null 
+                    if (tvc != null
                         && tvc.IsNullOrEmpty == false)
                     {
                         c.ValueHex = tvc.FValueHex;
@@ -1382,23 +1489,26 @@ namespace DBLOG
                         {
                             case System.Data.SqlDbType.VarChar:
                                 c.Value = System.Text.Encoding.Default.GetString(tvc.FValueHex.ToByteArray()).TrimEnd();
-                                
+
                                 break;
 
                             case System.Data.SqlDbType.NVarChar:
                                 c.Value = System.Text.Encoding.Unicode.GetString(tvc.FValueHex.ToByteArray()).TrimEnd();
-                                
+
                                 break;
 
                             case System.Data.SqlDbType.VarBinary:
-                                c.Value = TranslateData_VarBinary(data, c.ValueStartIndex, (short)(c.ValueEndIndex - c.ValueStartIndex));
+                                c.Value = (tvc.InRow == true ?
+                                            TranslateData_VarBinary(data, c.ValueStartIndex, (short)(c.ValueEndIndex - c.ValueStartIndex)) :
+                                            "0x" + tvc.FValueHex
+                                          );
                                 break;
 
                             case System.Data.SqlDbType.Variant:  // 通用型
                                 string sVariantValue;
                                 sVariantValue = string.Empty;
                                 c.Value = sVariantValue;
-                                
+
                                 break;
 
                             case System.Data.SqlDbType.Xml:
@@ -1420,7 +1530,7 @@ namespace DBLOG
                             default:
                                 break;
                         }
-                        
+
                         continue;
                     }
                 }
@@ -1447,7 +1557,97 @@ namespace DBLOG
                 }
             }
         }
-        
+
+        private string GetLobValue(string pointer)
+        {
+            string lobvalue, pagedata, tmpstr;
+            FPageInfo firstpage, textmixpage;
+            List<FPageInfo> tmps;
+            int i, pageqty, cutlen;
+
+            try
+            {
+                pointer = pointer.Stuff(0, 12 * 2, ""); // 跳过12个字节
+                i = 0;
+                firstpage = new FPageInfo(pointer.Substring(i * 2, 12 * 2));
+                i = i + 12;
+
+                if (lobpagedata.ContainsKey(firstpage.FileNumPageNum_Hex) == false)
+                {
+                    textmixpage = GetPageInfo(firstpage.FileNumPageNum_Hex);
+                    lobpagedata.Add(firstpage.FileNumPageNum_Hex, textmixpage);
+                }
+                else
+                {
+                    textmixpage = lobpagedata[firstpage.FileNumPageNum_Hex];
+                }
+                firstpage.PageData = textmixpage.PageData;
+                firstpage.PageType = textmixpage.PageType;
+
+                tmps = new List<FPageInfo>();
+
+                if (firstpage.PageType == "4")  // TEXT_TREE_PAGE
+                {
+                    pagedata = firstpage.PageData;
+                    pagedata = pagedata.Stuff(0, (96 + 16) * 2, "");
+                    tmpstr = pagedata.Substring(0, 4 * 2);
+                    pageqty = Convert.ToInt32(tmpstr.Substring(2, 2) + tmpstr.Substring(0, 2), 16);
+
+                    for (i = 0; i <= pageqty - 1; i++)
+                    {
+                        tmpstr = pagedata.Substring(8 + i * 16 * 2, 16 * 2);
+                        textmixpage = new FPageInfo(tmpstr, "TEXT_TREE_PAGE");
+                        tmps.Add(textmixpage);
+                    }
+                }
+
+                if (firstpage.PageType == "3")  // TEXT_MIX_PAGE
+                {
+                    tmps.Add(firstpage);
+
+                    while (i + 12 <= (pointer.Length / 2))
+                    {
+                        tmpstr = pointer.Substring(i * 2, 12 * 2);
+                        textmixpage = new FPageInfo(tmpstr);
+                        tmps.Add(textmixpage);
+                        i = i + 12;
+                    }
+                }
+
+                lobvalue = "";
+                i = 0;
+                foreach (FPageInfo tp in tmps)
+                {
+                    cutlen = Convert.ToInt32(tp.Offset - (i == 0 ? 0 : tmps[i - 1].Offset));
+
+                    if (lobpagedata.ContainsKey(tp.FileNumPageNum_Hex) == false)
+                    {
+                        textmixpage = GetPageInfo(tp.FileNumPageNum_Hex);
+                        lobpagedata.Add(tp.FileNumPageNum_Hex, textmixpage);
+                    }
+                    else
+                    {
+                        textmixpage = lobpagedata[tp.FileNumPageNum_Hex];
+                    }
+
+                    pagedata = textmixpage.PageData;
+                    pagedata = pagedata.Stuff(0, (96 + 14) * 2, "");
+                    pagedata = pagedata.Stuff(pagedata.Length - 42 * 2, 42 * 2, "");
+                    pagedata = pagedata.Substring(0, cutlen * 2);
+
+                    lobvalue = lobvalue + pagedata;
+                    i = i + 1;
+                }
+
+            }
+            catch (Exception ex)
+            {
+                lobvalue = "";
+            }
+
+            return lobvalue;
+        }
+
         // 解析表信息.
         private static TableInformation AnalyzeTableInformation(string sTableInformation)
         {
@@ -1616,7 +1816,7 @@ namespace DBLOG
             return r;
         }
 
-#region 翻译字段值
+        #region 翻译字段值
         // 翻译Bit类型
         private static string TranslateData_Bit(byte[] data,
                                                 TableColumn[] columns,
@@ -2138,7 +2338,7 @@ namespace DBLOG
 
             return sReturnUniqueIdentifier;
         }
-#endregion
+        #endregion
 
     }
 
@@ -2161,6 +2361,54 @@ namespace DBLOG
         public string FValueHex { get; set; }
         public bool InRow { get; set; }
         public bool IsNullOrEmpty { get; set; }
+    }
+
+    public class DBCCPAGE_DATA
+    {
+        public long rn { get; set; }
+        public string Value { get; set; }
+    }
+
+    public class FPageInfo
+    {
+        private string offset_str, pagenum_str, filenum_str, slotnum_str;
+
+        public FPageInfo()
+        {
+
+        }
+
+        public FPageInfo(string ppageinfo, string pfrom = "INROW")
+        {
+            if (pfrom == "INROW")
+            {
+                offset_str = ppageinfo.Substring(0, 4 * 2);
+                pagenum_str = ppageinfo.Substring(4 * 2, 4 * 2);
+                filenum_str = ppageinfo.Substring(8 * 2, 2 * 2);
+                slotnum_str = ppageinfo.Substring(10 * 2, 2 * 2);
+            }
+            else
+            {   // TEXT_TREE_PAGE
+                offset_str = ppageinfo.Substring(0, 4 * 2);
+                pagenum_str = ppageinfo.Substring(8 * 2, 4 * 2);
+                filenum_str = ppageinfo.Substring(12 * 2, 2 * 2);
+                slotnum_str = ppageinfo.Substring(14 * 2, 2 * 2);
+            }
+
+            Offset = Convert.ToInt64(offset_str.Substring(6, 2) + offset_str.Substring(4, 2) + offset_str.Substring(2, 2) + offset_str.Substring(0, 2), 16);
+            PageNum = Convert.ToInt64(pagenum_str.Substring(6, 2) + pagenum_str.Substring(4, 2) + pagenum_str.Substring(2, 2) + pagenum_str.Substring(0, 2), 16).ToString();
+            FileNum = Convert.ToInt32(filenum_str.Substring(2, 2) + filenum_str.Substring(0, 2), 16).ToString();
+            SlotNum = Convert.ToInt32(slotnum_str.Substring(2, 2) + slotnum_str.Substring(0, 2), 16).ToString();
+            FileNumPageNum_Hex = $"{filenum_str.Substring(2, 2)}{filenum_str.Substring(0, 2)}:{pagenum_str.Substring(6, 2)}{pagenum_str.Substring(4, 2)}{pagenum_str.Substring(2, 2)}{pagenum_str.Substring(0, 2)}";
+        }
+
+        public long Offset { get; set; }
+        public string PageNum { get; set; }
+        public string FileNum { get; set; }
+        public string SlotNum { get; set; }
+        public string FileNumPageNum_Hex { get; set; }
+        public string PageData { get; set; }
+        public string PageType { get; set; }
     }
 
 }

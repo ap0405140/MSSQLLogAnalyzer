@@ -1,8 +1,10 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Data;
+using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace DBLOG
@@ -77,6 +79,55 @@ namespace DBLOG
             return bs;
         }
 
+        public static byte[] ToFileByteArray(this string ptext)
+        {
+            FileStream fs;
+            StreamWriter writer;
+            FileMode fm;
+            string tfilename;
+            byte[] filedata;
+
+            tfilename = Guid.NewGuid().ToString().Replace("-","") + ".txt";
+            fm = FileMode.Create;
+            fs = new FileStream(tfilename,fm,FileAccess.Write,FileShare.None);
+            writer = new StreamWriter(fs, Encoding.Unicode);
+            writer.WriteLine(ptext);
+
+            writer.Close();
+            fs.Close();
+            writer.Dispose();
+            fs.Dispose();
+
+            Thread.Sleep(10);
+            filedata = File.ReadAllBytes(tfilename);
+
+            Thread.Sleep(10);
+            File.Delete(tfilename);
+
+            return filedata;
+        }
+
+        public static void ToFile(this byte[] filedata, string tfile)
+        {
+            FileStream fs;
+            string filepath;
+
+            filepath = Path.GetDirectoryName(tfile);
+            if (Directory.Exists(filepath) == false)
+            {
+                Directory.CreateDirectory(filepath);
+            }
+
+            if (File.Exists(tfile) == true)
+            {
+                File.Delete(tfile);
+            }
+
+            fs = new FileStream(tfile, FileMode.OpenOrCreate, FileAccess.Write);
+            fs.Write(filedata, 0, filedata.Length);
+            fs.Close();
+            fs.Dispose();
+        }
 
     }
 

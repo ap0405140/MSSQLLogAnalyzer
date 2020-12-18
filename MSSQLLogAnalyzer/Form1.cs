@@ -2,7 +2,9 @@
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Data;
+using System.Diagnostics;
 using System.Drawing;
+using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
@@ -22,6 +24,7 @@ namespace MSSQLLogAnalyzer
         public Form1()
         {
             InitializeComponent();
+            StartPosition = FormStartPosition.CenterScreen;
         }
 
         private void Form1_Load(object sender, EventArgs e)
@@ -30,7 +33,7 @@ namespace MSSQLLogAnalyzer
             txtConnectionstring.Text = "server=[ServerName];database=[DatabaseName];uid=[LoginName];pwd=[Password];Connection Timeout=5;Integrated Security=false;";
 
             //Time Range: Default to read at last 10 seconds 's logs, you can change the time range for need.
-            dtStarttime.Value = Convert.ToDateTime(DateTime.Now.AddSeconds(-5).ToString("yyyy/MM/dd HH:mm:ss"));
+            dtStarttime.Value = Convert.ToDateTime(DateTime.Now.AddSeconds(-10).ToString("yyyy/MM/dd HH:mm:ss"));
             dtEndtime.Value = Convert.ToDateTime(DateTime.Now.ToString("yyyy/MM/dd HH:mm:ss"));
 
             //Table Name: Need include schema name(like dbo.Table1), When blank means query all tables 's logs, you can change it for need.
@@ -99,6 +102,54 @@ namespace MSSQLLogAnalyzer
                 btnReadlog.Text = "ReadLog";
             }
         }
+
+        private void dgLogs_CellDoubleClick(object sender, DataGridViewCellEventArgs e)
+        {
+            DatabaseLog currlog;
+            string tfilename;
+
+            if (e.ColumnIndex != redoSQLDataGridViewTextBoxColumn.Index 
+                && e.ColumnIndex != undoSQLDataGridViewTextBoxColumn.Index)
+            {
+                return;
+            }
+
+            currlog = dgLogs.CurrentRow.DataBoundItem as DatabaseLog;
+            tfilename = "temp\\" + Guid.NewGuid().ToString().Replace("-", "") + ".txt";
+
+            if (e.ColumnIndex == redoSQLDataGridViewTextBoxColumn.Index)
+            {
+                currlog.RedoSQLFile.ToFile(tfilename);
+            }
+            else
+            {
+                currlog.UndoSQLFile.ToFile(tfilename);
+            }
+         
+            Process.Start(tfilename);
+        }
+
+        private void Form1_FormClosed(object sender, FormClosedEventArgs e)
+        {
+            string temppath;
+            DirectoryInfo di;
+
+            try
+            {
+                temppath = Application.StartupPath + "\\temp\\";
+                di = new DirectoryInfo(temppath);
+
+                foreach (FileInfo tf in di.GetFiles())
+                {
+                    tf.Delete();
+                }
+            }
+            catch(Exception ex)
+            {
+
+            }
+        }
+
 
     }
 }
