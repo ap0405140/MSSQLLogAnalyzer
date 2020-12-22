@@ -535,19 +535,6 @@ namespace DBLOG
             //      + " order by columnid; ";
             //oDB.ExecuteSQL(sTsql, false);
 
-#if DEBUG
-            sTsql = " with pagedata as(select [PAGE ID]='" + pPageID + "',"
-                    + "                       [AllocUnitId]='" + pAllocUnitId + "',"
-                    + "                       [ParentObject],"
-                    + "                       [Object],"
-                    + "                       [Field],"
-                    + "                       [Value]"
-                    + "                from #temppagedata) "
-                    + " insert into dbo.LogExplorer_temppagedata([LSN],[PAGE ID],[AllocUnitId],ParentObject,Object,Field,Value) "
-                    + " select [LSN]='" + pCurrentLSN + "',[PAGE ID],[AllocUnitId],ParentObject,Object,Field,Value from pagedata";
-            oDB.ExecuteSQL(sTsql, false);
-#endif
-
             lsns2 = new List<string>();
             lsns2.Add(pCurrentLSN);
             lsns2.Add(lsns

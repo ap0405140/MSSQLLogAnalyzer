@@ -105,17 +105,6 @@ namespace DBLOG
                        LSN varchar(100)
                        constraint pk_LogExplorer_AnalysisLog primary key (LogID)) ";
             DB.ExecuteSQL(_tsql, false);
-
-            // table for debug
-            _tsql = @"if exists(select 1 from sys.tables where name=N'LogExplorer_temppagedata') drop table dbo.LogExplorer_temppagedata; 
-                      create table dbo.LogExplorer_temppagedata([LSN] nvarchar(1000),
-                                                                [PAGE ID] nvarchar(1000),
-                                                                [AllocUnitId] nvarchar(1000),
-                                                                ParentObject sysname,
-                                                                Object sysname,
-                                                                Field sysname,
-                                                                Value nvarchar(max)); ";
-            DB.ExecuteSQL(_tsql, false);
 #endif
 
             // get DML Transaction list
@@ -204,6 +193,9 @@ namespace DBLOG
                                   "select distinct 'TableName'=case when parsename([AllocUnitName],3) is not null then parsename([AllocUnitName],2) else parsename([AllocUnitName],1) end, "
                                   + "              'SchemaName'=case when parsename([AllocUnitName],3) is not null then parsename([AllocUnitName],3) else parsename([AllocUnitName],2) end ");
             dtTables = DB.Query(_tsql, false);
+
+            _tsql = $"alter table #LogList add constraint pk#LogList{Guid.NewGuid().ToString().Replace("-", "")} primary key clustered ([Current LSN]); ";
+            DB.ExecuteSQL(_tsql, false);
 
             _tsql = "select * from #LogList; ";
             dtLoglist = DB.Query(_tsql, false);

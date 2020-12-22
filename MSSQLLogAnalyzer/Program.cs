@@ -17,7 +17,7 @@ namespace MSSQLLogAnalyzer
         {
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-            //Application.ThreadException += new System.Threading.ThreadExceptionEventHandler(FThreadException);
+            Application.ThreadException += new System.Threading.ThreadExceptionEventHandler(FThreadException);
             Application.Run(new Form1());
         }
 
