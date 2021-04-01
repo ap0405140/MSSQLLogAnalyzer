@@ -51,6 +51,7 @@ namespace DBLOG
             dtMRlist.Columns.Add("SlotID", typeof(string));
             dtMRlist.Columns.Add("AllocUnitId", typeof(string));
             dtMRlist.Columns.Add("MR1", typeof(byte[]));
+            dtMRlist.Columns.Add("MR1TEXT", typeof(string));
         }
 
         private string GetTableLayout(string pSchemaName, string pTablename)
@@ -194,6 +195,7 @@ namespace DBLOG
                    MR1 = null;
             DataRow Mrtemp;
             DataTable dtTemp;
+            bool isfound;
 
             logs = new List<DatabaseLog>();
 
@@ -202,6 +204,9 @@ namespace DBLOG
                 sTsql = @"if object_id('tempdb..#temppagedata') is not null 
                              drop table #temppagedata; 
                           create table #temppagedata(LSN nvarchar(1000),ParentObject sysname,Object sysname,Field sysname,Value nvarchar(max)); ";
+                oDB.ExecuteSQL(sTsql, false);
+
+                sTsql = "create index ix_#temppagedata on #temppagedata(LSN); ";
                 oDB.ExecuteSQL(sTsql, false);
 
                 sTsql = @"if object_id('tempdb..#temppagedatalob') is not null 
@@ -216,7 +221,7 @@ namespace DBLOG
 
                 sTsql = @"if object_id('tempdb..#ModifiedRawData') is not null 
                              drop table #ModifiedRawData; 
-                          create table #ModifiedRawData([ID] int identity(1,1),[PAGE ID] varchar(max),[Slot ID] int,[AllocUnitId] bigint,[RowLog Contents 0_var] nvarchar(max),[RowLog Contents 0] varbinary(max)); ";
+                          create table #ModifiedRawData([SlotID] int,[RowLog Contents 0_var] nvarchar(max),[RowLog Contents 0] varbinary(max)); ";
                 oDB.ExecuteSQL(sTsql, false);
 
                 iColumncount = 0;
@@ -275,10 +280,30 @@ namespace DBLOG
 
                     if (Operation == "LOP_MODIFY_ROW" || Operation == "LOP_MODIFY_COLUMNS")
                     {
-                        drTemp = dtMRlist.Select("PAGEID='" + PageID + "' and SlotID='" + SlotID + "' and AllocUnitId='" + AllocUnitId + "' ");
+                        isfound = false;
 
-                        if (drTemp.Length == 0
-                            || (Operation == "LOP_MODIFY_ROW" && ((byte[])drTemp[0]["MR1"]).ToText().Contains(R1.ToText()) == false))
+                        drTemp = dtMRlist.Select("PAGEID='" + PageID + "' and SlotID='" + SlotID + "' and AllocUnitId='" + AllocUnitId + "' ");
+                        if (drTemp.Length > 0
+                            && (
+                                (Operation == "LOP_MODIFY_COLUMNS")
+                                || 
+                                (Operation == "LOP_MODIFY_ROW" && drTemp[0]["MR1TEXT"].ToString().Contains(R1.ToText()))
+                               )
+                           )
+                        {
+                            isfound = true;
+                        }
+
+                        if (isfound == false && Operation == "LOP_MODIFY_ROW")
+                        {
+                            drTemp = dtMRlist.Select("PAGEID='" + PageID + "' and MR1TEXT like '%" + R1.ToText() + "%' ");
+                            if (drTemp.Length > 0)
+                            {
+                                isfound = true;
+                            }
+                        }
+
+                        if (isfound == false)
                         {
                             MR1 = GetMR1(Operation, PageID, AllocUnitId, CurrentLSN, pStartLSN, pEndLSN, R1.ToText());
 
@@ -294,6 +319,7 @@ namespace DBLOG
                                 Mrtemp["SlotID"] = SlotID;
                                 Mrtemp["AllocUnitId"] = AllocUnitId;
                                 Mrtemp["MR1"] = MR1;
+                                Mrtemp["MR1TEXT"] = MR1.ToText();
 
                                 dtMRlist.Rows.Add(Mrtemp);
                             }
@@ -413,8 +439,8 @@ namespace DBLOG
 
                             if (sValueList1.Length > 0)
                             {
-                                REDOSQL = $"update [{sSchemaName}].[{sTableName}] set {sValueList1} where {sWhereList} ";
-                                UNDOSQL = $"update [{sSchemaName}].[{sTableName}] set {sValueList0} where {sWhereList} ";
+                                REDOSQL = $"update [{sSchemaName}].[{sTableName}] set {sValueList1} where {sWhereList}; ";
+                                UNDOSQL = $"update [{sSchemaName}].[{sTableName}] set {sValueList0} where {sWhereList}; ";
                                 stemp = "S: "
                                         + " MR1=" + MR1.ToText() + ", "
                                         + " MR0=" + MR0.ToText() + ", "
@@ -451,6 +477,7 @@ namespace DBLOG
                         Mrtemp["SlotID"] = SlotID;
                         Mrtemp["AllocUnitId"] = AllocUnitId;
                         Mrtemp["MR1"] = MR0;
+                        Mrtemp["MR1TEXT"] = MR0.ToText();
 
                         dtMRlist.Rows.Add(Mrtemp);
                     }
@@ -505,6 +532,7 @@ namespace DBLOG
             string fileid, pageid_dec, checkvalue;
             DataTable dtTemp;
             List<string> lsns2;
+            bool isfound;
 
             fileid = pPageID.Substring(0, pPageID.IndexOf(":", 0));
             pageid_dec = Convert.ToInt64(pPageID.Substring(pPageID.IndexOf(":", 0) + 1, pPageID.Length - pPageID.IndexOf(":", 0) - 1), 16).ToString();
@@ -537,57 +565,72 @@ namespace DBLOG
 
             lsns2 = new List<string>();
             lsns2.Add(pCurrentLSN);
-            lsns2.Add(lsns
-                      .Where(p => p.Value == pPageID && p.Key.CompareTo(pCurrentLSN) > 0)
-                      .OrderByDescending(p => p.Key)
-                      .FirstOrDefault()
-                      .Key);
+            //lsns2.Add(lsns
+            //          .Where(p => p.Value == pPageID && p.Key.CompareTo(pCurrentLSN) > 0)
+            //          .OrderByDescending(p => p.Key)
+            //          .FirstOrDefault()
+            //          .Key);
 
             mr1 = null;
-            foreach(string tl in lsns2)
+            checkvalue = (pOperation == "LOP_MODIFY_ROW" ? pR1 : "");
+            isfound = false;
+
+            foreach (string tl in lsns2)
             {
                 sTsql = "truncate table #ModifiedRawData; ";
                 oDB.ExecuteSQL(sTsql, false);
 
-                sTsql = " with pagedata as(select [PAGE ID]='" + pPageID + "',"
-                        + "                       [AllocUnitId]='" + pAllocUnitId + "',"
-                        + "                       [ParentObject],"
-                        + "                       [Object],"
-                        + "                       [Field],"
-                        + "                       [Value]"
-                        + "                from #temppagedata "
-                        + "                where LSN=N'" + tl + "') "
-                        + " insert into #ModifiedRawData([PAGE ID],[Slot ID],[AllocUnitId],[RowLog Contents 0_var]) "
-                        + " select A.[PAGE ID],A.[Slot ID],A.[AllocUnitId],"
-                        + "        [RowLog Contents 0_var]=replace(stuff((select replace(substring(C.[Value],charindex(N':',[Value],1)+1,48),N'†',N'') "
-                        + "                                               from pagedata C "
-                        + "                                               where C.[PAGE ID]=A.[Page ID] "
-                        + "                                               and C.[AllocUnitId]=A.[AllocUnitId] "
+                sTsql = " insert into #ModifiedRawData([RowLog Contents 0_var]) "
+                        + " select [RowLog Contents 0_var]=replace(stuff((select replace(substring(C.[Value],charindex(N':',[Value],1)+1,48),N'†',N'') "
+                        + "                                               from #temppagedata C "
+                        + "                                               where C.[LSN]=N'" + tl + "' "
                         + "                                               and C.[ParentObject] like 'Slot '+ltrim(rtrim(A.[Slot ID]))+' Offset%' "
-                        + "                                               and C.[Object] like '%Memory Dump%' "
+                        + "                                               and C.[Object] like N'%Memory Dump%' "
                         + "                                               group by C.[Value] "
-                        + "                                               for xml path('') ),1,1,'') ,' ','') "
+                        + "                                               for xml path('')),1,1,N''),N' ',N'') "
                         + " from #LogList A "
-                        + " inner join pagedata B on A.[PAGE ID]=B.[PAGE ID] "
-                        + "                          and A.[AllocUnitId]=B.[AllocUnitId] "
-                        + "                          and B.[ParentObject] like 'Slot '+ltrim(rtrim(A.[Slot ID]))+' Offset%' "
-                        + "                          and B.[Object] like '%Memory Dump%' "
-                        + " where A.[Current LSN]='" + pCurrentLSN + "' "
-                        + " group by A.[PAGE ID],A.[Slot ID],A.[AllocUnitId] "
-                        + " order by A.[Slot ID]; ";
+                        + " where A.[Current LSN]='" + pCurrentLSN + "'; ";
                 oDB.ExecuteSQL(sTsql, false);
-
-                if (pOperation == "LOP_MODIFY_ROW")
-                {
-                    checkvalue = pR1;
-                }
-                else
-                {
-                    checkvalue = "";
-                }
+                
                 sTsql = "select count(1) from #ModifiedRawData where substring([RowLog Contents 0_var],9,len([RowLog Contents 0_var])-8) like N'%" + checkvalue + "%'; ";
-
                 if (Convert.ToInt32(oDB.Query11(sTsql, false)) > 0)
+                {
+                    isfound = true;
+                }
+
+                if (isfound == false && pOperation == "LOP_MODIFY_ROW")
+                {
+                    sTsql = "truncate table #ModifiedRawData; ";
+                    oDB.ExecuteSQL(sTsql, false);
+
+                    sTsql = "with t as("
+                          + "select *,SlotID=replace(substring(ParentObject,5,charindex(N'Offset',ParentObject)-5),N' ',N'') "
+                          + " from #temppagedata "
+                          + " where LSN=N'" + tl + "' "
+                          + " and Object like N'%Memory Dump%'), "
+                          + "u as("
+                          + "select [SlotID]=a.SlotID, "
+                          + "       [RowLog Contents 0_var]=replace(stuff((select replace(substring(b.Value,charindex(N':',b.Value,1)+1,48),N'†',N'') "
+                          + "                                              from t b "
+                          + "                                              where b.SlotID=a.SlotID "
+                          + "                                              group by b.Value "
+                          + "                                              for xml path('')),1,1,N''),N' ',N'') "
+                          + " from t a "
+                          + " group by a.SlotID) "
+                          + "insert into #ModifiedRawData([SlotID],[RowLog Contents 0_var]) "
+                          + "select [SlotID],[RowLog Contents 0_var] "
+                          + " from u "
+                          + " where substring([RowLog Contents 0_var],9,len([RowLog Contents 0_var])-8) like N'%" + checkvalue + "%'; ";
+                    oDB.ExecuteSQL(sTsql, false);
+
+                    sTsql = "select count(1) from #ModifiedRawData where substring([RowLog Contents 0_var],9,len([RowLog Contents 0_var])-8) like N'%" + checkvalue + "%'; ";
+                    if (Convert.ToInt32(oDB.Query11(sTsql, false)) > 0)
+                    {
+                        isfound = true;
+                    }
+                }
+
+                if (isfound == true)
                 {
                     sTsql = @"update #ModifiedRawData set [RowLog Contents 0]=cast('' as xml).value('xs:hexBinary(substring(sql:column(""[RowLog Contents 0_var]""), 0) )', 'varbinary(max)'); ";
                     oDB.ExecuteSQL(sTsql, false);
@@ -597,10 +640,6 @@ namespace DBLOG
 
                     mr1 = (byte[])dtTemp.Rows[0]["MR1"];
                     break;
-                }
-                else
-                {
-                    continue;
                 }
             }
 
