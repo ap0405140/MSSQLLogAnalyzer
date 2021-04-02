@@ -274,7 +274,7 @@ namespace DBLOG
 
 #if DEBUG
                     sTsql = "insert into dbo.LogExplorer_AnalysisLog(ADate,TableName,Logdescr,Operation,LSN) "
-                            + " select getdate(),'" + $"[{sSchemaName}].[{sTableName}]" + "', 'RunAnalysisLog...', '" + Operation + "','" + CurrentLSN + "' ";
+                            + " select getdate(),'" + $"[{sSchemaName}].[{sTableName}]" + "', N'RunAnalysisLog...', '" + Operation + "','" + CurrentLSN + "' ";
                     oDB.ExecuteSQL(sTsql, false);
 #endif
 
@@ -484,7 +484,7 @@ namespace DBLOG
 
 #if DEBUG
                     sTsql = "insert into dbo.LogExplorer_AnalysisLog(ADate,TableName,Logdescr,Operation,LSN) "
-                            + $" select ADate=getdate(),TableName=N'[{sSchemaName}].[{sTableName}]',Logdescr='{(REDOSQL.Replace("'", "''").Length<=1000 ? REDOSQL.Replace("'", "''") : REDOSQL.Replace("'", "''").Substring(0, 1000) + "...")}',Operation='{Operation}',LSN='{CurrentLSN}'; ";
+                            + $" select ADate=getdate(),TableName=N'[{sSchemaName}].[{sTableName}]',Logdescr=N'{REDOSQL.Replace("'", "''")}',Operation='{Operation}',LSN='{CurrentLSN}'; ";
                     oDB.ExecuteSQL(sTsql, false);
 #endif
 

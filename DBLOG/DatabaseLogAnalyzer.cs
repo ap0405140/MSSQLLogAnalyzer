@@ -100,7 +100,7 @@ namespace DBLOG
                       (LogID int identity(1,1) not null,
                        ADate datetime not null,
                        TableName nvarchar(280),
-                       Logdescr varchar(6000),
+                       Logdescr nvarchar(max),
                        Operation varchar(100),
                        LSN varchar(100)
                        constraint pk_LogExplorer_AnalysisLog primary key (LogID)) ";
@@ -217,7 +217,7 @@ namespace DBLOG
 
 #if DEBUG
                 _tsql = "insert into dbo.LogExplorer_AnalysisLog(ADate,TableName,Logdescr,Operation,LSN) "
-                        + " select getdate(),'" + schemaname + "." + tablename + "', 'Start Analysis Log.', '','' ";
+                        + " select getdate(),'" + schemaname + "." + tablename + "', N'Start Analysis Log.', '', '' ";
                 DB.ExecuteSQL(_tsql, false);
 #endif
 
@@ -229,7 +229,7 @@ namespace DBLOG
 
 #if DEBUG
                 _tsql = "insert into dbo.LogExplorer_AnalysisLog(ADate,TableName,Logdescr,Operation,LSN) "
-                        + " select getdate(),'" + schemaname + "." + tablename + "', 'End Analysis Log.', '','' ";
+                        + " select getdate(),'" + schemaname + "." + tablename + "', N'End Analysis Log.', '', '' ";
                 DB.ExecuteSQL(_tsql, false);
 #endif
 
