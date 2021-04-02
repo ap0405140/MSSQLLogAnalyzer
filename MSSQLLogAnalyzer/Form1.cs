@@ -49,13 +49,15 @@ namespace MSSQLLogAnalyzer
         private async void btnReadlog_Click(object sender, EventArgs e)
         {
             Action t;
-
-            btnReadlog.Enabled = false;
+            
             try
             {
+                btnReadlog.Enabled = false;
+
                 logs = new DatabaseLog[] { };
                 bindingSource1.DataSource = logs;
                 bindingSource1.ResetBindings(false);
+                timer.Enabled = true;
 
                 t = new Action(Readlog);
                 await Task.Run(t);
@@ -81,7 +83,6 @@ namespace MSSQLLogAnalyzer
 
             dbla = new DatabaseLogAnalyzer(ConnectionString);
             logs = dbla.ReadLog(StartTime, EndTime, TableName);
-            timer.Enabled = true;
         }
 
         private void timer_elapsed(object sender, ElapsedEventArgs e)
@@ -91,7 +92,7 @@ namespace MSSQLLogAnalyzer
 
         private void fshowresult(DatabaseLogAnalyzer p)
         {
-            btnReadlog.Text = "ReadLog\r\n" + p.ReadPercent.ToString() + "%";
+            btnReadlog.Text = "ReadLog\r\n[" + p.ReadPercent.ToString() + "%]";
 
             if (p.ReadPercent >= 100)
             {
