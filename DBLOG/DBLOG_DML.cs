@@ -20,8 +20,6 @@ namespace DBLOG
         public string sTableName;     // 表名
         public string sSchemaName;    // 架构名
 
-        public string sTableLayout;   // 表结构定义 xml格式
-        public string sTableInfo;     // 表信息 xml格式
         public TableColumn[] TableColumns;  // 表结构定义
         public TableInformation TabInfos;   // 表信息
 
@@ -37,133 +35,19 @@ namespace DBLOG
         private Dictionary<string, FPageInfo> lobpagedata; // key:fileid+pageid value:FPageInfo
         //private List<FSlotColumnData> slotcolumndata;
 
-        public DBLOG_DML(string pDatabasename, string pSchemaName, string pTablename, DatabaseOperation poDB)
+        public DBLOG_DML(string pDatabasename, string pSchemaName, string pTableName, DatabaseOperation poDB)
         {
             oDB = poDB;
             sDatabasename = pDatabasename;
-            sTableName = pTablename;
+            sTableName = pTableName;
             sSchemaName = pSchemaName;
-            sTableLayout = GetTableLayout(pSchemaName, pTablename);
-            sTableInfo = GetTableInfo(pSchemaName, pTablename);
-
+            
             dtMRlist = new DataTable();
             dtMRlist.Columns.Add("PAGEID", typeof(string));
             dtMRlist.Columns.Add("SlotID", typeof(string));
             dtMRlist.Columns.Add("AllocUnitId", typeof(string));
             dtMRlist.Columns.Add("MR1", typeof(byte[]));
             dtMRlist.Columns.Add("MR1TEXT", typeof(string));
-        }
-
-        private string GetTableLayout(string pSchemaName, string pTablename)
-        {
-            string sTsql, sReturn;
-
-            sTsql = "select cast(("
-                        + "select ColumnID,ColumnName,DataType,Length,Precision,Nullable,Scale,IsComputed,LeafOffset,LeafNullBit "
-                        + " from (select 'ColumnID'=b.column_id, "
-                        + "              'ColumnName'=b.name, "
-                        + "              'DataType'=c.name, "
-                        + "              'Length'=b.max_length, "
-                        + "              'Precision'=b.precision, "
-                        + "              'Nullable'=b.is_nullable, "
-                        + "              'Scale'=b.scale, "
-                        + "              'IsComputed'=b.is_computed, "
-                        + "              'LeafOffset'=isnull(d2.leaf_offset,0), "
-                        + "              'LeafNullBit'=isnull(d2.leaf_null_bit,0) "
-                        + "       from sys.tables a "
-                        + "       inner join sys.schemas s on a.schema_id=s.schema_id "
-                        + "       inner join sys.columns b on a.object_id=b.object_id "
-                        + "       inner join sys.systypes c on b.system_type_id=c.xtype and b.user_type_id=c.xusertype "
-                        + "       outer apply (select d.leaf_offset,d.leaf_null_bit "
-                        + "                     from sys.system_internals_partition_columns d "
-                        + "                     where d.partition_column_id=b.column_id "
-                        + "                     and d.partition_id in (select partitionss.partition_id "
-                        + "                                             from sys.allocation_units allocunits "
-                        + "                                             inner join sys.partitions partitionss on (allocunits.type in(1, 3) and allocunits.container_id=partitionss.hobt_id) "
-                        + "                                                                                       or (allocunits.type=2 and allocunits.container_id=partitionss.partition_id) "
-                        + "                                             where partitionss.object_id=a.object_id and partitionss.index_id<=1)) d2 "
-                        + $"      where s.name=N'{pSchemaName}' and a.name=N'{pTablename}') t "
-                        + " order by ColumnID "
-                        + " for xml raw('Column'),root('ColumnList') "
-                        + ") as nvarchar(max)); ";
-            sReturn = oDB.Query11(sTsql, false);
-
-            return sReturn;
-        }
-
-        private string GetTableInfo(string pSchemaName, string pTablename)
-        {
-            string sTsql, sReturn;
-
-            sTsql = "declare @primarykeyColumnList nvarchar(1000),@ClusteredindexColumnList nvarchar(1000), @identityColumn nvarchar(100), @IsHeapTable bit, @FAllocUnitName nvarchar(1000) "
-                      + " select @primarykeyColumnList=isnull(@primarykeyColumnList+N',',N'')+c.name "
-                      + "    from sys.indexes a "
-                      + "    inner join sys.index_columns b on a.object_id=b.object_id and a.index_id=b.index_id "
-                      + "    inner join sys.columns c on b.object_id=c.object_id and b.column_id=c.column_id "
-                      + "    inner join sys.objects d on a.object_id=d.object_id "
-                      + "    inner join sys.schemas s on d.schema_id=s.schema_id "
-                      + "    where a.is_primary_key=1 "
-                      + $"   and s.name=N'{pSchemaName}' "
-                      + "    and d.type='U' "
-                      + $"   and d.name=N'{pTablename}' "
-                      + "    order by b.key_ordinal; "
-
-                      + " select @ClusteredindexColumnList=isnull(@ClusteredindexColumnList+N',',N'')+c.name "
-                      + "    from sys.indexes a "
-                      + "    inner join sys.index_columns b on a.object_id=b.object_id and a.index_id=b.index_id "
-                      + "    inner join sys.columns c on b.object_id=c.object_id and b.column_id=c.column_id "
-                      + "    inner join sys.objects d on a.object_id=d.object_id "
-                      + "    inner join sys.schemas s on d.schema_id=s.schema_id "
-                      + "    where a.index_id<=1 "
-                      + "    and a.type=1 "
-                      + $"   and s.name=N'{pSchemaName}' "
-                      + "    and d.type='U' "
-                      + $"   and d.name=N'{pTablename}' "
-                      + "    order by b.key_ordinal; "
-
-                      + " select @identityColumn=a.name "
-                      + "    from sys.columns a "
-                      + "    inner join sys.objects b on a.object_id=b.object_id "
-                      + "    inner join sys.schemas s on b.schema_id=s.schema_id "
-                      + "    where a.is_identity=1 "
-                      + $"   and s.name=N'{pSchemaName}' "
-                      + "    and b.type='U' "
-                      + $"   and b.name=N'{pTablename}'; "
-
-                      + " select @IsHeapTable=case when exists(select 1 "
-                      + "                                       from sys.tables t "
-                      + "                                       inner join sys.schemas s on t.schema_id=s.schema_id "
-                      + "                                       inner join sys.indexes i on t.object_id=i.object_id "
-                      + $"                                      where s.name=N'{pSchemaName}' and t.name=N'{pTablename}' "
-                      + "                                       and i.index_id=0) then 1 else 0 end; "
-
-                      + " select @FAllocUnitName=isnull(d.name,N'') "
-                      + "  from sys.tables a "
-                      + "  inner join sys.schemas s on a.schema_id=s.schema_id "
-                      + "  inner join sys.indexes d on a.object_id=d.object_id "
-                      + "  where d.type in(0,1) "
-                      + $" and s.name=N'{pSchemaName}' "
-                      + $" and a.name=N'{pTablename}'; "
-
-                      + " select ItemName,ItemValue "
-                      + "    from (select ItemName='PrimarykeyColumnList', "
-                      + "                 ItemValue=isnull(','+@primarykeyColumnList+',','') "
-                      + "          union all "
-                      + "          select ItemName='ClusteredindexColumnList', "
-                      + "                 ItemValue=isnull(','+@ClusteredindexColumnList+',','') "
-                      + "          union all "
-                      + "          select ItemName='IdentityColumn', "
-                      + "                 ItemValue=isnull(@identityColumn,'') "
-                      + "          union all "
-                      + "          select ItemName='IsHeapTable', "
-                      + "                 ItemValue=rtrim(isnull(@IsHeapTable,0)) "
-                      + "          union all "
-                      + "          select ItemName='FAllocUnitName', "
-                      + "                 ItemValue=rtrim(isnull(@FAllocUnitName,N'')) "
-                      + "        ) t for xml raw('Item'),root('TableInfomation'); ";
-            sReturn = oDB.Query11(sTsql, false);
-
-            return sReturn;
         }
 
         // 解析日志
@@ -201,6 +85,12 @@ namespace DBLOG
 
             try
             {
+                var TableInfo = GetTableInfo(sSchemaName, sTableName);
+                TabInfos = TableInfo.Item1;
+                TableColumns = TableInfo.Item2;
+                iColumncount = TableColumns.Length;
+                sColumnlist = string.Join(",", TableColumns.Where(p => p.DataType != SqlDbType.Timestamp && p.isComputed == false).Select(p => $"[{p.ColumnName}]"));
+
                 sTsql = @"if object_id('tempdb..#temppagedata') is not null 
                              drop table #temppagedata; 
                           create table #temppagedata(LSN nvarchar(1000),ParentObject sysname,Object sysname,Field sysname,Value nvarchar(max)); ";
@@ -223,11 +113,7 @@ namespace DBLOG
                              drop table #ModifiedRawData; 
                           create table #ModifiedRawData([SlotID] int,[RowLog Contents 0_var] nvarchar(max),[RowLog Contents 0] varbinary(max)); ";
                 oDB.ExecuteSQL(sTsql, false);
-
-                iColumncount = 0;
-                sColumnlist = string.Empty;
-                TableColumns = AnalyzeTablelayout(sTableLayout, ref iColumncount, ref sColumnlist);   // 解析表结构定义XML.
-                TabInfos = AnalyzeTableInformation(sTableInfo);  // 解析表信息.
+                
                 lsns = new Dictionary<string, string>();
                 lobpagedata = new Dictionary<string, FPageInfo>();
 
@@ -1674,6 +1560,118 @@ namespace DBLOG
             return lobvalue;
         }
 
+        private ValueTuple<TableInformation, TableColumn[]> GetTableInfo(string pSchemaName, string pTablename)
+        {
+            string stsql, stemp;
+            TableInformation tableinfo;
+            TableColumn[] tablecolumns;
+            ValueTuple<TableInformation, TableColumn[]> r;
+
+            stsql = "declare @primarykeyColumnList nvarchar(1000),@ClusteredindexColumnList nvarchar(1000), @identityColumn nvarchar(100), @IsHeapTable bit, @FAllocUnitName nvarchar(1000) "
+                      + " select @primarykeyColumnList=isnull(@primarykeyColumnList+N',',N'')+c.name "
+                      + "    from sys.indexes a "
+                      + "    inner join sys.index_columns b on a.object_id=b.object_id and a.index_id=b.index_id "
+                      + "    inner join sys.columns c on b.object_id=c.object_id and b.column_id=c.column_id "
+                      + "    inner join sys.objects d on a.object_id=d.object_id "
+                      + "    inner join sys.schemas s on d.schema_id=s.schema_id "
+                      + "    where a.is_primary_key=1 "
+                      + $"   and s.name=N'{pSchemaName}' "
+                      + "    and d.type='U' "
+                      + $"   and d.name=N'{pTablename}' "
+                      + "    order by b.key_ordinal; "
+
+                      + " select @ClusteredindexColumnList=isnull(@ClusteredindexColumnList+N',',N'')+c.name "
+                      + "    from sys.indexes a "
+                      + "    inner join sys.index_columns b on a.object_id=b.object_id and a.index_id=b.index_id "
+                      + "    inner join sys.columns c on b.object_id=c.object_id and b.column_id=c.column_id "
+                      + "    inner join sys.objects d on a.object_id=d.object_id "
+                      + "    inner join sys.schemas s on d.schema_id=s.schema_id "
+                      + "    where a.index_id<=1 "
+                      + "    and a.type=1 "
+                      + $"   and s.name=N'{pSchemaName}' "
+                      + "    and d.type='U' "
+                      + $"   and d.name=N'{pTablename}' "
+                      + "    order by b.key_ordinal; "
+
+                      + " select @identityColumn=a.name "
+                      + "    from sys.columns a "
+                      + "    inner join sys.objects b on a.object_id=b.object_id "
+                      + "    inner join sys.schemas s on b.schema_id=s.schema_id "
+                      + "    where a.is_identity=1 "
+                      + $"   and s.name=N'{pSchemaName}' "
+                      + "    and b.type='U' "
+                      + $"   and b.name=N'{pTablename}'; "
+
+                      + " select @IsHeapTable=case when exists(select 1 "
+                      + "                                       from sys.tables t "
+                      + "                                       inner join sys.schemas s on t.schema_id=s.schema_id "
+                      + "                                       inner join sys.indexes i on t.object_id=i.object_id "
+                      + $"                                      where s.name=N'{pSchemaName}' and t.name=N'{pTablename}' "
+                      + "                                       and i.index_id=0) then 1 else 0 end; "
+
+                      + " select @FAllocUnitName=isnull(d.name,N'') "
+                      + "  from sys.tables a "
+                      + "  inner join sys.schemas s on a.schema_id=s.schema_id "
+                      + "  inner join sys.indexes d on a.object_id=d.object_id "
+                      + "  where d.type in(0,1) "
+                      + $" and s.name=N'{pSchemaName}' "
+                      + $" and a.name=N'{pTablename}'; "
+
+                      + " select ItemName,ItemValue "
+                      + "    from (select ItemName='PrimarykeyColumnList', "
+                      + "                 ItemValue=isnull(','+@primarykeyColumnList+',','') "
+                      + "          union all "
+                      + "          select ItemName='ClusteredindexColumnList', "
+                      + "                 ItemValue=isnull(','+@ClusteredindexColumnList+',','') "
+                      + "          union all "
+                      + "          select ItemName='IdentityColumn', "
+                      + "                 ItemValue=isnull(@identityColumn,'') "
+                      + "          union all "
+                      + "          select ItemName='IsHeapTable', "
+                      + "                 ItemValue=rtrim(isnull(@IsHeapTable,0)) "
+                      + "          union all "
+                      + "          select ItemName='FAllocUnitName', "
+                      + "                 ItemValue=rtrim(isnull(@FAllocUnitName,N'')) "
+                      + "        ) t for xml raw('Item'),root('TableInfomation'); ";
+            stemp = oDB.Query11(stsql, false);
+            tableinfo = AnalyzeTableInformation(stemp);
+
+            stsql = "select cast(("
+                        + "select ColumnID,ColumnName,DataType,Length,Precision,Nullable,Scale,IsComputed,LeafOffset,LeafNullBit "
+                        + " from (select 'ColumnID'=b.column_id, "
+                        + "              'ColumnName'=b.name, "
+                        + "              'DataType'=c.name, "
+                        + "              'Length'=b.max_length, "
+                        + "              'Precision'=b.precision, "
+                        + "              'Nullable'=b.is_nullable, "
+                        + "              'Scale'=b.scale, "
+                        + "              'IsComputed'=b.is_computed, "
+                        + "              'LeafOffset'=isnull(d2.leaf_offset,0), "
+                        + "              'LeafNullBit'=isnull(d2.leaf_null_bit,0) "
+                        + "       from sys.tables a "
+                        + "       inner join sys.schemas s on a.schema_id=s.schema_id "
+                        + "       inner join sys.columns b on a.object_id=b.object_id "
+                        + "       inner join sys.systypes c on b.system_type_id=c.xtype and b.user_type_id=c.xusertype "
+                        + "       outer apply (select d.leaf_offset,d.leaf_null_bit "
+                        + "                     from sys.system_internals_partition_columns d "
+                        + "                     where d.partition_column_id=b.column_id "
+                        + "                     and d.partition_id in (select partitionss.partition_id "
+                        + "                                             from sys.allocation_units allocunits "
+                        + "                                             inner join sys.partitions partitionss on (allocunits.type in(1, 3) and allocunits.container_id=partitionss.hobt_id) "
+                        + "                                                                                       or (allocunits.type=2 and allocunits.container_id=partitionss.partition_id) "
+                        + "                                             where partitionss.object_id=a.object_id and partitionss.index_id<=1)) d2 "
+                        + $"      where s.name=N'{pSchemaName}' and a.name=N'{pTablename}') t "
+                        + " order by ColumnID "
+                        + " for xml raw('Column'),root('ColumnList') "
+                        + ") as nvarchar(max)); ";
+            stemp = oDB.Query11(stsql, false);
+            tablecolumns = AnalyzeTablelayout(stemp);
+
+            r = new ValueTuple<TableInformation, TableColumn[]>(tableinfo, tablecolumns);
+
+            return r;
+        }
+
         // 解析表信息.
         private static TableInformation AnalyzeTableInformation(string sTableInformation)
         {
@@ -1710,15 +1708,13 @@ namespace DBLOG
         }
 
         // 解析表结构定义(XML).
-        public static TableColumn[] AnalyzeTablelayout(string sTableLayout,
-                                                       ref int iColumncount,
-                                                       ref string sColumnlist)
+        public static TableColumn[] AnalyzeTablelayout(string sTableLayout)
         {
             short iColumnID;
             string sColumnName;
             SqlDbType sDataType;
             short sLength, sPrecision, sScale, sLeafOffset, sLeafNullBit;
-            int i;
+            int i, iColumncount;
             bool isNullable, isComputed;
             XmlDocument xmlDoc;
             XmlNode xmlRootnode;
@@ -1733,7 +1729,6 @@ namespace DBLOG
 
             TableColumns = new TableColumn[iColumncount];
             i = 0;
-            sColumnlist = "";
             sDataType = SqlDbType.Int;
 
             foreach (XmlNode xmlNode in xmlNodelist)
@@ -1800,8 +1795,6 @@ namespace DBLOG
                 isNullable = (Convert.ToInt16(xmlNode.Attributes["Nullable"].Value) == 1 ? true : false);
 
                 TableColumns[i] = new TableColumn(iColumnID, sColumnName, sDataType, sLength, sPrecision, sScale, sLeafOffset, sLeafNullBit, isNullable, isComputed);
-                if (sDataType != SqlDbType.Timestamp && isComputed == false)
-                { sColumnlist = sColumnlist + (sColumnlist.Length > 0 ? "," : "") + "[" + sColumnName + "]"; }
 
                 i = i + 1;
             }
