@@ -111,7 +111,8 @@ namespace DBLOG
             _tsql = "if object_id('tempdb..#TransactionList') is not null drop table #TransactionList; ";
             DB.ExecuteSQL(_tsql, false);
 
-            _tsql = "select 'TransactionID'=a.[Transaction ID], "
+            _tsql = "set transaction isolation level read uncommitted; "
+                    + "select 'TransactionID'=a.[Transaction ID], "
                     + "     'BeginTime'=isnull(min(a.[Begin Time]),max(a.[End Time])), "
                     + "     'EndTime'=isnull(max(a.[End Time]),min(a.[Begin Time])), "
                     + "     'BeginLSN'=min([Current LSN]), "
@@ -150,7 +151,8 @@ namespace DBLOG
             _tsql = "if object_id('tempdb..#LogList') is not null drop table #LogList; ";
             DB.ExecuteSQL(_tsql, false);
 
-            _tsql = "select * "
+            _tsql = "set transaction isolation level read uncommitted; "
+                    + "select * "
                     + " into #LogList "
                     + " from sys.fn_dblog(" + _startLSN + ", " + _endLSN + ") t "
                     + " where [Transaction ID] in(select [TransactionID] from #TransactionList) "

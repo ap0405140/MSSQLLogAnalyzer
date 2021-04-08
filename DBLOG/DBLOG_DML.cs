@@ -260,7 +260,7 @@ namespace DBLOG
                                 if (TableColumns[j].DataType == SqlDbType.Timestamp || TableColumns[j].isComputed == true) { continue; }
 
                                 sValue = ColumnValue2SQLValue(TableColumns[j].DataType, TableColumns[j].Value, TableColumns[j].isNull);
-                                sValueList1 = sValueList1 + (sValueList1.Length > 0 ? ", " : "") + sValue;
+                                sValueList1 = sValueList1 + (sValueList1.Length > 0 ? "," : "") + sValue;
 
                                 if (TableColumns[j].isNull == false)
                                 {
@@ -425,7 +425,8 @@ namespace DBLOG
 
             // #temppagedata
             sTsql = "DBCC PAGE(''" + sDatabasename + "''," + fileid + "," + pageid_dec + ",3) with tableresults,no_infomsgs; ";
-            sTsql = "insert into #temppagedata(ParentObject,Object,Field,Value) exec('" + sTsql + "'); ";
+            sTsql = "set transaction isolation level read uncommitted; "
+                    + "insert into #temppagedata(ParentObject,Object,Field,Value) exec('" + sTsql + "'); ";
             oDB.ExecuteSQL(sTsql, false);
 
             sTsql = "update #temppagedata set LSN=N'" + pCurrentLSN + "' where LSN is null; ";
@@ -546,7 +547,8 @@ namespace DBLOG
             oDB.ExecuteSQL(sTsql, false);
 
             sTsql = "DBCC PAGE(''" + sDatabasename + "''," + r.FileNum + "," + r.PageNum + ",2) with tableresults,no_infomsgs; ";
-            sTsql = "insert into #temppagedatalob(ParentObject,Object,Field,Value) exec('" + sTsql + "'); ";
+            sTsql = "set transaction isolation level read uncommitted; "
+                    + "insert into #temppagedatalob(ParentObject,Object,Field,Value) exec('" + sTsql + "'); ";
             oDB.ExecuteSQL(sTsql, false);
 
             // pagedata
