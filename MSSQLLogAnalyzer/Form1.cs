@@ -7,6 +7,7 @@ using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Timers;
 using System.Windows.Forms;
@@ -92,6 +93,11 @@ namespace MSSQLLogAnalyzer
 
         private void fshowresult(DatabaseLogAnalyzer p)
         {
+            if (p is null)
+            {
+                return;
+            }
+
             btnReadlog.Text = "ReadLog\r\n[" + p.ReadPercent.ToString() + "%]";
 
             if (p.ReadPercent >= 100)
@@ -151,6 +157,15 @@ namespace MSSQLLogAnalyzer
             }
         }
 
+        private void Form1_FormClosing(object sender, FormClosingEventArgs e)
+        {
+            if (timer.Enabled == true)
+            {
+                timer.Enabled = false;
+            }
+
+            Application.DoEvents();
+        }
 
     }
 }
