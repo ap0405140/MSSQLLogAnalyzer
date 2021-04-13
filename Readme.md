@@ -39,14 +39,20 @@ After run finish, There is no data in test table.
 ~~~~
 ![pic1](https://img-blog.csdn.net/20160114160814768?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQv/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/SouthEast "")
 
-And then, We can use this tool to recovery data online.
-step1: Execute MSSQLLogAnalyzer.exe.
-step2: Modify [ConnectionString], change it for your environment.
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Modify [StartTime] and [EndTime] to what time range need to read logs.
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Modify [TableName], It can  be blank, when blank means read all table logs.
-step3: Click [Readlog] button, wait for analysis results. below screenshot is the run result.
+**And then, We can use this tool to recovery data online.**
+
+**step1: Execute MSSQLLogAnalyzer.exe.**
+
+**step2: Modify [ConnectionString], change it for your environment.**
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**Modify [StartTime] and [EndTime] to what time range need to read logs.**
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**Modify [TableName], It can  be blank, when blank means read all table logs.**
+
+**step3: Click [Readlog] button, wait for analysis results. below screenshot is the run result.**
+
 ![pic2](https://img-blog.csdnimg.cn/20200321113032844.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L2FwMDQwNTE0MA==,size_16,color_FFFFFF,t_70 "")
-After running finish, It return some RedoSQL and UndoSQL for every transactions, For recovery,  We can use UndoSQL to recovery all operations (execute from the back forward).
+**After run finish, It return some RedoSQL and UndoSQL for every transactions, For recovery,  We can use UndoSQL to recovery all operations (execute from the back forward).**
 ~~~~sql
 -- recovery transaction4(delete all rows)
 insert into dbo.OrderDetail([OrderID],[ItemID],[ItemNumber],[QTY],[Price],[ADate],[AUser],[UDate],[UUser]) values(1002, 1, '!@#$%', 300, 182.07, '2015-12-12', 'CL1', '2015-12-18 02:45:32.000', 'LY6'); 
@@ -65,6 +71,7 @@ update dbo.OrderDetail set [QTY]=100 where [OrderID]=1001 and [ItemID]=1
  select * from dbo.OrderDetail
 ~~~~
 ![pic3](https://img-blog.csdn.net/20160114161619096?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQv/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/SouthEast "")
+<br/>
 **Recovery finish.**
 
 ----
