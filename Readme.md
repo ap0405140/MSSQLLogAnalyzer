@@ -132,9 +132,13 @@ order by LSN
 
 #### DBLOG.dll use example:
 step1: Start Visual Studio 2017, create a new project.
+
 step2: Add reference DBLOG.dll to current project.
+
 step3: At cs file header, add "using DBLOG;"
+
 step4: Call DatabaseLogAnalyzer.ReadLog() for read logs.
+
 ```csharp
  string ConnectionString, StartTime, EndTime, TableName;
  DatabaseLogAnalyzer dbla;
