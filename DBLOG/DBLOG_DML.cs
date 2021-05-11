@@ -878,17 +878,13 @@ namespace DBLOG
 
             index = 4;
             sData = data.ToText();
-
-            // 预处理Bit数据
+            
             byte[] m_bBitColumnData;
-            short i, j, sBitColumnCount, sBitColumnDataLength, sBitColumnDataIndex;
+            short i, j, sBitColumnCount, iUniqueidentifierColumnCount, sBitColumnDataLength, sBitColumnDataIndex;
             int sBitValueStartIndex;
 
-            sBitColumnCount = 0;
-            for (i = 0; i <= columns.Length - 1; i++)
-            {
-                if (columns[i].DataType == SqlDbType.Bit) { sBitColumnCount = (short)(sBitColumnCount + 1); }
-            }
+            // 预处理Bit数据
+            sBitColumnCount = Convert.ToInt16(columns.Count(p => p.DataType == SqlDbType.Bit));
 
             // 根据Bit字段总数 计算Bit值列表长度(字节数)
             sBitColumnDataLength = (short)Math.Ceiling((double)sBitColumnCount / (double)8.0);
@@ -897,13 +893,7 @@ namespace DBLOG
             sBitValueStartIndex = 0;
 
             // 预处理Uniqueidentifier数据
-            short iUniqueidentifierColumnCount;
-
-            iUniqueidentifierColumnCount = 0;
-            for (i = 0; i <= columns.Length - 1; i++)
-            {
-                if (columns[i].DataType == SqlDbType.UniqueIdentifier) { iUniqueidentifierColumnCount = (short)(iUniqueidentifierColumnCount + 1); }
-            }
+            iUniqueidentifierColumnCount = Convert.ToInt16(columns.Count(p => p.DataType == SqlDbType.UniqueIdentifier));
 
             if (iUniqueidentifierColumnCount >= 2
                 && TabInfos.IsHeapTable == false) // 堆表不适用本规则

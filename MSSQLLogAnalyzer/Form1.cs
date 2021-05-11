@@ -49,8 +49,6 @@ namespace MSSQLLogAnalyzer
 
         private async void btnReadlog_Click(object sender, EventArgs e)
         {
-            Action t;
-            
             try
             {
                 btnReadlog.Enabled = false;
@@ -59,9 +57,8 @@ namespace MSSQLLogAnalyzer
                 bindingSource1.DataSource = logs;
                 bindingSource1.ResetBindings(false);
                 timer.Enabled = true;
-
-                t = new Action(Readlog);
-                await Task.Run(t);
+                
+                await Task.Run(() => Readlog());
             }
             catch(Exception ex)
             {

@@ -151,9 +151,16 @@ namespace DBLOG
             _tsql = "if object_id('tempdb..#LogList') is not null drop table #LogList; ";
             DB.ExecuteSQL(_tsql, false);
 
+            _tsql = "select *,istail=cast(0 as bit) "
+                  + " into #LogList "
+                  + " from sys.fn_dblog(null,null) t "
+                  + " where 1=2; ";
+            DB.ExecuteSQL(_tsql, false);
+
             _tsql = "set transaction isolation level read uncommitted; "
-                    + "select * "
-                    + " into #LogList "
+                    + " insert into #LogList "
+                    + " output inserted.* "
+                    + "select *,istail=0 "
                     + " from sys.fn_dblog(" + _startLSN + ", " + _endLSN + ") t "
                     + " where [Transaction ID] in(select [TransactionID] from #TransactionList) "
                     + " and [Context] in('LCX_HEAP','LCX_CLUSTERED','LCX_MARK_AS_GHOST','LCX_TEXT_TREE','LCX_TEXT_MIX') "
@@ -171,7 +178,7 @@ namespace DBLOG
 
             _tsql = _tsql 
                     + "union all "
-                    + "select * "
+                    + "select *,istail=1 "
                     + "   from sys.fn_dblog(null,null) t "
                     + "   where [Current LSN]>" + _endLSN_var
                     + "   and [Context] in('LCX_HEAP','LCX_CLUSTERED','LCX_MARK_AS_GHOST','LCX_TEXT_TREE','LCX_TEXT_MIX') "
@@ -186,21 +193,17 @@ namespace DBLOG
                 _tsql = _tsql + " and case when parsename([AllocUnitName],3) is not null then parsename([AllocUnitName],2) else parsename([AllocUnitName],1) end='" + tablename + "' "
                               + " and case when parsename([AllocUnitName],3) is not null then parsename([AllocUnitName],3) else parsename([AllocUnitName],2) end='" + schemaname + "' ";
             }
-            DB.ExecuteSQL(_tsql, false);
-
-            // get table list
-            _tsql = _tsql.Substring(0, _tsql.IndexOf("union all"));
-            _tsql = _tsql.Replace("into #LogList", "")
-                         .Replace("select * ",
-                                  "select distinct 'TableName'=case when parsename([AllocUnitName],3) is not null then parsename([AllocUnitName],2) else parsename([AllocUnitName],1) end, "
-                                  + "              'SchemaName'=case when parsename([AllocUnitName],3) is not null then parsename([AllocUnitName],3) else parsename([AllocUnitName],2) end ");
-            dtTables = DB.Query(_tsql, false);
+            dtLoglist = DB.Query(_tsql, false);
 
             _tsql = $"alter table #LogList add constraint pk#LogList{Guid.NewGuid().ToString().Replace("-", "")} primary key clustered ([Current LSN]); ";
             DB.ExecuteSQL(_tsql, false);
 
-            _tsql = "select * from #LogList; ";
-            dtLoglist = DB.Query(_tsql, false);
+            // get table list
+            _tsql = "select distinct 'TableName'=case when parsename([AllocUnitName],3) is not null then parsename([AllocUnitName],2) else parsename([AllocUnitName],1) end, "
+                    + "                'SchemaName'=case when parsename([AllocUnitName],3) is not null then parsename([AllocUnitName],3) else parsename([AllocUnitName],2) end "
+                    + " from #LogList "
+                    + " where istail=0; ";
+            dtTables = DB.Query(_tsql, false);
 
             ReadPercent = ReadPercent + 5;
 
