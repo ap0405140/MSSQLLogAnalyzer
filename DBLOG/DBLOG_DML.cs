@@ -183,7 +183,26 @@ namespace DBLOG
                         if (isfound == false && Operation == "LOP_MODIFY_ROW")
                         {
                             stemp = R2.ToText();
-                            stemp = (stemp.StartsWith("16") ? stemp.Substring(2, stemp.Length - 4 * 2) : stemp.Substring(16)); // PrimaryKey
+                            if (stemp.Length >= 2)
+                            {
+                                switch (stemp.Substring(0, 2))
+                                {
+                                    case "16":
+                                        stemp = stemp.Substring(2, stemp.Length - 4 * 2);
+                                        break;
+                                    case "36":
+                                        stemp = stemp.Substring(16);
+                                        break;
+                                    default:
+                                        stemp = "";
+                                        break;
+                                }
+                            }
+                            else
+                            {
+                                stemp = "";
+                            }
+                            
                             drTemp = dtMRlist.Select("PAGEID='" + PageID + "' and MR1TEXT like '%" + R1.ToText() + "%' and MR1TEXT like '%" + stemp + "%' ");
                             if (drTemp.Length > 0)
                             {
@@ -464,7 +483,26 @@ namespace DBLOG
             if(pOperation == "LOP_MODIFY_ROW")
             {
                 checkvalue = pR1;
-                checkvalue2 = (pR2.StartsWith("16") ? pR2.Substring(2, pR2.Length - 4 * 2) : pR2.Substring(16));
+
+                if (pR2.Length >= 2)
+                {
+                    switch (pR2.Substring(0, 2))
+                    {
+                        case "16":
+                            checkvalue2 = pR2.Substring(2, pR2.Length - 4 * 2);
+                            break;
+                        case "36":
+                            checkvalue2 = pR2.Substring(16);
+                            break;
+                        default:
+                            checkvalue2 = "";
+                            break;
+                    }
+                }
+                else
+                {
+                    checkvalue2 = "";
+                }
             }
             else
             {
@@ -588,8 +626,9 @@ namespace DBLOG
 
                 // SlotBeginIndex
                 r.SlotBeginIndex = new int[m_slotCnt];
-                slotarray = r.PageData.Substring(r.PageData.Length - m_slotCnt * 2 * 2, 
-                                                 m_slotCnt * 2 * 2);
+                slotarray = r.PageData.Replace("†", "").Substring(r.PageData.Replace("†", "").Length - m_slotCnt * 2 * 2, 
+                                                                  m_slotCnt * 2 * 2);
+
                 for (i = 0, j = slotarray.Length - 2;
                      i <= m_slotCnt - 1;
                      i = i + 1, j = j - 4)
