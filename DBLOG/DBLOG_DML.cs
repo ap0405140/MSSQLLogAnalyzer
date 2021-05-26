@@ -58,7 +58,7 @@ namespace DBLOG
             int i, j, iR0Minimumlength;
             short? OffsetinRow,      // Offset in Row
                    ModifySize;       // Modify Size
-            string Operation,        // 操作类型
+            string Operation = "",   // 操作类型
                    Context,          // Context
                    PageID,           // PageID
                    SlotID,           // SlotID
@@ -68,7 +68,7 @@ namespace DBLOG
                    EndTime = string.Empty,   // 事务结束时间
                    REDOSQL = string.Empty,   // redo sql
                    UNDOSQL = string.Empty,   // undo sql
-                   stemp, sValueList1, sValueList0, sValue, sWhereList;
+                   stemp, sValueList1, sValueList0, sValue, sWhereList, sPrimaryKeyValue;
             byte[] R0,               // 日志数据 RowLog Contents 0
                    R1,               // 日志数据 RowLog Contents 1
                    R2,               // 日志数据 RowLog Contents 2
@@ -135,6 +135,7 @@ namespace DBLOG
                     CurrentLSN = dtLogs[i]["Current LSN"].ToString();
                     OffsetinRow = null; if (dtLogs[i]["Offset in Row"] != null) { OffsetinRow = Convert.ToInt16(dtLogs[i]["Offset in Row"]); }
                     ModifySize = null; if (dtLogs[i]["Modify Size"] != null) { ModifySize = Convert.ToInt16(dtLogs[i]["Modify Size"]); }
+                    sPrimaryKeyValue = "";
 
                     if (AllocUnitName != $"{sSchemaName}.{sTableName}" + (TabInfos.FAllocUnitName.Length == 0 ? "" : "." + TabInfos.FAllocUnitName)
                         || Context == "LCX_TEXT_TREE"
@@ -188,22 +189,22 @@ namespace DBLOG
                                 switch (stemp.Substring(0, 2))
                                 {
                                     case "16":
-                                        stemp = stemp.Substring(2, stemp.Length - 4 * 2);
+                                        sPrimaryKeyValue = stemp.Substring(2, stemp.Length - 4 * 2);
                                         break;
                                     case "36":
-                                        stemp = stemp.Substring(16);
+                                        sPrimaryKeyValue = stemp.Substring(16);
                                         break;
                                     default:
-                                        stemp = "";
+                                        sPrimaryKeyValue = "";
                                         break;
                                 }
                             }
                             else
                             {
-                                stemp = "";
+                                sPrimaryKeyValue = "";
                             }
                             
-                            drTemp = dtMRlist.Select("PAGEID='" + PageID + "' and MR1TEXT like '%" + R1.ToText() + "%' and MR1TEXT like '%" + stemp + "%' ");
+                            drTemp = dtMRlist.Select("PAGEID='" + PageID + "' and MR1TEXT like '%" + R1.ToText() + "%' and MR1TEXT like '%" + sPrimaryKeyValue + "%' ");
                             if (drTemp.Length > 0)
                             {
                                 isfound = true;
@@ -212,7 +213,7 @@ namespace DBLOG
 
                         if (isfound == false)
                         {
-                            MR1 = GetMR1(Operation, PageID, AllocUnitId, CurrentLSN, pStartLSN, pEndLSN, R1.ToText(), R2.ToText());
+                            MR1 = GetMR1(Operation, PageID, AllocUnitId, CurrentLSN, pStartLSN, pEndLSN, R1.ToText(), sPrimaryKeyValue);
 
                             if (MR1 != null)
                             {
@@ -272,68 +273,67 @@ namespace DBLOG
                         if (R0.Length >= iR0Minimumlength)
                         {
                             TranslateData(R0, TableColumns, TabInfos.PrimarykeyColumnList, TabInfos.ClusteredindexColumnList);
-
                             MR0 = new byte[R0.Length];
                             MR0 = R0;
-
-                            for (j = 0; j <= iColumncount - 1; j++)
-                            {
-                                if (TableColumns[j].DataType == SqlDbType.Timestamp || TableColumns[j].isComputed == true) { continue; }
-
-                                sValue = ColumnValue2SQLValue(TableColumns[j].DataType, TableColumns[j].Value, TableColumns[j].isNull);
-                                sValueList1 = sValueList1 + (sValueList1.Length > 0 ? "," : "") + sValue;
-
-                                if (TableColumns[j].isNull == false)
-                                {
-                                    // 无主键时用全部字段过滤
-                                    if (TabInfos.PrimarykeyColumnList.Length == 0)
-                                    {
-                                        sWhereList = sWhereList + (sWhereList.Length > 0 ? " and " : "") + "[" + TableColumns[j].ColumnName + "]=" + sValue;
-                                    }
-                                    else
-                                    {
-                                        if (TabInfos.PrimarykeyColumnList.IndexOf("," + TableColumns[j].ColumnName + ",", 0) > -1)
-                                        {
-                                            sWhereList = sWhereList + (sWhereList.Length > 0 ? " and " : "") + "[" + TableColumns[j].ColumnName + "]=" + sValue;
-                                        }
-                                    }
-                                }
-                            }
-
-                            // 产生redo sql和undo sql -- Insert
-                            if (Operation == "LOP_INSERT_ROWS")
-                            {
-                                REDOSQL = "insert into " + $"[{sSchemaName}].[{sTableName}]" + "(" + sColumnlist + ") values(" + sValueList1 + "); ";
-                                UNDOSQL = "delete from " + $"[{sSchemaName}].[{sTableName}]" + " where " + sWhereList + "; ";
-
-                                if (TabInfos.IdentityColumn.Length > 0)
-                                {
-                                    REDOSQL = "set identity_insert " + $"[{sSchemaName}].[{sTableName}]" + " on; " + "\r\n"
-                                            + REDOSQL + "\r\n"
-                                            + "set identity_insert " + $"[{sSchemaName}].[{sTableName}]" + " off; " + "\r\n";
-                                }
-                            }
-
-                            // 产生redo sql和undo sql -- Delete
-                            if (Operation == "LOP_DELETE_ROWS")
-                            {
-                                REDOSQL = "delete from " + $"[{sSchemaName}].[{sTableName}]" + " where " + sWhereList + "; ";
-                                UNDOSQL = "insert into " + $"[{sSchemaName}].[{sTableName}]" + "(" + sColumnlist + ") values(" + sValueList1 + "); ";
-
-                                if (TabInfos.IdentityColumn.Length > 0)
-                                {
-                                    UNDOSQL = "set identity_insert " + $"[{sSchemaName}].[{sTableName}]" + " on; " + "\r\n"
-                                            + UNDOSQL + "\r\n"
-                                            + "set identity_insert " + $"[{sSchemaName}].[{sTableName}]" + " off; " + "\r\n";
-                                }
-                            }
                         }
                         else
                         {
-                            REDOSQL = string.Empty;
-                            UNDOSQL = string.Empty;
-                            stemp = $"R0.Length[{R0.Length.ToString()}] < iR0Minimumlength[{iR0Minimumlength.ToString()}]";
+                            MR0 = GetMR1(Operation, PageID, AllocUnitId, CurrentLSN, pStartLSN, pEndLSN, R1.ToText(), sPrimaryKeyValue);
+                            TranslateData(MR0, TableColumns, TabInfos.PrimarykeyColumnList, TabInfos.ClusteredindexColumnList);
                         }
+
+                        for (j = 0; j <= iColumncount - 1; j++)
+                        {
+                            if (TableColumns[j].DataType == SqlDbType.Timestamp || TableColumns[j].isComputed == true) { continue; }
+
+                            sValue = ColumnValue2SQLValue(TableColumns[j].DataType, TableColumns[j].Value, TableColumns[j].isNull);
+                            sValueList1 = sValueList1 + (sValueList1.Length > 0 ? "," : "") + sValue;
+
+                            if (TableColumns[j].isNull == false)
+                            {
+                                // 无主键时用全部字段过滤
+                                if (TabInfos.PrimarykeyColumnList.Length == 0)
+                                {
+                                    sWhereList = sWhereList + (sWhereList.Length > 0 ? " and " : "") + "[" + TableColumns[j].ColumnName + "]=" + sValue;
+                                }
+                                else
+                                {
+                                    if (TabInfos.PrimarykeyColumnList.IndexOf("," + TableColumns[j].ColumnName + ",", 0) > -1)
+                                    {
+                                        sWhereList = sWhereList + (sWhereList.Length > 0 ? " and " : "") + "[" + TableColumns[j].ColumnName + "]=" + sValue;
+                                    }
+                                }
+                            }
+                        }
+
+                        // 产生redo sql和undo sql -- Insert
+                        if (Operation == "LOP_INSERT_ROWS")
+                        {
+                            REDOSQL = "insert into " + $"[{sSchemaName}].[{sTableName}]" + "(" + sColumnlist + ") values(" + sValueList1 + "); ";
+                            UNDOSQL = "delete from " + $"[{sSchemaName}].[{sTableName}]" + " where " + sWhereList + "; ";
+
+                            if (TabInfos.IdentityColumn.Length > 0)
+                            {
+                                REDOSQL = "set identity_insert " + $"[{sSchemaName}].[{sTableName}]" + " on; " + "\r\n"
+                                        + REDOSQL + "\r\n"
+                                        + "set identity_insert " + $"[{sSchemaName}].[{sTableName}]" + " off; " + "\r\n";
+                            }
+                        }
+
+                        // 产生redo sql和undo sql -- Delete
+                        if (Operation == "LOP_DELETE_ROWS")
+                        {
+                            REDOSQL = "delete from " + $"[{sSchemaName}].[{sTableName}]" + " where " + sWhereList + "; ";
+                            UNDOSQL = "insert into " + $"[{sSchemaName}].[{sTableName}]" + "(" + sColumnlist + ") values(" + sValueList1 + "); ";
+
+                            if (TabInfos.IdentityColumn.Length > 0)
+                            {
+                                UNDOSQL = "set identity_insert " + $"[{sSchemaName}].[{sTableName}]" + " on; " + "\r\n"
+                                        + UNDOSQL + "\r\n"
+                                        + "set identity_insert " + $"[{sSchemaName}].[{sTableName}]" + " off; " + "\r\n";
+                            }
+                        }
+
                     }
                     #endregion
 
@@ -428,12 +428,27 @@ namespace DBLOG
                 stemp = $"Message:{(ex.Message ?? "")}  StackTrace:{(ex.StackTrace ?? "")} ";
                 throw new Exception(stemp);
 #else
+                tmplog = new DatabaseLog();
+                tmplog.LSN = CurrentLSN;
+                tmplog.Type = "DML";
+                tmplog.TransactionID = TransactionID;
+                tmplog.BeginTime = BeginTime;
+                tmplog.EndTime = EndTime;
+                tmplog.ObjectName = $"[{sSchemaName}].[{sTableName}]";
+                tmplog.Operation = Operation;
+                tmplog.RedoSQL = "";
+                tmplog.UndoSQL = "";
+                tmplog.RedoSQLFile = "".ToFileByteArray();
+                tmplog.UndoSQLFile = "".ToFileByteArray();
+                tmplog.Message = "";
+
+                logs.Add(tmplog);
                 return logs;
 #endif
             }
         }
 
-        private byte[] GetMR1(string pOperation, string pPageID, string pAllocUnitId, string pCurrentLSN, string pStartLSN, string pEndLSN, string pR1, string pR2)
+        private byte[] GetMR1(string pOperation, string pPageID, string pAllocUnitId, string pCurrentLSN, string pStartLSN, string pEndLSN, string pR1, string pPrimaryKeyValue)
         {
             byte[] mr1;
             string fileid_dec, pageid_dec, checkvalue, checkvalue2;
@@ -483,26 +498,7 @@ namespace DBLOG
             if(pOperation == "LOP_MODIFY_ROW")
             {
                 checkvalue = pR1;
-
-                if (pR2.Length >= 2)
-                {
-                    switch (pR2.Substring(0, 2))
-                    {
-                        case "16":
-                            checkvalue2 = pR2.Substring(2, pR2.Length - 4 * 2);
-                            break;
-                        case "36":
-                            checkvalue2 = pR2.Substring(16);
-                            break;
-                        default:
-                            checkvalue2 = "";
-                            break;
-                    }
-                }
-                else
-                {
-                    checkvalue2 = "";
-                }
+                checkvalue2 = pPrimaryKeyValue;
             }
             else
             {
@@ -529,7 +525,7 @@ namespace DBLOG
                         + " where A.[Current LSN]='" + pCurrentLSN + "'; ";
                 oDB.ExecuteSQL(sTsql, false);
 
-                sTsql = "select count(1) from #ModifiedRawData where substring([RowLog Contents 0_var],9,len([RowLog Contents 0_var])-8) like N'%" + checkvalue + "%'; ";
+                sTsql = "select count(1) from #ModifiedRawData where substring([RowLog Contents 0_var],9,len([RowLog Contents 0_var])-8) like N'%" + (checkvalue.Length <= 3998 ? checkvalue : checkvalue.Substring(0, 3998)) + "%'; ";
                 if (Convert.ToInt32(oDB.Query11(sTsql, false)) > 0)
                 {
                     isfound = true;
@@ -557,11 +553,11 @@ namespace DBLOG
                           + "insert into #ModifiedRawData([SlotID],[RowLog Contents 0_var]) "
                           + "select [SlotID],[RowLog Contents 0_var] "
                           + " from u "
-                          + " where substring([RowLog Contents 0_var],9,len([RowLog Contents 0_var])-8) like N'%" + checkvalue + "%' "
-                          + " and substring([RowLog Contents 0_var],9,len([RowLog Contents 0_var])-8) like N'%" + checkvalue2 + "%'; ";
+                          + " where substring([RowLog Contents 0_var],9,len([RowLog Contents 0_var])-8) like N'%" + (checkvalue.Length <= 3998 ? checkvalue : checkvalue.Substring(0, 3998)) + "%' "
+                          + " and substring([RowLog Contents 0_var],9,len([RowLog Contents 0_var])-8) like N'%" + (checkvalue2.Length <= 3998 ? checkvalue : checkvalue.Substring(0, 3998)) + "%'; ";
                     oDB.ExecuteSQL(sTsql, false);
 
-                    sTsql = "select count(1) from #ModifiedRawData where substring([RowLog Contents 0_var],9,len([RowLog Contents 0_var])-8) like N'%" + checkvalue + "%'; ";
+                    sTsql = "select count(1) from #ModifiedRawData where substring([RowLog Contents 0_var],9,len([RowLog Contents 0_var])-8) like N'%" + (checkvalue.Length <= 3998 ? checkvalue : checkvalue.Substring(0, 3998)) + "%'; ";
                     if (Convert.ToInt32(oDB.Query11(sTsql, false)) > 0)
                     {
                         isfound = true;
@@ -670,6 +666,8 @@ namespace DBLOG
 
             TranslateData(mr1, columns1, TabInfos.PrimarykeyColumnList, TabInfos.ClusteredindexColumnList);
 
+            RestoreLobPage();
+
             // 由 mr1_str 构造 mr0_str
             switch (sOperation)
             {
@@ -683,8 +681,6 @@ namespace DBLOG
                     mr0_str = null;
                     break;
             }
-
-            RestoreLobPage();
 
             mr0 = mr0_str.ToByteArray();
             TranslateData(mr0, columns0, TabInfos.PrimarykeyColumnList, TabInfos.ClusteredindexColumnList);
@@ -791,9 +787,12 @@ namespace DBLOG
 
                 if (Operation == "LOP_MODIFY_ROW")
                 {
-                    stemp = stemp.Stuff(tpageinfo.SlotBeginIndex[SlotID] * 2 + (OffsetinRow ?? 0), //Convert.ToInt32((96 + OffsetinRow) * 2),
-                                        R1.Length * 2, // (ModifySize ?? 0)
-                                        R0.ToText());
+                    if (tpageinfo.SlotBeginIndex.Length - 1 >= SlotID)
+                    {
+                        stemp = stemp.Stuff(tpageinfo.SlotBeginIndex[SlotID] * 2 + (OffsetinRow ?? 0), //Convert.ToInt32((96 + OffsetinRow) * 2),
+                                            R1.Length * 2, // (ModifySize ?? 0)
+                                            R0.ToText());
+                    }
                 }
 
                 lobpagedata[PageID].PageData = stemp;
@@ -843,6 +842,7 @@ namespace DBLOG
             int i, j, k, n, fstart0, fstart1, flength0, flength0f4, flength1, flength1f4;
             List<string> tls;
             byte[] mr0;
+            bool bfinish;
 
             mr0_str = null;
             rowlogdata = sLogRecord.Substring(sLogRecord.IndexOf(r3_str) + r3_str.Length,
@@ -852,87 +852,115 @@ namespace DBLOG
                 rowlogdata = rowlogdata.Substring((sLogRecord.Length - rowlogdata.Length) % 8);
             }
 
-            tls = new List<string>();
-            for (i = 0; i <= (int)(Math.Pow(2, (r0.Length / 4)) - 1); i++)
+            try
             {
-                ts = Convert.ToString(i, 2).PadLeft(r0.Length / 4, '0');
-                tls.Add(ts);
+                mr0_str = mr1_str;
+                for (i = 1, j = 0; i <= (r0.Length / 4); i++)
+                {
+                    fstart0 = Convert.ToInt32(r0[i * 4 - 3].ToString("X2") + r0[i * 4 - 4].ToString("X2"), 16);
+                    fstart1 = Convert.ToInt32(r0[i * 4 - 1].ToString("X2") + r0[i * 4 - 2].ToString("X2"), 16);
+
+                    flength0 = Convert.ToInt32(r1[i * 2 - 1].ToString("X2") + r1[i * 2 - 2].ToString("X2"), 16);
+                    flength0f4 = (flength0 % 4 == 0 ? flength0 : flength0 + (4 - flength0 % 4));
+
+                    fvalue0 = rowlogdata.Substring(j * 2, flength0 * 2);
+                    j = j + flength0f4;
+
+                    flength1 = flength0;
+                    flength1f4 = (flength1 % 4 == 0 ? flength1 : flength1 + (4 - flength1 % 4));
+
+                    fvalue1 = rowlogdata.Substring(j * 2, flength1 * 2);
+                    j = j + flength1f4;
+
+                    mr0_str = mr0_str.Stuff(fstart0 * 2, flength1 * 2, fvalue0);
+                }
+
+                mr0 = mr0_str.ToByteArray();
+                TranslateData(mr0, columns0, TabInfos.PrimarykeyColumnList, TabInfos.ClusteredindexColumnList);
+                bfinish = true;
+            }
+            catch(Exception ex)
+            {
+                bfinish = false;
             }
 
-            foreach (string cc in tls)
+            if (bfinish == false)
             {
-                try
+                tls = new List<string>();
+                for (i = 0; i <= (int)(Math.Pow(2, (r0.Length / 4)) - 1); i++)
                 {
-                    mr0_str = mr1_str;
-                    for (i = 1, j = 0; i <= (r0.Length / 4); i++)
+                    ts = Convert.ToString(i, 2).PadLeft(r0.Length / 4, '0');
+                    tls.Add(ts);
+                }
+
+                foreach (string cc in tls)
+                {
+                    try
                     {
-                        fstart0 = Convert.ToInt32(r0[i * 4 - 3].ToString("X2") + r0[i * 4 - 4].ToString("X2"), 16);
-                        fstart1 = Convert.ToInt32(r0[i * 4 - 1].ToString("X2") + r0[i * 4 - 2].ToString("X2"), 16);
-
-                        flength0 = Convert.ToInt32(r1[i * 2 - 1].ToString("X2") + r1[i * 2 - 2].ToString("X2"), 16);
-                        flength0f4 = (flength0 % 4 == 0 ? flength0 : flength0 + (4 - flength0 % 4));
-
-                        fvalue0 = rowlogdata.Substring(j * 2, flength0 * 2);
-                        j = j + flength0f4;
-
-                        if ((fstart1 + 1) >= 5
-                            && (fstart1 + 1) <= Convert.ToInt32(mr1[3].ToString("X2") + mr1[2].ToString("X2"), 16)
-                            && (fstart1 + flength0 + 1) >= 5
-                            && (fstart1 + flength0 + 1) <= Convert.ToInt32(mr1[3].ToString("X2") + mr1[2].ToString("X2"), 16))
+                        mr0_str = mr1_str;
+                        for (i = 1, j = 0; i <= (r0.Length / 4); i++)
                         {
-                            flength1 = flength0;
-                        }
-                        else
-                        {
-                            if ((j * 2) <= (rowlogdata.Length - 2))
+                            fstart0 = Convert.ToInt32(r0[i * 4 - 3].ToString("X2") + r0[i * 4 - 4].ToString("X2"), 16);
+                            fstart1 = Convert.ToInt32(r0[i * 4 - 1].ToString("X2") + r0[i * 4 - 2].ToString("X2"), 16);
+
+                            flength0 = Convert.ToInt32(r1[i * 2 - 1].ToString("X2") + r1[i * 2 - 2].ToString("X2"), 16);
+                            flength0f4 = (flength0 % 4 == 0 ? flength0 : flength0 + (4 - flength0 % 4));
+
+                            fvalue0 = rowlogdata.Substring(j * 2, flength0 * 2);
+                            j = j + flength0f4;
+
+                            if ((fstart1 + 1) >= 5
+                                 && (fstart1 + 1) <= Convert.ToInt32(mr1[3].ToString("X2") + mr1[2].ToString("X2"), 16)
+                                 && (fstart1 + flength0 + 1) >= 5
+                                 && (fstart1 + flength0 + 1) <= Convert.ToInt32(mr1[3].ToString("X2") + mr1[2].ToString("X2"), 16))
                             {
-                                for (flength1 = 0, k = j, n = fstart1;
-                                     rowlogdata.Substring(k * 2, 2) == mr1_str.Substring(n * 2, 2);)
-                                {
-                                    flength1 = flength1 + 1;
-                                    k = k + 1;
-                                    n = n + 1;
-
-                                    if ((k * 2) > (rowlogdata.Length - 2) || (n * 2) > (mr1_str.Length - 2))
-                                    {
-                                        break;
-                                    }
-                                }
-                                flength1 = flength1 - (cc.Substring(i - 1, 1) == "1" ? 1 : 0);
+                                flength1 = flength0;
                             }
                             else
                             {
-                                flength1 = 0;
+                                if ((j * 2) <= (rowlogdata.Length - 2))
+                                {
+                                    for (flength1 = 0, k = j, n = fstart1;
+                                         rowlogdata.Substring(k * 2, 2) == mr1_str.Substring(n * 2, 2);)
+                                    {
+                                        flength1 = flength1 + 1;
+                                        k = k + 1;
+                                        n = n + 1;
+
+                                        if ((k * 2) > (rowlogdata.Length - 2) || (n * 2) > (mr1_str.Length - 2))
+                                        {
+                                            break;
+                                        }
+                                    }
+                                    flength1 = flength1 - (cc.Substring(i - 1, 1) == "1" ? 1 : 0);
+                                }
+                                else
+                                {
+                                    flength1 = 0;
+                                }
                             }
+                            flength1f4 = (flength1 % 4 == 0 ? flength1 : flength1 + (4 - flength1 % 4));
+
+                            fvalue1 = rowlogdata.Substring(j * 2, flength1 * 2);
+                            j = j + flength1f4;
+
+                            mr0_str = mr0_str.Stuff(fstart0 * 2, flength1 * 2, fvalue0);
                         }
-                        flength1f4 = (flength1 % 4 == 0 ? flength1 : flength1 + (4 - flength1 % 4));
 
-                        fvalue1 = rowlogdata.Substring(j * 2, flength1 * 2);
-                        j = j + flength1f4;
+                        mr0 = mr0_str.ToByteArray();
 
-                        mr0_str = mr0_str.Stuff(fstart0 * 2, flength1 * 2, fvalue0);
+                        TranslateData(mr0, columns0, TabInfos.PrimarykeyColumnList, TabInfos.ClusteredindexColumnList);
+                        bfinish = true;
+                        break;
                     }
-
-                    mr0 = mr0_str.ToByteArray();
-
-                    //ts = Convert.ToString(mr0.Length, 16).ToUpper().PadLeft(4, '0');
-                    //if (sLogRecord.IndexOf(ts) == -1 
-                    //    && sLogRecord.IndexOf(ts.Substring(2, 2) + ts.Substring(0, 2)) == -1)
-                    //{
-                    //    continue;
-                    //}
-
-                    TranslateData(mr0, columns0, TabInfos.PrimarykeyColumnList, TabInfos.ClusteredindexColumnList);
-
-                    break;
-                }
-                catch (Exception ex)
-                {
-                    continue;
+                    catch (Exception ex)
+                    {
+                        continue;
+                    }
                 }
             }
 
-            if (string.IsNullOrEmpty(mr0_str) == true)
+            if (bfinish == false || string.IsNullOrEmpty(mr0_str) == true)
             {
                 mr0_str = mr1_str;
             }
