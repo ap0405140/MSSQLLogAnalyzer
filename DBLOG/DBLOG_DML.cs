@@ -213,7 +213,7 @@ namespace DBLOG
 
                         if (isfound == false)
                         {
-                            MR1 = GetMR1(Operation, PageID, AllocUnitId, CurrentLSN, pStartLSN, pEndLSN, R1.ToText(), sPrimaryKeyValue);
+                            MR1 = GetMR1(Operation, PageID, AllocUnitId, CurrentLSN, pStartLSN, pEndLSN, R0.ToText(), R1.ToText(), sPrimaryKeyValue);
 
                             if (MR1 != null)
                             {
@@ -278,7 +278,7 @@ namespace DBLOG
                         }
                         else
                         {
-                            MR0 = GetMR1(Operation, PageID, AllocUnitId, CurrentLSN, pStartLSN, pEndLSN, R1.ToText(), sPrimaryKeyValue);
+                            MR0 = GetMR1(Operation, PageID, AllocUnitId, CurrentLSN, pStartLSN, pEndLSN, R0.ToText(), R1.ToText(), sPrimaryKeyValue);
                             TranslateData(MR0, TableColumns, TabInfos.PrimarykeyColumnList, TabInfos.ClusteredindexColumnList);
                         }
 
@@ -448,10 +448,10 @@ namespace DBLOG
             }
         }
 
-        private byte[] GetMR1(string pOperation, string pPageID, string pAllocUnitId, string pCurrentLSN, string pStartLSN, string pEndLSN, string pR1, string pPrimaryKeyValue)
+        private byte[] GetMR1(string pOperation, string pPageID, string pAllocUnitId, string pCurrentLSN, string pStartLSN, string pEndLSN, string pR0, string pR1, string pPrimaryKeyValue)
         {
             byte[] mr1;
-            string fileid_dec, pageid_dec, checkvalue, checkvalue2;
+            string fileid_dec, pageid_dec, checkvalue1, checkvalue2;
             DataTable dtTemp;
             List<string> lsns2;
             bool isfound;
@@ -495,15 +495,24 @@ namespace DBLOG
             //          .Key);
 
             mr1 = null;
-            if(pOperation == "LOP_MODIFY_ROW")
+            switch(pOperation)
             {
-                checkvalue = pR1;
-                checkvalue2 = pPrimaryKeyValue;
-            }
-            else
-            {
-                checkvalue = "";
-                checkvalue2 = "";
+                case "LOP_MODIFY_ROW":
+                    checkvalue1 = pR1;
+                    checkvalue2 = pPrimaryKeyValue;
+                    break;
+                case "LOP_MODIFY_COLUMNS":
+                    checkvalue1 = "";
+                    checkvalue2 = "";
+                    break;
+                case "LOP_INSERT_ROWS":
+                    checkvalue1 = pR0;
+                    checkvalue2 = "";
+                    break;
+                default:
+                    checkvalue1 = "";
+                    checkvalue2 = "";
+                    break;
             }
             
             isfound = false;
@@ -525,7 +534,7 @@ namespace DBLOG
                         + " where A.[Current LSN]='" + pCurrentLSN + "'; ";
                 oDB.ExecuteSQL(sTsql, false);
 
-                sTsql = "select count(1) from #ModifiedRawData where substring([RowLog Contents 0_var],9,len([RowLog Contents 0_var])-8) like N'%" + (checkvalue.Length <= 3998 ? checkvalue : checkvalue.Substring(0, 3998)) + "%'; ";
+                sTsql = "select count(1) from #ModifiedRawData where substring([RowLog Contents 0_var],9,len([RowLog Contents 0_var])-8) like N'%" + (checkvalue1.Length <= 3998 ? checkvalue1 : checkvalue1.Substring(0, 3998)) + "%'; ";
                 if (Convert.ToInt32(oDB.Query11(sTsql, false)) > 0)
                 {
                     isfound = true;
@@ -553,11 +562,11 @@ namespace DBLOG
                           + "insert into #ModifiedRawData([SlotID],[RowLog Contents 0_var]) "
                           + "select [SlotID],[RowLog Contents 0_var] "
                           + " from u "
-                          + " where substring([RowLog Contents 0_var],9,len([RowLog Contents 0_var])-8) like N'%" + (checkvalue.Length <= 3998 ? checkvalue : checkvalue.Substring(0, 3998)) + "%' "
-                          + " and substring([RowLog Contents 0_var],9,len([RowLog Contents 0_var])-8) like N'%" + (checkvalue2.Length <= 3998 ? checkvalue : checkvalue.Substring(0, 3998)) + "%'; ";
+                          + " where substring([RowLog Contents 0_var],9,len([RowLog Contents 0_var])-8) like N'%" + (checkvalue1.Length <= 3998 ? checkvalue1 : checkvalue1.Substring(0, 3998)) + "%' "
+                          + " and substring([RowLog Contents 0_var],9,len([RowLog Contents 0_var])-8) like N'%" + (checkvalue2.Length <= 3998 ? checkvalue2 : checkvalue2.Substring(0, 3998)) + "%'; ";
                     oDB.ExecuteSQL(sTsql, false);
 
-                    sTsql = "select count(1) from #ModifiedRawData where substring([RowLog Contents 0_var],9,len([RowLog Contents 0_var])-8) like N'%" + (checkvalue.Length <= 3998 ? checkvalue : checkvalue.Substring(0, 3998)) + "%'; ";
+                    sTsql = "select count(1) from #ModifiedRawData where substring([RowLog Contents 0_var],9,len([RowLog Contents 0_var])-8) like N'%" + (checkvalue1.Length <= 3998 ? checkvalue1 : checkvalue1.Substring(0, 3998)) + "%'; ";
                     if (Convert.ToInt32(oDB.Query11(sTsql, false)) > 0)
                     {
                         isfound = true;
