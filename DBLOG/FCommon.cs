@@ -160,14 +160,15 @@ namespace DBLOG
 
         public object Value = null;
         public string ValueHex = "";
-        public int ValueStartIndex;       // R0中值的开始位置
-        public int ValueEndIndex;         // R0中值的结束位置
-        public string EndIndex = "";      // 字段值结束位置 16进制
+        public string LogContents = "";
+        public int LogContentsStartIndex;           // LogContents的开始位置
+        public int LogContentsEndIndex;             // LogContents的结束位置
+        public string LogContentsEndIndexHex = "";  // LogContents的结束位置(16进制)
         public string Oth = "";
 
         public bool isNull = false;       // 字段值是否为Null
         public bool isNullable = false;   // 是否允许Null
-        public bool isComputed = false;   // 是否计算列
+        public bool isComputed = false;   // 是否是计算列
 
         public bool isVarLenDataType;     // 是否是变长型
         public bool isExists;             // 是否存在

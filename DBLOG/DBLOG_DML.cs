@@ -506,7 +506,7 @@ namespace DBLOG
                     checkvalue2 = "";
                     break;
                 case "LOP_INSERT_ROWS":
-                    checkvalue1 = pR0;
+                    checkvalue1 = pR0.Substring(8, 4 * 2);
                     checkvalue2 = "";
                     break;
                 default:
@@ -684,7 +684,7 @@ namespace DBLOG
                     mr0_str = RESTORE_LOP_MODIFY_ROW(mr1_str, r1_str, r0_str, pOffsetinRow, pModifySize);
                     break;
                 case "LOP_MODIFY_COLUMNS":
-                    mr0_str = RESTORE_LOP_MODIFY_COLUMNS(sLogRecord, r3_str, r0, r1, mr1, mr1_str, columns0);
+                    mr0_str = RESTORE_LOP_MODIFY_COLUMNS(sLogRecord, r3_str, r0, r1, mr1, mr1_str, columns0, columns1);
                     break;
                 default:
                     mr0_str = null;
@@ -845,13 +845,14 @@ namespace DBLOG
             return mr0_str;
         }
 
-        private string RESTORE_LOP_MODIFY_COLUMNS(string sLogRecord, string r3_str, byte[] r0, byte[] r1, byte[] mr1, string mr1_str, TableColumn[] columns0)
+        private string RESTORE_LOP_MODIFY_COLUMNS(string sLogRecord, string r3_str, byte[] r0, byte[] r1, byte[] mr1, string mr1_str, TableColumn[] columns0, TableColumn[] columns1)
         {
             string mr0_str, rowlogdata, fvalue0, fvalue1, ts;
-            int i, j, k, n, fstart0, fstart1, flength0, flength0f4, flength1, flength1f4;
+            int i, j, k, n, m, fstart0, fstart1, flength0, flength0f4, flength1, flength1f4;
             List<string> tls;
             byte[] mr0;
             bool bfinish;
+            TableColumn tmpcol;
 
             mr0_str = null;
             rowlogdata = sLogRecord.Substring(sLogRecord.IndexOf(r3_str) + r3_str.Length,
@@ -918,19 +919,33 @@ namespace DBLOG
                             fvalue0 = rowlogdata.Substring(j * 2, flength0 * 2);
                             j = j + flength0f4;
 
+                            k = Convert.ToInt32(mr1[3].ToString("X2") + mr1[2].ToString("X2"), 16);
                             if ((fstart1 + 1) >= 5
-                                 && (fstart1 + 1) <= Convert.ToInt32(mr1[3].ToString("X2") + mr1[2].ToString("X2"), 16)
+                                 && (fstart1 + 1) <= k
                                  && (fstart1 + flength0 + 1) >= 5
-                                 && (fstart1 + flength0 + 1) <= Convert.ToInt32(mr1[3].ToString("X2") + mr1[2].ToString("X2"), 16))
+                                 && (fstart1 + flength0 + 1) <= k)
                             {
                                 flength1 = flength0;
                             }
                             else
                             {
+                                if (fstart1 == k + 2
+                                    && columns1.Any(p => p.isVarLenDataType == true))
+                                {
+                                    tmpcol = columns1.Where(p => p.isVarLenDataType == true).OrderBy(p => p.ColumnID).FirstOrDefault();
+                                    m = tmpcol.LogContentsEndIndex - tmpcol.LogContents.Length / 2;
+                                }
+                                else
+                                {
+                                    m = 999999999;
+                                }
+
                                 if ((j * 2) <= (rowlogdata.Length - 2))
                                 {
-                                    for (flength1 = 0, k = j, n = fstart1;
-                                         rowlogdata.Substring(k * 2, 2) == mr1_str.Substring(n * 2, 2);)
+                                    flength1 = 0;
+                                    for (k = j, n = fstart1;
+                                         rowlogdata.Substring(k * 2, 2) == mr1_str.Substring(n * 2, 2)
+                                         && n <= m - 1;)
                                     {
                                         flength1 = flength1 + 1;
                                         k = k + 1;
@@ -1042,7 +1057,9 @@ namespace DBLOG
                   sVarColumnEndIndex = 0;       // 变长列字段值结束位置
 
             string sNullStatus,  // 列null值状态列表
-                   sTemp;
+                   sTemp,
+                   sValueHex,
+                   sValue;
 
             bool isExceed,       // 指针是否已越界
                  hasJumpRowID;   // 是否已跳过RowID,用于无PrimaryKey的表.
@@ -1231,7 +1248,7 @@ namespace DBLOG
                 {
                     index = c.LeafOffset; // slotcolumndata.FirstOrDefault(p => p.columnid == c.ColumnID).offset;
                 }
-                c.ValueStartIndex = index;
+                c.LogContentsStartIndex = index;
 
                 if (c.isNull == true && c.isNullable == true && c.DataType != System.Data.SqlDbType.Bit)
                 {
@@ -1338,9 +1355,9 @@ namespace DBLOG
                             sBitValueStartIndex = (iJumpIndexLength > 0 ? index : sBitValueStartIndex);
                             index = index + iJumpIndexLength;
 
-                            c.ValueStartIndex = sBitValueStartIndex;
+                            c.LogContentsStartIndex = sBitValueStartIndex;
                             c.Value = bValueBit;
-                            c.ValueEndIndex = sBitValueStartIndex;
+                            c.LogContentsEndIndex = sBitValueStartIndex;
 
                             break;
 
@@ -1364,8 +1381,8 @@ namespace DBLOG
                     }
                 }
 
-                c.ValueEndIndex = (c.DataType != SqlDbType.Bit ? index - 1 : c.ValueEndIndex);
-                c.ValueHex = sData.Substring(c.ValueStartIndex * 2, (c.ValueEndIndex - c.ValueStartIndex + 1) * 2);
+                c.LogContentsEndIndex = (c.DataType != SqlDbType.Bit ? index - 1 : c.LogContentsEndIndex);
+                c.LogContents = sData.Substring(c.LogContentsStartIndex * 2, (c.LogContentsEndIndex - c.LogContentsStartIndex + 1) * 2);
                 index = index3;
             }
 
@@ -1399,7 +1416,7 @@ namespace DBLOG
                         }
                         tvc.FEndIndex = sVarColumnEndIndex;
 
-                        tvc.FRowLogContents0 = sData.Substring(sVarColumnStartIndex * 2,
+                        tvc.FLogContents = sData.Substring(sVarColumnStartIndex * 2,
                                                                (sVarColumnEndIndex - sVarColumnStartIndex) * 2);
 
                         vcs.Add(tvc);
@@ -1453,6 +1470,14 @@ namespace DBLOG
 
                     tvc = vcs.FirstOrDefault(p => p.FIndex == c.LeafOffset);
 
+                    if (tvc != null)
+                    {
+                        c.LogContentsStartIndex = tvc.FStartIndex;
+                        c.LogContentsEndIndex = tvc.FEndIndex;
+                        c.LogContentsEndIndexHex = tvc.FEndIndexHex;
+                        c.LogContents = tvc.FLogContents;
+                    }
+
                     if (c.isNull == true
                         || c.isExists == false
                         || (tvc == null && c.isNull == true))
@@ -1466,24 +1491,22 @@ namespace DBLOG
 
                     if (tvc != null)
                     {
-                        c.ValueStartIndex = tvc.FStartIndex;
-                        c.ValueEndIndex = tvc.FEndIndex;
-                        c.EndIndex = tvc.FEndIndexHex;
-
                         switch (c.DataType)
                         {
                             case System.Data.SqlDbType.VarChar:
-                                c.ValueHex = tvc.FRowLogContents0;
-                                c.Value = System.Text.Encoding.Default.GetString(tvc.FRowLogContents0.ToByteArray()).TrimEnd();
+                                c.ValueHex = tvc.FLogContents;
+                                c.Value = System.Text.Encoding.Default.GetString(tvc.FLogContents.ToByteArray()).TrimEnd();
                                 break;
 
                             case System.Data.SqlDbType.NVarChar:
-                                c.ValueHex = tvc.FRowLogContents0;
-                                c.Value = System.Text.Encoding.Unicode.GetString(tvc.FRowLogContents0.ToByteArray()).TrimEnd();
+                                c.ValueHex = tvc.FLogContents;
+                                c.Value = System.Text.Encoding.Unicode.GetString(tvc.FLogContents.ToByteArray()).TrimEnd();
                                 break;
 
                             case System.Data.SqlDbType.VarBinary:
-                                c.Value = TranslateData_VarBinary(data, tvc);
+                                TranslateData_VarBinary(data, tvc, out sValueHex, out sValue);
+                                c.ValueHex = sValueHex;
+                                c.Value = sValue;
                                 break;
 
                             case System.Data.SqlDbType.Variant:  // 通用型
@@ -1495,17 +1518,23 @@ namespace DBLOG
                                 break;
 
                             case System.Data.SqlDbType.Text:
-                                c.Value = TranslateData_Text(data, tvc);
+                                TranslateData_Text(data, tvc, false, out sValueHex, out sValue);
+                                c.ValueHex = sValueHex;
+                                c.Value = sValue;
+                                c.isNull = (sValueHex == null && sValue == "nullvalue");
                                 break;
 
                             case System.Data.SqlDbType.NText:
-                                c.Value = TranslateData_Text(data, tvc, true);
+                                TranslateData_Text(data, tvc, true, out sValueHex, out sValue);
+                                c.ValueHex = sValueHex;
+                                c.Value = sValue;
+                                c.isNull = (sValueHex == null && sValue == "nullvalue");
                                 break;
 
                             case System.Data.SqlDbType.Image:
-                                c.Value = (tvc.InRow == true ?
-                                            "0x" + tvc.FRowLogContents0 :
-                                            string.Empty);
+                                TranslateData_Image(data, tvc, out sValueHex, out sValue);
+                                c.ValueHex = sValueHex;
+                                c.Value = sValue;
                                 break;
 
                             default:
@@ -1537,15 +1566,15 @@ namespace DBLOG
                 {
                     x.isNull = tmpTableColumn.isNull;
                     x.Value = tmpTableColumn.Value;
-                    x.ValueStartIndex = tmpTableColumn.ValueStartIndex;
-                    x.ValueEndIndex = tmpTableColumn.ValueEndIndex;
+                    x.LogContentsStartIndex = tmpTableColumn.LogContentsStartIndex;
+                    x.LogContentsEndIndex = tmpTableColumn.LogContentsEndIndex;
                 }
                 else
                 {
                     x.isNull = true;
                     x.Value = "nullvalue";
-                    x.ValueStartIndex = -1;
-                    x.ValueEndIndex = -1;
+                    x.LogContentsStartIndex = -1;
+                    x.LogContentsEndIndex = -1;
                 }
             }
         }
@@ -1805,7 +1834,7 @@ namespace DBLOG
             }
             else
             {
-                NoSeparatorchar = new string[] { "tinyint", "bigint", "smallint", "int", "money", "smallmoney", "bit", "decimal", "numeric", "float", "real", "varbinary", "binary" };
+                NoSeparatorchar = new string[] { "tinyint", "bigint", "smallint", "int", "money", "smallmoney", "bit", "decimal", "numeric", "float", "real", "varbinary", "binary", "image" };
                 bNeedSeparatorchar = (NoSeparatorchar.Any(p => p == datatype.ToString().ToLower()) ? false : true);
                 bIsUnicodeType = (new SqlDbType[] { SqlDbType.NVarChar, SqlDbType.NChar, SqlDbType.NText }.Contains(datatype) ? true : false);
                 sValue = (bIsUnicodeType ? "N" : "") + (bNeedSeparatorchar ? "'" : "") + oValue.ToString().Replace("'", "''") + (bNeedSeparatorchar ? "'" : "");
@@ -2284,33 +2313,34 @@ namespace DBLOG
             return sReturnBinary;
         }
 
-        private string TranslateData_VarBinary(byte[] data, FVarColumnInfo pv)
+        private void TranslateData_VarBinary(byte[] data, FVarColumnInfo pvc,
+                                             out string fvaluehex, out string fvalue)
         {
-            string sReturnVarBinary, pointer, pagedata, tmpstr;
+            string pointer, pagedata, tmpstr;
             byte[] bVarBinary;
             short iVarBinary, sActualLenth;
             int iCurrentIndex, i, pageqty, cutlen;
             FPageInfo firstpage, textmixpage;
             List<FPageInfo> tmps;
 
-            if (pv.InRow == true)
+            if (pvc.InRow == true)
             {
-                iCurrentIndex = pv.FStartIndex;
-                sActualLenth = (short)(pv.FEndIndex - pv.FStartIndex);
-                sReturnVarBinary = "0x";
+                iCurrentIndex = pvc.FStartIndex;
+                sActualLenth = (short)(pvc.FEndIndex - pvc.FStartIndex);
                 bVarBinary = new byte[sActualLenth];
                 Array.Copy(data, iCurrentIndex, bVarBinary, 0, sActualLenth);
 
+                fvaluehex = "";
                 for (iVarBinary = 0; iVarBinary <= sActualLenth - 1; iVarBinary++)
                 {
-                    sReturnVarBinary = sReturnVarBinary + bVarBinary[iVarBinary].ToString("X2");
+                    fvaluehex = fvaluehex + bVarBinary[iVarBinary].ToString("X2");
                 }
             }
             else
             {
                 try
                 {
-                    pointer = pv.FRowLogContents0;
+                    pointer = pvc.FLogContents;
                     pointer = pointer.Stuff(0, 12 * 2, ""); // 跳过12个字节
 
                     i = 0;
@@ -2352,7 +2382,7 @@ namespace DBLOG
                         }
                     }
 
-                    sReturnVarBinary = "0x";
+                    fvaluehex = "";
                     i = 0;
                     foreach (FPageInfo tp in tmps)
                     {
@@ -2364,18 +2394,17 @@ namespace DBLOG
                         pagedata = pagedata.Stuff(pagedata.Length - 42 * 2, 42 * 2, "");
                         pagedata = pagedata.Substring(0, cutlen * 2);
 
-                        sReturnVarBinary = sReturnVarBinary + pagedata;
+                        fvaluehex = fvaluehex + pagedata;
                         i = i + 1;
                     }
-
                 }
                 catch (Exception ex)
                 {
-                    sReturnVarBinary = "";
+                    fvaluehex = "";
                 }
             }
 
-            return sReturnVarBinary;
+            fvalue = "0x" + fvaluehex;
         }
 
         private string TranslateData_UniqueIdentifier(byte[] data, int iCurrentIndex, short sLenth)
@@ -2413,16 +2442,52 @@ namespace DBLOG
             return sReturnUniqueIdentifier;
         }
 
-        private string TranslateData_Text(byte[] data, FVarColumnInfo pv, bool isNText = false)
+        private void TranslateData_Text(byte[] data, FVarColumnInfo pv, bool isNText,
+                                        out string fvaluehex, out string fvalue)
+        {
+            fvaluehex = GetLOBDataHEX(pv.FLogContents);
+
+            if (fvaluehex != null)
+            {
+                if (isNText == false)
+                {
+                    fvalue = System.Text.Encoding.Default.GetString(fvaluehex.ToByteArray());
+                }
+                else
+                {
+                    fvalue = System.Text.Encoding.Unicode.GetString(fvaluehex.ToByteArray());
+                }
+            }
+            else
+            {
+                fvalue = "nullvalue";
+            }
+        }
+
+        private void TranslateData_Image(byte[] data, FVarColumnInfo pvc,
+                                         out string fvaluehex, out string fvalue)
+        {
+            if (pvc.InRow == true)
+            {
+                fvaluehex = pvc.FLogContents;
+            }
+            else
+            {
+                fvaluehex = GetLOBDataHEX(pvc.FLogContents);
+            }
+
+            fvalue = "0x" + fvaluehex;
+        }
+
+        private string GetLOBDataHEX(string lobpointer)
         {
             int cutlen, pageqty, pageqty2, i;
-            string fvalue, fvaluehex, lobpointer, tmpstr, tmpstr2, storagetype, pagedata, subpage, fid, pagenum, filenum, slotnum;
+            string fvaluehex, tmpstr, tmpstr2, storagetype, pagedata, subpage, fid, pagenum, filenum, slotnum;
             FPageInfo firstpage, tmppage;
             List<FPageInfo> tmps;
 
             try
             {
-                lobpointer = pv.FRowLogContents0;
                 fid = lobpointer.Substring(0, 8 * 2);
                 pagenum = lobpointer.Substring(8 * 2, 4 * 2);
                 filenum = lobpointer.Substring((8 + 4) * 2, 2 * 2);
@@ -2431,13 +2496,13 @@ namespace DBLOG
                 tmpstr = $"{new string('0', 4 * 2)}{pagenum}{filenum}{slotnum}";
                 firstpage = new FPageInfo(tmpstr);
                 tmppage = GetPageInfo(firstpage.FileNumPageNum_Hex);
-                
+
                 tmpstr = tmppage.PageData;
                 tmpstr = tmpstr.Stuff(0, tmppage.SlotBeginIndex[firstpage.SlotNum] * 2, "");
                 tmpstr = tmpstr.Stuff(0, tmpstr.IndexOf(fid) + fid.Length, "");
                 storagetype = tmpstr.Substring(0, 4);
 
-                switch(storagetype)
+                switch (storagetype)
                 {
                     case "0000":
                         tmpstr = tmpstr.Stuff(0, 2 * 2, "");
@@ -2500,28 +2565,22 @@ namespace DBLOG
                         }
                         break;
 
+                    case "0800":
+                        fvaluehex = null;
+                        break;
+
                     default:
                         fvaluehex = "";
                         break;
                 }
-
-                if (isNText == false)
-                {
-                    fvalue = System.Text.Encoding.Default.GetString(fvaluehex.ToByteArray());
-                }
-                else
-                {
-                    fvalue = System.Text.Encoding.Unicode.GetString(fvaluehex.ToByteArray());
-                }
             }
             catch (Exception ex)
             {
-                fvalue = "";
+                fvaluehex = "";
             }
 
-            return fvalue;
+            return fvaluehex;
         }
-        
 
         #endregion
 
@@ -2540,7 +2599,7 @@ namespace DBLOG
     public class FVarColumnInfo
     {
         public short FIndex { get; set; }
-        public string FRowLogContents0 { get; set; }
+        public string FLogContents { get; set; }
         public int FStartIndex { get; set; }
         public int FEndIndex { get; set; }
         public string FEndIndexHex { get; set; }

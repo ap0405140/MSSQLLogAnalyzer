@@ -71,6 +71,7 @@ namespace DBLOG
             dmllog = ReadLogDML();
             logs.AddRange(dmllog);
 
+            ReadPercent = 100;
 
             return logs.ToArray();
         }
@@ -78,7 +79,7 @@ namespace DBLOG
         private List<DatabaseLog> ReadLogDML()
         {
             List<DatabaseLog> dmllog, tmplog;
-            int i, readedlogrecords;
+            int i;
             string databasename, schemaname, tablename;
             DataTable dtLoglist, dtTables, dtTemp;
             DBLOG_DML[] tablelist;
@@ -210,7 +211,6 @@ namespace DBLOG
             tablelist = new DBLOG_DML[dtTables.Rows.Count];
             dmllog = new List<DatabaseLog>();
             i = 0;
-            readedlogrecords = 0;
             foreach (DataRow dr in dtTables.Rows)
             {
                 tablename = dr["TableName"].ToString();
@@ -228,9 +228,7 @@ namespace DBLOG
 
                 tmplog = tablelist[i].AnalyzeLog(_startLSN, _endLSN);
                 dmllog.AddRange(tmplog);
-
-                readedlogrecords = readedlogrecords + tablelist[i].dtLogs.Length;
-                ReadPercent = ReadPercent + Convert.ToInt32((100.0 - ReadPercent * 1.0) * (readedlogrecords * 1.0 / dtLoglist.Rows.Count * 1.0));
+                ReadPercent = ReadPercent + Convert.ToInt32((tablelist[i].dtLogs.Length * 1.0) / (dtLoglist.Rows.Count * 1.0) * 85.0);
 
 #if DEBUG
                 _tsql = "insert into dbo.LogExplorer_AnalysisLog(ADate,TableName,Logdescr,Operation,LSN) "
@@ -243,7 +241,7 @@ namespace DBLOG
 
             dmllog = dmllog.OrderBy(p => p.TransactionID).ToList();
 
-            ReadPercent = 100;
+            ReadPercent = 98;
             return dmllog;
         }
       
