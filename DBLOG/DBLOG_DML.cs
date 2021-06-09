@@ -33,7 +33,6 @@ namespace DBLOG
         private DataTable dtMRlist;   // 行数据前版本 
         private Dictionary<string, string> lsns; // key:lsn value:pageid
         private Dictionary<string, FPageInfo> lobpagedata; // key:fileid+pageid value:FPageInfo
-        //private List<FSlotColumnData> slotcolumndata;
 
         public DBLOG_DML(string pDatabasename, string pSchemaName, string pTableName, DatabaseOperation poDB)
         {
@@ -85,9 +84,7 @@ namespace DBLOG
 
             try
             {
-                var TableInfo = GetTableInfo(sSchemaName, sTableName);
-                TabInfos = TableInfo.Item1;
-                TableColumns = TableInfo.Item2;
+                (TabInfos, TableColumns) = GetTableInfo(sSchemaName, sTableName);
                 iColumncount = TableColumns.Length;
                 sColumnlist = string.Join(",", TableColumns.Where(p => p.DataType != SqlDbType.Timestamp && p.isComputed == false).Select(p => $"[{p.ColumnName}]"));
 
@@ -103,11 +100,6 @@ namespace DBLOG
                              drop table #temppagedatalob; 
                           create table #temppagedatalob(ParentObject sysname,Object sysname,Field sysname,Value nvarchar(max)); ";
                 oDB.ExecuteSQL(sTsql, false);
-
-                //sTsql = @"if object_id('tempdb..#slotcolumndata') is not null 
-                //             drop table #slotcolumndata; 
-                //          create table #slotcolumndata(tablename nvarchar(255),columnid int,columnname nvarchar(255),offset nvarchar(255),length nvarchar(255),value nvarchar(max)); ";
-                //oDB.ExecuteSQL(sTsql, false);
 
                 sTsql = @"if object_id('tempdb..#ModifiedRawData') is not null 
                              drop table #ModifiedRawData; 
@@ -236,23 +228,6 @@ namespace DBLOG
                         {
                             MR1 = (byte[])drTemp[0]["MR1"];
                         }
-
-                        //sTsql = $"select tablename,columnid,columnname,offset,length,value from #slotcolumndata where tablename=N'{sSchemaName}.{sTableName}'; ";
-                        //dtTemp = oDB.Query(sTsql, false);
-                        //slotcolumndata = new List<FSlotColumnData>();
-                        //foreach(DataRow dr in dtTemp.Rows)
-                        //{
-                        //    slotcolumndata.Add(
-                        //        new FSlotColumnData() 
-                        //        { 
-                        //          tablename = dr["tablename"].ToString(),
-                        //          columnid = Convert.ToInt32(dr["columnid"]),
-                        //          columnname = dr["columnname"].ToString(),
-                        //          offset = Convert.ToInt32(dr["offset"].ToString(), 16),
-                        //          length = Convert.ToInt32(dr["length"].ToString()),
-                        //          value = dr["value"].ToString()
-                        //        });
-                        //}
                     }
 
                     stemp = string.Empty;
@@ -467,24 +442,6 @@ namespace DBLOG
 
             sTsql = "update #temppagedata set LSN=N'" + pCurrentLSN + "' where LSN is null; ";
             oDB.ExecuteSQL(sTsql, false);
-
-            // #slotcolumndata
-            //sTsql = "with t as("
-            //      + "select columnid=cast(replace(substring(b.[Object],charindex(N'Column',b.[Object])+6,charindex(N'Offset',b.[Object])-charindex(N'Column',b.[Object])-6),N' ','') as int), "
-            //      + "       columnname=b.Field, "
-            //      + "       offset=replace(substring(b.[Object],charindex(N'Offset',b.[Object])+6,charindex(N'Length',b.[Object])-charindex(N'Offset',b.[Object])-6),N' ',''), "
-            //      + "       length=substring(b.[Object],charindex(N'Length (physical)',b.[Object])+17,1000000000), "
-            //      + "       value=b.[Value] "
-            //      + " from #LogList a "
-            //      + " inner join #temppagedata b on b.[ParentObject] like N'Slot '+ltrim(rtrim(A.[Slot ID]))+' Offset%' "
-            //      + " where a.[Current LSN]='" + pCurrentLSN + "' "
-            //      + " and b.[Object] not like '%Memory Dump%') "
-            //      + "insert into #slotcolumndata(tablename,columnid,columnname,offset,length,value) "
-            //      + $" select tablename=N'{sSchemaName}.{sTableName}',columnid,columnname,offset,length,value "
-            //      + " from t "
-            //      + $" where not exists(select 1 from #slotcolumndata where tablename=N'{sSchemaName}.{sTableName}') "
-            //      + " order by columnid; ";
-            //oDB.ExecuteSQL(sTsql, false);
 
             lsns2 = new List<string>();
             lsns2.Add(pCurrentLSN);
@@ -1244,9 +1201,9 @@ namespace DBLOG
                 if (c.isVarLenDataType == true || c.isExists == false) { continue; }
 
                 index3 = index;
-                if (index != c.LeafOffset) // slotcolumndata.FirstOrDefault(p => p.columnid == c.ColumnID).offset
+                if (index != c.LeafOffset)
                 {
-                    index = c.LeafOffset; // slotcolumndata.FirstOrDefault(p => p.columnid == c.ColumnID).offset;
+                    index = c.LeafOffset;
                 }
                 c.LogContentsStartIndex = index;
 
@@ -1579,14 +1536,13 @@ namespace DBLOG
             }
         }
 
-        private ValueTuple<TableInformation, TableColumn[]> GetTableInfo(string pSchemaName, string pTablename)
+        private (TableInformation, TableColumn[]) GetTableInfo(string pSchemaName, string pTablename)
         {
             string stsql, stemp;
             TableInformation tableinfo;
             TableColumn[] tablecolumns;
-            ValueTuple<TableInformation, TableColumn[]> r;
 
-            stsql = "declare @primarykeyColumnList nvarchar(1000),@ClusteredindexColumnList nvarchar(1000), @identityColumn nvarchar(100), @IsHeapTable bit, @FAllocUnitName nvarchar(1000) "
+            stsql = "declare @primarykeyColumnList nvarchar(1000),@ClusteredindexColumnList nvarchar(1000),@identityColumn nvarchar(100),@IsHeapTable bit,@FAllocUnitName nvarchar(1000) "
                       + " select @primarykeyColumnList=isnull(@primarykeyColumnList+N',',N'')+c.name "
                       + "    from sys.indexes a "
                       + "    inner join sys.index_columns b on a.object_id=b.object_id and a.index_id=b.index_id "
@@ -1686,9 +1642,7 @@ namespace DBLOG
             stemp = oDB.Query11(stsql, false);
             tablecolumns = AnalyzeTablelayout(stemp);
 
-            r = new ValueTuple<TableInformation, TableColumn[]>(tableinfo, tablecolumns);
-
-            return r;
+            return (tableinfo, tablecolumns);
         }
 
         // 解析表信息.
@@ -1826,7 +1780,7 @@ namespace DBLOG
         {
             string sValue;
             bool bNeedSeparatorchar, bIsUnicodeType;
-            string[] NoSeparatorchar;
+            string[] NoSeparatorchar, UnicodeType;
 
             if (isNull == true || oValue == null)
             {
@@ -1835,8 +1789,11 @@ namespace DBLOG
             else
             {
                 NoSeparatorchar = new string[] { "tinyint", "bigint", "smallint", "int", "money", "smallmoney", "bit", "decimal", "numeric", "float", "real", "varbinary", "binary", "image" };
+                UnicodeType = new string[] { "nvarchar", "nchar", "ntext" };
+
                 bNeedSeparatorchar = (NoSeparatorchar.Any(p => p == datatype.ToString().ToLower()) ? false : true);
-                bIsUnicodeType = (new SqlDbType[] { SqlDbType.NVarChar, SqlDbType.NChar, SqlDbType.NText }.Contains(datatype) ? true : false);
+                bIsUnicodeType = (UnicodeType.Any(p => p == datatype.ToString().ToLower()) ? true : false);
+                
                 sValue = (bIsUnicodeType ? "N" : "") + (bNeedSeparatorchar ? "'" : "") + oValue.ToString().Replace("'", "''") + (bNeedSeparatorchar ? "'" : "");
             }
 
@@ -2585,16 +2542,6 @@ namespace DBLOG
         #endregion
 
     }
-
-    //public class FSlotColumnData
-    //{
-    //    public string tablename { get; set; }
-    //    public int columnid { get; set; }
-    //    public string columnname { get; set; }
-    //    public int offset { get; set; }
-    //    public int length { get; set; }
-    //    public string value { get; set; }
-    //}
 
     public class FVarColumnInfo
     {
