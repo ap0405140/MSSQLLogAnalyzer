@@ -81,8 +81,9 @@ namespace DBLOG
             List<DatabaseLog> dmllog, tmplog;
             int i;
             string databasename, schemaname, tablename;
-            DataTable dtLoglist, dtTables, dtTemp;
+            DataTable dtTables, dtTemp;
             DBLOG_DML[] tablelist;
+            List<FLOG> dtLoglist;
 
             databasename = DB.DatabaseName;
             schemaname = "";
@@ -194,14 +195,14 @@ namespace DBLOG
                 _tsql = _tsql + " and case when parsename([AllocUnitName],3) is not null then parsename([AllocUnitName],2) else parsename([AllocUnitName],1) end='" + tablename + "' "
                               + " and case when parsename([AllocUnitName],3) is not null then parsename([AllocUnitName],3) else parsename([AllocUnitName],2) end='" + schemaname + "' ";
             }
-            dtLoglist = DB.Query(_tsql, false);
+            dtLoglist = DB.Query<FLOG>(_tsql, false);
 
             _tsql = $"alter table #LogList add constraint pk#LogList{Guid.NewGuid().ToString().Replace("-", "")} primary key clustered ([Current LSN]); ";
             DB.ExecuteSQL(_tsql, false);
 
             // get table list
             _tsql = "select distinct 'TableName'=case when parsename([AllocUnitName],3) is not null then parsename([AllocUnitName],2) else parsename([AllocUnitName],1) end, "
-                    + "                'SchemaName'=case when parsename([AllocUnitName],3) is not null then parsename([AllocUnitName],3) else parsename([AllocUnitName],2) end "
+                    + "              'SchemaName'=case when parsename([AllocUnitName],3) is not null then parsename([AllocUnitName],3) else parsename([AllocUnitName],2) end "
                     + " from #LogList "
                     + " where istail=0; ";
             dtTables = DB.Query(_tsql, false);
@@ -216,9 +217,7 @@ namespace DBLOG
                 tablename = dr["TableName"].ToString();
                 schemaname = dr["SchemaName"].ToString();
                 tablelist[i] = new DBLOG_DML(databasename, schemaname, tablename, DB);
-
-                _tsql = "[AllocUnitName] like '" + schemaname + "." + tablename + ".%' or [AllocUnitName]='" + schemaname + "." + tablename + "' ";
-                tablelist[i].dtLogs = dtLoglist.Select(_tsql);
+                tablelist[i].dtLogs = dtLoglist.Where(p => p.AllocUnitName.StartsWith($"{schemaname}.{tablename}")).ToList();
 
 #if DEBUG
                 _tsql = "insert into dbo.LogExplorer_AnalysisLog(ADate,TableName,Logdescr,Operation,LSN) "
@@ -228,7 +227,7 @@ namespace DBLOG
 
                 tmplog = tablelist[i].AnalyzeLog(_startLSN, _endLSN);
                 dmllog.AddRange(tmplog);
-                ReadPercent = ReadPercent + Convert.ToInt32((tablelist[i].dtLogs.Length * 1.0) / (dtLoglist.Rows.Count * 1.0) * 85.0);
+                ReadPercent = ReadPercent + Convert.ToInt32((tablelist[i].dtLogs.Count * 1.0) / (dtLoglist.Count * 1.0) * 85.0);
 
 #if DEBUG
                 _tsql = "insert into dbo.LogExplorer_AnalysisLog(ADate,TableName,Logdescr,Operation,LSN) "

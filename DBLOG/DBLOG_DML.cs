@@ -13,26 +13,17 @@ namespace DBLOG
     // DML log Analyzer for DML
     public partial class DBLOG_DML
     {
-        private DatabaseOperation oDB;  // 数据库操作
-        private string sTsql;      // 动态SQL
-
-        public string sDatabasename;  // 数据库名
-        public string sTableName;     // 表名
-        public string sSchemaName;    // 架构名
-
-        public TableColumn[] TableColumns;  // 表结构定义
-        public TableInformation TabInfos;   // 表信息
-
-        public int iColumncount;
-        public string sColumnlist;
-        public string CurrentLSN;    // 当前LSN
-        public string TransactionID; // 事务ID
-
-        public DataRow[] dtLogs;     // 原始日志信息
-        private DataRow[] drTemp;
-        private DataTable dtMRlist;   // 行数据前版本 
+        private DatabaseOperation oDB; // 数据库操作
+        private string sTsql,          // 动态SQL
+                       sDatabasename,  // 数据库名
+                       sTableName,     // 表名
+                       sSchemaName;    // 架构名
+        private int iColumncount;
+        private TableColumn[] TableColumns;  // 表结构定义
+        private TableInformation TabInfos;   // 表信息
         private Dictionary<string, string> lsns; // key:lsn value:pageid
         private Dictionary<string, FPageInfo> lobpagedata; // key:fileid+pageid value:FPageInfo
+        public List<FLOG> dtLogs;     // 原始日志信息
 
         public DBLOG_DML(string pDatabasename, string pSchemaName, string pTableName, DatabaseOperation poDB)
         {
@@ -41,12 +32,7 @@ namespace DBLOG
             sTableName = pTableName;
             sSchemaName = pSchemaName;
 
-            dtMRlist = new DataTable();
-            dtMRlist.Columns.Add("PAGEID", typeof(string));
-            dtMRlist.Columns.Add("SlotID", typeof(string));
-            dtMRlist.Columns.Add("AllocUnitId", typeof(string));
-            dtMRlist.Columns.Add("MR1", typeof(byte[]));
-            dtMRlist.Columns.Add("MR1TEXT", typeof(string));
+            (TabInfos, TableColumns) = GetTableInfo(sSchemaName, sTableName);
         }
 
         // 解析日志
@@ -54,91 +40,63 @@ namespace DBLOG
         {
             List<DatabaseLog> logs;
             DatabaseLog tmplog;
-            int i, j, iR0Minimumlength;
-            short? OffsetinRow,      // Offset in Row
-                   ModifySize;       // Modify Size
-            string Operation = "",   // 操作类型
-                   Context,          // Context
-                   PageID,           // PageID
-                   SlotID,           // SlotID
-                   AllocUnitId,      // AllocUnitId
-                   AllocUnitName,    // AllocUnitName
-                   BeginTime = string.Empty, // 事务开始时间
+            int j, iMinimumlength;
+            string BeginTime = string.Empty, // 事务开始时间
                    EndTime = string.Empty,   // 事务结束时间
                    REDOSQL = string.Empty,   // redo sql
                    UNDOSQL = string.Empty,   // undo sql
-                   stemp, sValueList1, sValueList0, sValue, sWhereList, sPrimaryKeyValue;
-            byte[] R0,               // 日志数据 RowLog Contents 0
-                   R1,               // 日志数据 RowLog Contents 1
-                   R2,               // 日志数据 RowLog Contents 2
-                   R3,               // 日志数据 RowLog Contents 3
-                   R4,               // 日志数据 RowLog Contents 4
-                   LogRecord,        // 日志数据 Log Record
-                   MR0 = null,
+                   stemp, sColumnlist, sValueList1, sValueList0, sValue, sWhereList, sPrimaryKeyValue;
+            byte[] MR0 = null,
                    MR1 = null;
             DataRow Mrtemp;
-            DataTable dtTemp;
+            DataTable dtTemp, 
+                      dtMRlist;  // 行数据前版本
             bool isfound;
+            DataRow[] drTemp;
 
             logs = new List<DatabaseLog>();
 
-            try
+            iColumncount = TableColumns.Length;
+            sColumnlist = string.Join(",", TableColumns.Where(p => p.DataType != SqlDbType.Timestamp && p.isComputed == false).Select(p => $"[{p.ColumnName}]"));
+
+            dtMRlist = new DataTable();
+            dtMRlist.Columns.Add("PAGEID", typeof(string));
+            dtMRlist.Columns.Add("SlotID", typeof(string));
+            dtMRlist.Columns.Add("AllocUnitId", typeof(string));
+            dtMRlist.Columns.Add("MR1", typeof(byte[]));
+            dtMRlist.Columns.Add("MR1TEXT", typeof(string));
+
+            sTsql = @"if object_id('tempdb..#temppagedata') is not null drop table #temppagedata; 
+                        create table #temppagedata(LSN nvarchar(1000),ParentObject sysname,Object sysname,Field sysname,Value nvarchar(max)); ";
+            oDB.ExecuteSQL(sTsql, false);
+
+            sTsql = "create index ix_#temppagedata on #temppagedata(LSN); ";
+            oDB.ExecuteSQL(sTsql, false);
+
+            sTsql = @"if object_id('tempdb..#temppagedatalob') is not null drop table #temppagedatalob; 
+                        create table #temppagedatalob(ParentObject sysname,Object sysname,Field sysname,Value nvarchar(max)); ";
+            oDB.ExecuteSQL(sTsql, false);
+
+            sTsql = @"if object_id('tempdb..#ModifiedRawData') is not null drop table #ModifiedRawData; 
+                        create table #ModifiedRawData([SlotID] int,[RowLog Contents 0_var] nvarchar(max),[RowLog Contents 0] varbinary(max)); ";
+            oDB.ExecuteSQL(sTsql, false);
+
+            lsns = new Dictionary<string, string>();
+            lobpagedata = new Dictionary<string, FPageInfo>();
+
+            foreach (FLOG log in dtLogs.Where(p => p.AllocUnitName == $"{sSchemaName}.{sTableName}" + (TabInfos.FAllocUnitName.Length == 0 ? "" : "." + TabInfos.FAllocUnitName))
+                                       .OrderByDescending(p => p.Current_LSN))  // 从后往前解析
             {
-                (TabInfos, TableColumns) = GetTableInfo(sSchemaName, sTableName);
-                iColumncount = TableColumns.Length;
-                sColumnlist = string.Join(",", TableColumns.Where(p => p.DataType != SqlDbType.Timestamp && p.isComputed == false).Select(p => $"[{p.ColumnName}]"));
-
-                sTsql = @"if object_id('tempdb..#temppagedata') is not null 
-                             drop table #temppagedata; 
-                          create table #temppagedata(LSN nvarchar(1000),ParentObject sysname,Object sysname,Field sysname,Value nvarchar(max)); ";
-                oDB.ExecuteSQL(sTsql, false);
-
-                sTsql = "create index ix_#temppagedata on #temppagedata(LSN); ";
-                oDB.ExecuteSQL(sTsql, false);
-
-                sTsql = @"if object_id('tempdb..#temppagedatalob') is not null 
-                             drop table #temppagedatalob; 
-                          create table #temppagedatalob(ParentObject sysname,Object sysname,Field sysname,Value nvarchar(max)); ";
-                oDB.ExecuteSQL(sTsql, false);
-
-                sTsql = @"if object_id('tempdb..#ModifiedRawData') is not null 
-                             drop table #ModifiedRawData; 
-                          create table #ModifiedRawData([SlotID] int,[RowLog Contents 0_var] nvarchar(max),[RowLog Contents 0] varbinary(max)); ";
-                oDB.ExecuteSQL(sTsql, false);
-
-                lsns = new Dictionary<string, string>();
-                lobpagedata = new Dictionary<string, FPageInfo>();
-
-                for (i = dtLogs.Length - 1; i >= 0; i--)  // 从后往前解析
+                try
                 {
-                    Operation = dtLogs[i]["Operation"].ToString();
-                    TransactionID = dtLogs[i]["Transaction ID"].ToString();
-                    Context = dtLogs[i]["Context"].ToString();
-                    R0 = (byte[])dtLogs[i]["RowLog Contents 0"];
-                    R1 = (byte[])dtLogs[i]["RowLog Contents 1"];
-                    R2 = (byte[])dtLogs[i]["RowLog Contents 2"];
-                    R3 = (byte[])dtLogs[i]["RowLog Contents 3"];
-                    R4 = (byte[])dtLogs[i]["RowLog Contents 4"];
-                    LogRecord = (byte[])dtLogs[i]["Log Record"];
-                    PageID = dtLogs[i]["Page ID"].ToString();
-                    SlotID = dtLogs[i]["Slot ID"].ToString();
-                    AllocUnitId = dtLogs[i]["AllocUnitId"].ToString();
-                    AllocUnitName = dtLogs[i]["AllocUnitName"].ToString();
-                    CurrentLSN = dtLogs[i]["Current LSN"].ToString();
-                    OffsetinRow = null; if (dtLogs[i]["Offset in Row"] != null) { OffsetinRow = Convert.ToInt16(dtLogs[i]["Offset in Row"]); }
-                    ModifySize = null; if (dtLogs[i]["Modify Size"] != null) { ModifySize = Convert.ToInt16(dtLogs[i]["Modify Size"]); }
-                    sPrimaryKeyValue = "";
-
-                    if (AllocUnitName != $"{sSchemaName}.{sTableName}" + (TabInfos.FAllocUnitName.Length == 0 ? "" : "." + TabInfos.FAllocUnitName)
-                        || Context == "LCX_TEXT_TREE"
-                        || Context == "LCX_TEXT_MIX")
+                    if (log.Context == "LCX_TEXT_TREE" || log.Context == "LCX_TEXT_MIX")
                     {
                         continue;
                     }
+                    
+                    lsns.Add(log.Current_LSN, log.Page_ID);
 
-                    lsns.Add(CurrentLSN, PageID);
-
-                    sTsql = "select top 1 BeginTime=substring(BeginTime,1,19),EndTime=substring(EndTime,1,19) from #TransactionList where TransactionID='" + TransactionID + "'; ";
+                    sTsql = "select top 1 BeginTime=substring(BeginTime,1,19),EndTime=substring(EndTime,1,19) from #TransactionList where TransactionID='" + log.Transaction_ID + "'; ";
                     dtTemp = oDB.Query(sTsql, false);
                     if (dtTemp.Rows.Count > 0)
                     {
@@ -153,29 +111,30 @@ namespace DBLOG
 
 #if DEBUG
                     sTsql = "insert into dbo.LogExplorer_AnalysisLog(ADate,TableName,Logdescr,Operation,LSN) "
-                            + " select getdate(),'" + $"[{sSchemaName}].[{sTableName}]" + "', N'RunAnalysisLog...', '" + Operation + "','" + CurrentLSN + "' ";
+                            + " select getdate(),'" + $"[{sSchemaName}].[{sTableName}]" + "', N'RunAnalysisLog...', '" + log.Operation + "','" + log.Current_LSN + "' ";
                     oDB.ExecuteSQL(sTsql, false);
 #endif
 
-                    if (Operation == "LOP_MODIFY_ROW" || Operation == "LOP_MODIFY_COLUMNS")
+                    if (log.Operation == "LOP_MODIFY_ROW" || log.Operation == "LOP_MODIFY_COLUMNS")
                     {
                         isfound = false;
+                        sPrimaryKeyValue = "";
 
-                        drTemp = dtMRlist.Select("PAGEID='" + PageID + "' and SlotID='" + SlotID + "' and AllocUnitId='" + AllocUnitId + "' ");
+                        drTemp = dtMRlist.Select("PAGEID='" + log.Page_ID + "' and SlotID='" + log.Slot_ID + "' and AllocUnitId='" + log.AllocUnitId + "' ");
                         if (drTemp.Length > 0
                             && (
-                                (Operation == "LOP_MODIFY_COLUMNS")
+                                (log.Operation == "LOP_MODIFY_COLUMNS")
                                 ||
-                                (Operation == "LOP_MODIFY_ROW" && drTemp[0]["MR1TEXT"].ToString().Contains(R1.ToText()))
+                                (log.Operation == "LOP_MODIFY_ROW" && drTemp[0]["MR1TEXT"].ToString().Contains(log.RowLog_Contents_1.ToText()))
                                )
                            )
                         {
                             isfound = true;
                         }
 
-                        if (isfound == false && Operation == "LOP_MODIFY_ROW")
+                        if (isfound == false && log.Operation == "LOP_MODIFY_ROW")
                         {
-                            stemp = R2.ToText();
+                            stemp = log.RowLog_Contents_2.ToText();
                             if (stemp.Length >= 2)
                             {
                                 switch (stemp.Substring(0, 2))
@@ -195,8 +154,8 @@ namespace DBLOG
                             {
                                 sPrimaryKeyValue = "";
                             }
-                            
-                            drTemp = dtMRlist.Select("PAGEID='" + PageID + "' and MR1TEXT like '%" + R1.ToText() + "%' and MR1TEXT like '%" + sPrimaryKeyValue + "%' ");
+
+                            drTemp = dtMRlist.Select("PAGEID='" + log.Page_ID + "' and MR1TEXT like '%" + log.RowLog_Contents_1.ToText() + "%' and MR1TEXT like '%" + sPrimaryKeyValue + "%' ");
                             if (drTemp.Length > 0)
                             {
                                 isfound = true;
@@ -205,7 +164,7 @@ namespace DBLOG
 
                         if (isfound == false)
                         {
-                            MR1 = GetMR1(Operation, PageID, AllocUnitId, CurrentLSN, pStartLSN, pEndLSN, R0.ToText(), R1.ToText(), sPrimaryKeyValue);
+                            MR1 = GetMR1(log.Operation, log.Page_ID, log.AllocUnitId.ToString(), log.Current_LSN, pStartLSN, pEndLSN, log.RowLog_Contents_0.ToText(), log.RowLog_Contents_1.ToText(), sPrimaryKeyValue);
 
                             if (MR1 != null)
                             {
@@ -215,9 +174,9 @@ namespace DBLOG
                                 }
 
                                 Mrtemp = dtMRlist.NewRow();
-                                Mrtemp["PAGEID"] = PageID;
-                                Mrtemp["SlotID"] = SlotID;
-                                Mrtemp["AllocUnitId"] = AllocUnitId;
+                                Mrtemp["PAGEID"] = log.Page_ID;
+                                Mrtemp["SlotID"] = log.Slot_ID;
+                                Mrtemp["AllocUnitId"] = log.AllocUnitId;
                                 Mrtemp["MR1"] = MR1;
                                 Mrtemp["MR1TEXT"] = MR1.ToText();
 
@@ -239,21 +198,21 @@ namespace DBLOG
                     MR0 = new byte[1];
 
                     #region Insert / Delete
-                    if (Operation == "LOP_INSERT_ROWS" || Operation == "LOP_DELETE_ROWS")
+                    if (log.Operation == "LOP_INSERT_ROWS" || log.Operation == "LOP_DELETE_ROWS")
                     {
-                        iR0Minimumlength = 2;
-                        iR0Minimumlength = iR0Minimumlength + TableColumns.Where(p => p.isVarLenDataType == false).Sum(p => p.Length);
-                        iR0Minimumlength = iR0Minimumlength + 2;
+                        iMinimumlength = 2;
+                        iMinimumlength = iMinimumlength + TableColumns.Where(p => p.isVarLenDataType == false).Sum(p => p.Length);
+                        iMinimumlength = iMinimumlength + 2;
 
-                        if (R0.Length >= iR0Minimumlength)
+                        if (log.RowLog_Contents_0.Length >= iMinimumlength)
                         {
-                            TranslateData(R0, TableColumns, TabInfos.PrimarykeyColumnList, TabInfos.ClusteredindexColumnList);
-                            MR0 = new byte[R0.Length];
-                            MR0 = R0;
+                            TranslateData(log.RowLog_Contents_0, TableColumns, TabInfos.PrimarykeyColumnList, TabInfos.ClusteredindexColumnList);
+                            MR0 = new byte[log.RowLog_Contents_0.Length];
+                            MR0 = log.RowLog_Contents_0;
                         }
                         else
                         {
-                            MR0 = GetMR1(Operation, PageID, AllocUnitId, CurrentLSN, pStartLSN, pEndLSN, R0.ToText(), R1.ToText(), sPrimaryKeyValue);
+                            MR0 = GetMR1(log.Operation, log.Page_ID, log.AllocUnitId.ToString(), log.Current_LSN, pStartLSN, pEndLSN, log.RowLog_Contents_0.ToText(), log.RowLog_Contents_1.ToText(), "");
                             TranslateData(MR0, TableColumns, TabInfos.PrimarykeyColumnList, TabInfos.ClusteredindexColumnList);
                         }
 
@@ -282,7 +241,7 @@ namespace DBLOG
                         }
 
                         // 产生redo sql和undo sql -- Insert
-                        if (Operation == "LOP_INSERT_ROWS")
+                        if (log.Operation == "LOP_INSERT_ROWS")
                         {
                             REDOSQL = "insert into " + $"[{sSchemaName}].[{sTableName}]" + "(" + sColumnlist + ") values(" + sValueList1 + "); ";
                             UNDOSQL = "delete from " + $"[{sSchemaName}].[{sTableName}]" + " where " + sWhereList + "; ";
@@ -296,7 +255,7 @@ namespace DBLOG
                         }
 
                         // 产生redo sql和undo sql -- Delete
-                        if (Operation == "LOP_DELETE_ROWS")
+                        if (log.Operation == "LOP_DELETE_ROWS")
                         {
                             REDOSQL = "delete from " + $"[{sSchemaName}].[{sTableName}]" + " where " + sWhereList + "; ";
                             UNDOSQL = "insert into " + $"[{sSchemaName}].[{sTableName}]" + "(" + sColumnlist + ") values(" + sValueList1 + "); ";
@@ -313,11 +272,11 @@ namespace DBLOG
                     #endregion
 
                     #region Update
-                    if (Operation == "LOP_MODIFY_COLUMNS" || Operation == "LOP_MODIFY_ROW")
+                    if (log.Operation == "LOP_MODIFY_COLUMNS" || log.Operation == "LOP_MODIFY_ROW")
                     {
                         if (MR1 != null)
                         {
-                            AnalyzeUpdate(MR1, R0, R1, R3, R4, LogRecord, TableColumns, iColumncount, TabInfos.PrimarykeyColumnList, Operation, CurrentLSN, OffsetinRow, ModifySize, ref sValueList1, ref sValueList0, ref sWhereList, ref MR0);
+                            AnalyzeUpdate(log.Transaction_ID, MR1, log.RowLog_Contents_0, log.RowLog_Contents_1, log.RowLog_Contents_3, log.RowLog_Contents_4, log.Log_Record, TableColumns, iColumncount, TabInfos.PrimarykeyColumnList, log.Operation, log.Current_LSN, log.Offset_in_Row, log.Modify_Size, ref sValueList1, ref sValueList0, ref sWhereList, ref MR0);
 
                             if (sValueList1.Length > 0)
                             {
@@ -326,8 +285,8 @@ namespace DBLOG
                                 stemp = "S: "
                                         + " MR1=" + MR1.ToText() + ", "
                                         + " MR0=" + MR0.ToText() + ", "
-                                        + " R1=" + R1.ToText() + ", "
-                                        + " R0=" + R0.ToText() + ". ";
+                                        + " R1=" + log.RowLog_Contents_1.ToText() + ", "
+                                        + " R0=" + log.RowLog_Contents_0.ToText() + ". ";
                             }
                             else
                             {
@@ -336,8 +295,8 @@ namespace DBLOG
                                 stemp = "sValueList1.Length=0, "
                                         + " MR1=" + MR1.ToText() + ", "
                                         + " MR0=" + MR0.ToText() + ", "
-                                        + " R1=" + R1.ToText() + ", "
-                                        + " R0=" + R0.ToText() + ". ";
+                                        + " R1=" + log.RowLog_Contents_1.ToText() + ", "
+                                        + " R0=" + log.RowLog_Contents_0.ToText() + ". ";
                             }
                         }
                         else
@@ -349,15 +308,15 @@ namespace DBLOG
                     }
                     #endregion
 
-                    if (Operation == "LOP_MODIFY_ROW" || Operation == "LOP_MODIFY_COLUMNS" || Operation == "LOP_DELETE_ROWS")
+                    if (log.Operation == "LOP_MODIFY_ROW" || log.Operation == "LOP_MODIFY_COLUMNS" || log.Operation == "LOP_DELETE_ROWS")
                     {
-                        drTemp = dtMRlist.Select("PAGEID='" + PageID + "' and SlotID='" + SlotID + "' and AllocUnitId='" + AllocUnitId + "' ");
+                        drTemp = dtMRlist.Select("PAGEID='" + log.Page_ID + "' and SlotID='" + log.Slot_ID + "' and AllocUnitId='" + log.AllocUnitId + "' ");
                         if (drTemp.Length > 0) { dtMRlist.Rows.Remove(drTemp[0]); }
 
                         Mrtemp = dtMRlist.NewRow();
-                        Mrtemp["PAGEID"] = PageID;
-                        Mrtemp["SlotID"] = SlotID;
-                        Mrtemp["AllocUnitId"] = AllocUnitId;
+                        Mrtemp["PAGEID"] = log.Page_ID;
+                        Mrtemp["SlotID"] = log.Slot_ID;
+                        Mrtemp["AllocUnitId"] = log.AllocUnitId;
                         Mrtemp["MR1"] = MR0;
                         Mrtemp["MR1TEXT"] = MR0.ToText();
 
@@ -366,20 +325,20 @@ namespace DBLOG
 
 #if DEBUG
                     sTsql = "insert into dbo.LogExplorer_AnalysisLog(ADate,TableName,Logdescr,Operation,LSN) "
-                            + $" select ADate=getdate(),TableName=N'[{sSchemaName}].[{sTableName}]',Logdescr=N'{REDOSQL.Replace("'", "''")}',Operation='{Operation}',LSN='{CurrentLSN}'; ";
+                            + $" select ADate=getdate(),TableName=N'[{sSchemaName}].[{sTableName}]',Logdescr=N'{REDOSQL.Replace("'", "''")}',Operation='{log.Operation}',LSN='{log.Current_LSN}'; ";
                     oDB.ExecuteSQL(sTsql, false);
 #endif
 
                     if (BeginTime.Length > 0)
                     {
                         tmplog = new DatabaseLog();
-                        tmplog.LSN = CurrentLSN;
+                        tmplog.LSN = log.Current_LSN;
                         tmplog.Type = "DML";
-                        tmplog.TransactionID = TransactionID;
+                        tmplog.TransactionID = log.Transaction_ID;
                         tmplog.BeginTime = BeginTime;
                         tmplog.EndTime = EndTime;
                         tmplog.ObjectName = $"[{sSchemaName}].[{sTableName}]";
-                        tmplog.Operation = Operation;
+                        tmplog.Operation = log.Operation;
                         tmplog.RedoSQL = REDOSQL;
                         tmplog.UndoSQL = UNDOSQL;
 
@@ -394,33 +353,32 @@ namespace DBLOG
                         logs.Add(tmplog);
                     }
                 }
-
-                return logs;
-            }
-            catch (Exception ex)
-            {
+                catch(Exception ex)
+                {
 #if DEBUG
                 stemp = $"Message:{(ex.Message ?? "")}  StackTrace:{(ex.StackTrace ?? "")} ";
                 throw new Exception(stemp);
 #else
-                tmplog = new DatabaseLog();
-                tmplog.LSN = CurrentLSN;
-                tmplog.Type = "DML";
-                tmplog.TransactionID = TransactionID;
-                tmplog.BeginTime = BeginTime;
-                tmplog.EndTime = EndTime;
-                tmplog.ObjectName = $"[{sSchemaName}].[{sTableName}]";
-                tmplog.Operation = Operation;
-                tmplog.RedoSQL = "";
-                tmplog.UndoSQL = "";
-                tmplog.RedoSQLFile = "".ToFileByteArray();
-                tmplog.UndoSQLFile = "".ToFileByteArray();
-                tmplog.Message = "";
+                    tmplog = new DatabaseLog();
+                    tmplog.LSN = log.Current_LSN;
+                    tmplog.Type = "DML";
+                    tmplog.TransactionID = log.Transaction_ID;
+                    tmplog.BeginTime = BeginTime;
+                    tmplog.EndTime = EndTime;
+                    tmplog.ObjectName = $"[{sSchemaName}].[{sTableName}]";
+                    tmplog.Operation = log.Operation;
+                    tmplog.RedoSQL = "";
+                    tmplog.UndoSQL = "";
+                    tmplog.RedoSQLFile = "".ToFileByteArray();
+                    tmplog.UndoSQLFile = "".ToFileByteArray();
+                    tmplog.Message = "";
 
-                logs.Add(tmplog);
-                return logs;
+                    logs.Add(tmplog);
 #endif
+                }
             }
+
+            return logs;
         }
 
         private byte[] GetMR1(string pOperation, string pPageID, string pAllocUnitId, string pCurrentLSN, string pStartLSN, string pEndLSN, string pR0, string pR1, string pPrimaryKeyValue)
@@ -605,7 +563,7 @@ namespace DBLOG
             return r;
         }
 
-        public void AnalyzeUpdate(byte[] mr1, byte[] r0, byte[] r1, byte[] r3, byte[] r4, byte[] bLogRecord, TableColumn[] columns, int iColumncount, string sPrimarykeyColumnList, string sOperation, string pCurrentLSN, short? pOffsetinRow, short? pModifySize,
+        public void AnalyzeUpdate(string pTransactionID, byte[] mr1, byte[] r0, byte[] r1, byte[] r3, byte[] r4, byte[] bLogRecord, TableColumn[] columns, int iColumncount, string sPrimarykeyColumnList, string sOperation, string pCurrentLSN, short? pOffsetinRow, short? pModifySize,
                                   ref string sValueList1, ref string sValueList0, ref string sWhereList, ref byte[] mr0)
         {
             int i;
@@ -632,7 +590,7 @@ namespace DBLOG
 
             TranslateData(mr1, columns1, TabInfos.PrimarykeyColumnList, TabInfos.ClusteredindexColumnList);
 
-            RestoreLobPage();
+            RestoreLobPage(pTransactionID);
 
             // 由 mr1_str 构造 mr0_str
             switch (sOperation)
@@ -718,50 +676,36 @@ namespace DBLOG
 
         }
 
-        private void RestoreLobPage()
+        private void RestoreLobPage(string pTransactionID)
         {
-            int i, SlotID;
-            string PageID, Operation, stemp;
-            DataRow[] lobpagelogs;
+            string stemp;
             FPageInfo tpageinfo;
-            byte[] R0, R1;
-            short? OffsetinRow, ModifySize;
 
-            lobpagelogs = dtLogs.Where(p => p["Transaction ID"].ToString() == TransactionID
-                                            && (p["Context"].ToString() == "LCX_TEXT_TREE" || p["Context"].ToString() == "LCX_TEXT_MIX")
-                                      ).ToArray();
-            for (i = lobpagelogs.Length - 1; i >= 0; i--)  // 从后往前解析
+            foreach(FLOG log in dtLogs.Where(p => p.Transaction_ID == pTransactionID
+                                                  && (p.Context == "LCX_TEXT_TREE" || p.Context == "LCX_TEXT_MIX"))
+                                      .OrderByDescending(p => p.Current_LSN))   // 从后往前解析
             {
-                PageID = lobpagelogs[i]["Page ID"].ToString().ToUpper();
-                SlotID = Convert.ToInt32(lobpagelogs[i]["Slot ID"]);
-                Operation = lobpagelogs[i]["Operation"].ToString();
-                R0 = (byte[])lobpagelogs[i]["RowLog Contents 0"];
-                R1 = (byte[])lobpagelogs[i]["RowLog Contents 1"];
-                OffsetinRow = null; if (lobpagelogs[i]["Offset in Row"] != null) { OffsetinRow = Convert.ToInt16(lobpagelogs[i]["Offset in Row"]); }
-                ModifySize = null; if (lobpagelogs[i]["Modify Size"] != null) { ModifySize = Convert.ToInt16(lobpagelogs[i]["Modify Size"]); }
-                CurrentLSN = lobpagelogs[i]["Current LSN"].ToString();
-
-                tpageinfo = GetPageInfo(PageID);
+                tpageinfo = GetPageInfo(log.Page_ID);
                 stemp = tpageinfo.PageData;
 
-                if (Operation == "LOP_INSERT_ROWS")
+                if (log.Operation == "LOP_INSERT_ROWS")
                 {
-                    stemp = stemp.Stuff(tpageinfo.SlotBeginIndex[SlotID] * 2 + (OffsetinRow ?? 0),
-                                        R0.Length * 2,
-                                        R0.ToText());
+                    stemp = stemp.Stuff(tpageinfo.SlotBeginIndex[Convert.ToInt32(log.Slot_ID)] * 2 + (log.Offset_in_Row ?? 0),
+                                        log.RowLog_Contents_0.Length * 2,
+                                        log.RowLog_Contents_0.ToText());
                 }
 
-                if (Operation == "LOP_MODIFY_ROW")
+                if (log.Operation == "LOP_MODIFY_ROW")
                 {
-                    if (tpageinfo.SlotBeginIndex.Length - 1 >= SlotID)
+                    if (tpageinfo.SlotBeginIndex.Length - 1 >= log.Slot_ID)
                     {
-                        stemp = stemp.Stuff(tpageinfo.SlotBeginIndex[SlotID] * 2 + (OffsetinRow ?? 0), //Convert.ToInt32((96 + OffsetinRow) * 2),
-                                            R1.Length * 2, // (ModifySize ?? 0)
-                                            R0.ToText());
+                        stemp = stemp.Stuff(tpageinfo.SlotBeginIndex[Convert.ToInt32(log.Slot_ID)] * 2 + (log.Offset_in_Row ?? 0), //Convert.ToInt32((96 + OffsetinRow) * 2),
+                                            log.RowLog_Contents_1.Length * 2, // (ModifySize ?? 0)
+                                            log.RowLog_Contents_0.ToText());
                     }
                 }
 
-                lobpagedata[PageID].PageData = stemp;
+                lobpagedata[log.Page_ID].PageData = stemp;
             }
         }
 
@@ -771,14 +715,6 @@ namespace DBLOG
 
             try
             {
-                //mr0_str = mr1_str;
-                //mr0_str = mr0_str.Replace(r1_str, r0_str);
-
-                //mr0_str = mr1_str.Substring(0, 8);
-                //mr0_str = mr0_str + mr1_str.Substring(8, mr1_str.IndexOf(r1_str, 8) - 8);
-                //mr0_str = mr0_str + r0_str;
-                //mr0_str = mr0_str + mr1_str.Substring(mr1_str.IndexOf(r1_str, 8) + r1_str.Length);
-
                 if (mr1_str.Length >= 8)
                 {
                     mr0_str = mr1_str.Stuff(Convert.ToInt32(pOffsetinRow) * 2,
@@ -832,12 +768,21 @@ namespace DBLOG
 
                     fvalue0 = rowlogdata.Substring(j * 2, flength0 * 2);
                     j = j + flength0f4;
-
+                    
                     flength1 = flength0;
                     flength1f4 = (flength1 % 4 == 0 ? flength1 : flength1 + (4 - flength1 % 4));
 
                     fvalue1 = rowlogdata.Substring(j * 2, flength1 * 2);
                     j = j + flength1f4;
+
+                    if (i == (r0.Length / 4) && (j * 2) < (rowlogdata.Length - 1))
+                    {
+                        flength1 = rowlogdata.Length / 2 - j;
+                        flength1f4 = (flength1 % 4 == 0 ? flength1 : flength1 + (4 - flength1 % 4));
+
+                        fvalue1 = rowlogdata.Substring(j * 2, flength1 * 2);
+                        j = j + flength1f4;
+                    }
 
                     mr0_str = mr0_str.Stuff(fstart0 * 2, flength1 * 2, fvalue0);
                 }
@@ -1538,11 +1483,11 @@ namespace DBLOG
 
         private (TableInformation, TableColumn[]) GetTableInfo(string pSchemaName, string pTablename)
         {
-            string stsql, stemp;
+            string stemp;
             TableInformation tableinfo;
             TableColumn[] tablecolumns;
 
-            stsql = "declare @primarykeyColumnList nvarchar(1000),@ClusteredindexColumnList nvarchar(1000),@identityColumn nvarchar(100),@IsHeapTable bit,@FAllocUnitName nvarchar(1000) "
+            sTsql = "declare @primarykeyColumnList nvarchar(1000),@ClusteredindexColumnList nvarchar(1000),@identityColumn nvarchar(100),@IsHeapTable bit,@FAllocUnitName nvarchar(1000) "
                       + " select @primarykeyColumnList=isnull(@primarykeyColumnList+N',',N'')+c.name "
                       + "    from sys.indexes a "
                       + "    inner join sys.index_columns b on a.object_id=b.object_id and a.index_id=b.index_id "
@@ -1608,10 +1553,10 @@ namespace DBLOG
                       + "          select ItemName='FAllocUnitName', "
                       + "                 ItemValue=rtrim(isnull(@FAllocUnitName,N'')) "
                       + "        ) t for xml raw('Item'),root('TableInfomation'); ";
-            stemp = oDB.Query11(stsql, false);
+            stemp = oDB.Query11(sTsql, false);
             tableinfo = AnalyzeTableInformation(stemp);
 
-            stsql = "select cast(("
+            sTsql = "select cast(("
                         + "select ColumnID,ColumnName,DataType,Length,Precision,Nullable,Scale,IsComputed,LeafOffset,LeafNullBit "
                         + " from (select 'ColumnID'=b.column_id, "
                         + "              'ColumnName'=b.name, "
@@ -1639,7 +1584,7 @@ namespace DBLOG
                         + " order by ColumnID "
                         + " for xml raw('Column'),root('ColumnList') "
                         + ") as nvarchar(max)); ";
-            stemp = oDB.Query11(stsql, false);
+            stemp = oDB.Query11(sTsql, false);
             tablecolumns = AnalyzeTablelayout(stemp);
 
             return (tableinfo, tablecolumns);

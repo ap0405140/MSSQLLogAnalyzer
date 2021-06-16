@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations.Schema;
 using System.Data;
 using System.Data.SqlClient;
 using System.Linq;
@@ -108,21 +109,33 @@ namespace DBLOG
             List<T> ls;
             T tt;
             PropertyInfo[] props;
+            DataColumn[] dtcolumns;
+            ColumnAttribute[] columnattributes;
+            string columnname;
 
             try
             {
                 dt = Query(sTsql, closeconnect);
 
                 props = typeof(T).GetProperties();
+                dtcolumns = dt.Columns.Cast<DataColumn>().ToArray();
                 ls = new List<T>();
                 foreach(DataRow dr in dt.Rows)
                 {
                     tt = (T)Activator.CreateInstance(typeof(T));
-                    foreach (PropertyInfo pr in props)
+
+                    foreach (PropertyInfo prop in props)
                     {
-                        if (dt.Columns.Cast<DataColumn>().Any(p => p.ColumnName == pr.Name) == true)
+                        columnattributes = prop.GetCustomAttributes(typeof(ColumnAttribute), false).Cast<ColumnAttribute>().ToArray();
+                        columnname = (columnattributes.Length > 0 && string.IsNullOrEmpty(columnattributes[0].Name) == false 
+                                        ? 
+                                           columnattributes[0].Name 
+                                        : 
+                                           prop.Name);
+
+                        if (dtcolumns.Any(c => c.ColumnName == columnname))
                         {
-                            pr.SetValue(tt, dr[pr.Name]);
+                            prop.SetValue(tt, (dr[columnname] == DBNull.Value ? null : dr[columnname]));
                         }
                     }
 
