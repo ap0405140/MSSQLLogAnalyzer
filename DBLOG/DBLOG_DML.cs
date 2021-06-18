@@ -213,6 +213,12 @@ namespace DBLOG
                         else
                         {
                             MR0 = GetMR1(log.Operation, log.Page_ID, log.AllocUnitId.ToString(), log.Current_LSN, pStartLSN, pEndLSN, log.RowLog_Contents_0.ToText(), log.RowLog_Contents_1.ToText(), "");
+                            
+                            if (MR0.Length < iMinimumlength)
+                            {
+                                continue;
+                            }
+
                             TranslateData(MR0, TableColumns, TabInfos.PrimarykeyColumnList, TabInfos.ClusteredindexColumnList);
                         }
 
@@ -249,8 +255,8 @@ namespace DBLOG
                             if (TabInfos.IdentityColumn.Length > 0)
                             {
                                 REDOSQL = "set identity_insert " + $"[{sSchemaName}].[{sTableName}]" + " on; " + "\r\n"
-                                        + REDOSQL + "\r\n"
-                                        + "set identity_insert " + $"[{sSchemaName}].[{sTableName}]" + " off; " + "\r\n";
+                                          + REDOSQL + "\r\n"
+                                          + "set identity_insert " + $"[{sSchemaName}].[{sTableName}]" + " off; " + "\r\n";
                             }
                         }
 
@@ -263,8 +269,8 @@ namespace DBLOG
                             if (TabInfos.IdentityColumn.Length > 0)
                             {
                                 UNDOSQL = "set identity_insert " + $"[{sSchemaName}].[{sTableName}]" + " on; " + "\r\n"
-                                        + UNDOSQL + "\r\n"
-                                        + "set identity_insert " + $"[{sSchemaName}].[{sTableName}]" + " off; " + "\r\n";
+                                          + UNDOSQL + "\r\n"
+                                          + "set identity_insert " + $"[{sSchemaName}].[{sTableName}]" + " off; " + "\r\n";
                             }
                         }
 
