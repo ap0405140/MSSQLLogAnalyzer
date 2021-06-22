@@ -1422,7 +1422,9 @@ namespace DBLOG
                                 break;
 
                             case System.Data.SqlDbType.Xml:
-                                c.Value = string.Empty; // TODO
+                                TranslateData_XML(data, tvc, out sValueHex, out sValue);
+                                c.ValueHex = sValueHex;
+                                c.Value = sValue;
                                 break;
 
                             case System.Data.SqlDbType.Text:
@@ -1740,7 +1742,7 @@ namespace DBLOG
             else
             {
                 NoSeparatorchar = new string[] { "tinyint", "bigint", "smallint", "int", "money", "smallmoney", "bit", "decimal", "numeric", "float", "real", "varbinary", "binary", "image" };
-                UnicodeType = new string[] { "nvarchar", "nchar", "ntext" };
+                UnicodeType = new string[] { "nvarchar", "nchar", "ntext", "xml" };
 
                 bNeedSeparatorchar = (NoSeparatorchar.Any(p => p == datatype.ToString().ToLower()) ? false : true);
                 bIsUnicodeType = (UnicodeType.Any(p => p == datatype.ToString().ToLower()) ? true : false);
@@ -2385,6 +2387,138 @@ namespace DBLOG
             }
 
             fvalue = "0x" + fvaluehex;
+        }
+
+        private void TranslateData_XML(byte[] data, FVarColumnInfo pvc,
+                                       out string fvaluehex, out string fvalue)
+        {
+            int i, length;
+            string logcont, ntype, nlen1, nlen2, ncont, nvalue, f0type, lastnode;
+            List<string> stacks;
+
+            fvaluehex = "";
+            fvalue = "";
+            logcont = pvc.FLogContents;
+            logcont = logcont.Stuff(0, 10, "");
+
+            try
+            {
+                stacks = new List<string>();
+                f0type = "";
+                lastnode = "";
+                for (i = 0; i <= logcont.Length - 1;)
+                {
+                    ntype = logcont.Substring(i, 2);
+
+                    switch (ntype)
+                    {
+                        case "F0":
+                            i = i + 2;
+                            nlen1 = logcont.Substring(i, 2);
+                            if (Convert.ToInt32(nlen1, 16) < 128)
+                            {
+                                length = Convert.ToInt32(nlen1, 16);
+                            }
+                            else
+                            {
+                                i = i + 2;
+                                nlen2 = logcont.Substring(i, 2);
+                                length = (Convert.ToInt32(nlen2, 16) * 128) + (Convert.ToInt32(nlen1, 16) - 128);
+                            }
+
+                            i = i + 2;
+                            ncont = logcont.Substring(i, length * 4);
+                            nvalue = System.Text.Encoding.Unicode.GetString(ncont.ToByteArray());
+                            i = i + length * 4;
+                            i = i + 12;
+
+                            f0type = logcont.Substring(i - 4, 2);
+                            if (f0type == "F8")
+                            {
+                                fvalue = fvalue + $"<{nvalue}>";
+                                lastnode = nvalue;
+                                stacks.Add(nvalue);
+                            }
+
+                            if (f0type == "F6")
+                            {
+                                if (fvalue.EndsWith(">"))
+                                {
+                                    fvalue = fvalue.Substring(0, fvalue.Length - 1);
+                                }
+
+                                fvalue = fvalue + $" {nvalue}=";
+                            }
+
+                            break;
+
+                        case "11":
+                            i = i + 2;
+                            nlen1 = logcont.Substring(i, 2);
+                            if (Convert.ToInt32(nlen1, 16) < 128)
+                            {
+                                length = Convert.ToInt32(nlen1, 16);
+                            }
+                            else
+                            {
+                                i = i + 2;
+                                nlen2 = logcont.Substring(i, 2);
+                                length = (Convert.ToInt32(nlen2, 16) * 128) + (Convert.ToInt32(nlen1, 16) - 128);
+                            }
+
+                            i = i + 2;
+                            ncont = logcont.Substring(i, length * 4);
+                            nvalue = System.Text.Encoding.Unicode.GetString(ncont.ToByteArray());
+
+                            if (f0type == "F8")
+                            {
+                                fvalue = fvalue + $"{nvalue}";
+                            }
+
+                            if (f0type == "F6")
+                            {
+                                fvalue = fvalue + $"\"{nvalue}\"";
+                            }
+
+                            i = i + length * 4;
+
+                            break;
+
+                        case "F7":
+                            nvalue = stacks.Last();
+                            fvalue = fvalue + $"</{nvalue}>";
+                            i = i + 2;
+                            stacks.RemoveAt(stacks.Count - 1);
+
+                            break;
+
+                        case "F5":
+                            fvalue = fvalue + ">";
+                            f0type = "F8";
+                            i = i + 2;
+
+                            break;
+
+                        case "F8":
+                            fvalue = fvalue + $"<{lastnode}>";
+                            stacks.Add(lastnode);
+                            i = i + 4;
+
+                            break;
+
+                        default:
+                            i = i + 2;
+
+                            break;
+                    }
+
+                }
+            }
+            catch (Exception ex)
+            {
+                fvaluehex = "";
+                fvalue = "";
+            }
         }
 
         private string GetLOBDataHEX(string lobpointer)

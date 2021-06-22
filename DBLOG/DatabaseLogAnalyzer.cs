@@ -217,7 +217,8 @@ namespace DBLOG
                 tablename = dr["TableName"].ToString();
                 schemaname = dr["SchemaName"].ToString();
                 tablelist[i] = new DBLOG_DML(databasename, schemaname, tablename, DB);
-                tablelist[i].dtLogs = dtLoglist.Where(p => p.AllocUnitName.StartsWith($"{schemaname}.{tablename}")).ToList();
+                tablelist[i].dtLogs = dtLoglist.Where(p => p.AllocUnitName == $"{schemaname}.{tablename}"
+                                                           || p.AllocUnitName.StartsWith($"{schemaname}.{tablename}.")).ToList();
 
 #if DEBUG
                 _tsql = "insert into dbo.LogExplorer_AnalysisLog(ADate,TableName,Logdescr,Operation,LSN) "
@@ -227,7 +228,7 @@ namespace DBLOG
 
                 tmplog = tablelist[i].AnalyzeLog(_startLSN, _endLSN);
                 dmllog.AddRange(tmplog);
-                ReadPercent = ReadPercent + Convert.ToInt32((tablelist[i].dtLogs.Count * 1.0) / (dtLoglist.Count * 1.0) * 85.0);
+                ReadPercent = ReadPercent + Convert.ToInt32(Math.Floor((tablelist[i].dtLogs.Count * 1.0) / (dtLoglist.Count * 1.0) * 85.0));
 
 #if DEBUG
                 _tsql = "insert into dbo.LogExplorer_AnalysisLog(ADate,TableName,Logdescr,Operation,LSN) "
@@ -240,7 +241,7 @@ namespace DBLOG
 
             dmllog = dmllog.OrderBy(p => p.TransactionID).ToList();
 
-            ReadPercent = 98;
+            ReadPercent = 95;
             return dmllog;
         }
       
