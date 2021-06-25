@@ -1422,8 +1422,7 @@ namespace DBLOG
                                 break;
 
                             case System.Data.SqlDbType.Variant:
-                                TranslateData_Variant(data, tvc, 
-                                                      out sValueHex, out sValue, out VariantBaseType, out VariantLength, out VariantScale, out VariantCollation);
+                                (sValueHex, sValue, VariantBaseType, VariantLength, VariantScale, VariantCollation) = TranslateData_Variant(data, tvc);
                                 c.ValueHex = sValueHex;
                                 c.Value = sValue;
                                 c.VariantBaseType = VariantBaseType;
@@ -2621,13 +2620,12 @@ namespace DBLOG
             return (fvaluehex, fvalue);
         }
 
-        private void TranslateData_Variant(byte[] data, FVarColumnInfo pvc,
-                                           out string fvaluehex, out string fvalue, 
-                                           out SqlDbType? VariantBaseType, out short? VariantLength, out short? VariantScale, out string VariantCollation)
+        private (string, string, SqlDbType?, short?, short?, string) TranslateData_Variant(byte[] data, FVarColumnInfo pvc)
         {
-            int i;
-            string logcont, tmp;
-            short length, scale;
+            string fvaluehex, fvalue, logcont, tmp, VariantCollation;
+            short length;
+            short? VariantLength, VariantScale;
+            SqlDbType? VariantBaseType;
 
             fvaluehex = "";
             fvalue = "";
@@ -2636,232 +2634,154 @@ namespace DBLOG
             VariantScale = null;
             VariantCollation = null;
 
-            try
-            {
-                logcont = pvc.FLogContents;
+            logcont = pvc.FLogContents;
 
-                if (logcont.StartsWith("2401")) // uniqueidentifier
-                {
+            switch (logcont.Substring(0, 4))
+            {
+                case "2401": // uniqueidentifier
                     VariantBaseType = SqlDbType.UniqueIdentifier;
                     fvaluehex = logcont.Stuff(0, "2401".Length, "");
                     fvalue = TranslateData_UniqueIdentifier(data, pvc.FStartIndex + 2, 16);
-                    goto TranslateData_Variant_Exit;
-                }
-
-                if (logcont.StartsWith("2801")) // date
-                {
+                    break;
+                case "2801": // date
                     VariantBaseType = SqlDbType.Date;
                     fvaluehex = logcont.Stuff(0, "2801".Length, "");
                     fvalue = TranslateData_Date(data, pvc.FStartIndex + 2);
-                    goto TranslateData_Variant_Exit;
-                }
-
-                if (logcont.StartsWith("2901")) // time
-                {
+                    break;
+                case "2901": // time
                     VariantBaseType = SqlDbType.Time;
                     fvaluehex = logcont.Stuff(0, "2901".Length + 2, "");
                     length = Convert.ToInt16(pvc.FEndIndex - pvc.FStartIndex - 3);
-                    scale = Int16.Parse(logcont.Substring(4, 2), System.Globalization.NumberStyles.HexNumber);
-                    VariantScale = scale;
-                    fvalue = TranslateData_Time(data, pvc.FStartIndex + 3, length, scale);
-                    goto TranslateData_Variant_Exit;
-                }
-
-                if (logcont.StartsWith("2A01")) // datetime2
-                {
+                    VariantScale = Int16.Parse(logcont.Substring(4, 2), System.Globalization.NumberStyles.HexNumber);
+                    fvalue = TranslateData_Time(data, pvc.FStartIndex + 3, length, Convert.ToInt16(VariantScale));
+                    break;
+                case "2A01": // datetime2
                     VariantBaseType = SqlDbType.DateTime2;
                     fvaluehex = logcont.Stuff(0, "2A01".Length + 2, "");
                     length = Convert.ToInt16(pvc.FEndIndex - pvc.FStartIndex - 3);
-                    scale = Int16.Parse(logcont.Substring(4, 2), System.Globalization.NumberStyles.HexNumber);
-                    VariantScale = scale;
-                    fvalue = TranslateData_DateTime2(data, pvc.FStartIndex + 3, length, scale);
-                    goto TranslateData_Variant_Exit;
-                }
-
-                if (logcont.StartsWith("2B01")) // datetimeoffset
-                {
+                    VariantScale = Int16.Parse(logcont.Substring(4, 2), System.Globalization.NumberStyles.HexNumber);
+                    fvalue = TranslateData_DateTime2(data, pvc.FStartIndex + 3, length, Convert.ToInt16(VariantScale));
+                    break;
+                case "2B01": // datetimeoffset
                     VariantBaseType = SqlDbType.DateTimeOffset;
                     fvaluehex = logcont.Stuff(0, "2B01".Length + 2, "");
                     length = Convert.ToInt16(pvc.FEndIndex - pvc.FStartIndex - 3);
-                    scale = Int16.Parse(logcont.Substring(4, 2), System.Globalization.NumberStyles.HexNumber);
-                    VariantScale = scale;
-                    fvalue = TranslateData_DateTimeOffset(data, pvc.FStartIndex + 3, length, scale);
-                    goto TranslateData_Variant_Exit;
-                }
-
-                if (logcont.StartsWith("3001")) // tinyint
-                {
+                    VariantScale = Int16.Parse(logcont.Substring(4, 2), System.Globalization.NumberStyles.HexNumber);
+                    fvalue = TranslateData_DateTimeOffset(data, pvc.FStartIndex + 3, length, Convert.ToInt16(VariantScale));
+                    break;
+                case "3001": // tinyint
                     VariantBaseType = SqlDbType.TinyInt;
                     fvaluehex = logcont.Stuff(0, "3001".Length, "");
                     fvalue = Convert.ToInt32(fvaluehex, 16).ToString();
-                    goto TranslateData_Variant_Exit;
-                }
-
-                if (logcont.StartsWith("3401")) // smallint
-                {
+                    break;
+                case "3401": // smallint
                     VariantBaseType = SqlDbType.SmallInt;
                     fvaluehex = logcont.Stuff(0, "3401".Length, "");
                     tmp = fvaluehex.Substring(2, 2) + fvaluehex.Substring(0, 2);
                     fvalue = Convert.ToInt16(tmp, 16).ToString();
-                    goto TranslateData_Variant_Exit;
-                }
-
-                if (logcont.StartsWith("3801")) // int
-                {
+                    break;
+                case "3801": // int
                     VariantBaseType = SqlDbType.Int;
                     fvaluehex = logcont.Stuff(0, "3801".Length, "");
                     tmp = fvaluehex.Substring(6, 2) + fvaluehex.Substring(4, 2) + fvaluehex.Substring(2, 2) + fvaluehex.Substring(0, 2);
                     fvalue = Convert.ToInt32(tmp, 16).ToString();
-                    goto TranslateData_Variant_Exit;
-                }
-
-                if (logcont.StartsWith("3A01")) // smalldatetime
-                {
+                    break;
+                case "3A01": // smalldatetime
                     VariantBaseType = SqlDbType.SmallDateTime;
                     fvaluehex = logcont.Stuff(0, "3A01".Length, "");
                     fvalue = TranslateData_SmallDateTime(data, pvc.FStartIndex + 2);
-                    goto TranslateData_Variant_Exit;
-                }
-
-                if (logcont.StartsWith("3B01")) // real
-                {
+                    break;
+                case "3B01": // real
                     VariantBaseType = SqlDbType.Real;
                     fvaluehex = logcont.Stuff(0, "3B01".Length, "");
                     VariantLength = Convert.ToInt16(fvaluehex.Length / 2);
                     fvalue = TranslateData_Real(data, pvc.FStartIndex + 2, Convert.ToInt16(VariantLength));
-                    goto TranslateData_Variant_Exit;
-                }
-
-                if (logcont.StartsWith("3C01")) // money
-                {
+                    break;
+                case "3C01": // money
                     VariantBaseType = SqlDbType.Money;
                     fvaluehex = logcont.Stuff(0, "3C01".Length, "");
                     fvalue = TranslateData_Money(data, pvc.FStartIndex + 2);
-                    goto TranslateData_Variant_Exit;
-                }
-
-                if (logcont.StartsWith("3D01")) // datetime
-                {
+                    break;
+                case "3D01": // datetime
                     VariantBaseType = SqlDbType.DateTime;
                     fvaluehex = logcont.Stuff(0, "3D01".Length, "");
                     fvalue = TranslateData_DateTime(data, pvc.FStartIndex + 2);
-                    goto TranslateData_Variant_Exit;
-                }
-
-                if (logcont.StartsWith("3E01")) // float
-                {
+                    break;
+                case "3E01": // float
                     VariantBaseType = SqlDbType.Float;
                     fvaluehex = logcont.Stuff(0, "3E01".Length, "");
-                    VariantLength = Convert.ToInt16((fvaluehex.Length / 2) == 8 ? 53 : 24);
-                    fvalue = TranslateData_Float(data, pvc.FStartIndex + 2, Convert.ToInt16(fvaluehex.Length / 2));
-                    goto TranslateData_Variant_Exit;
-                }
-
-                if (logcont.StartsWith("6801")) // bit
-                {
+                    length = Convert.ToInt16(fvaluehex.Length / 2);
+                    VariantLength = Convert.ToInt16(length == 8 ? 53 : 24);
+                    fvalue = TranslateData_Float(data, pvc.FStartIndex + 2, length);
+                    break;
+                case "6801": // bit
                     VariantBaseType = SqlDbType.Bit;
                     fvaluehex = logcont.Stuff(0, "6801".Length, "");
                     fvalue = (fvaluehex == "01" ? "1" : "0");
-                    goto TranslateData_Variant_Exit;
-                }
-
-                if (logcont.StartsWith("6C01")) // numeric decimal
-                {
+                    break;
+                case "6C01": // numeric decimal
                     VariantBaseType = SqlDbType.Decimal;
                     fvaluehex = logcont.Stuff(0, "6C01".Length + 4, "");
                     length = Convert.ToInt16(pvc.FEndIndex - pvc.FStartIndex - 4);
-                    scale = Int16.Parse(logcont.Substring(6, 2), System.Globalization.NumberStyles.HexNumber);
-                    fvalue = TranslateData_Decimal(data, pvc.FStartIndex + 4, length, scale);
-                    VariantLength = Convert.ToInt16((fvalue.StartsWith("0.") ? 0 : fvalue.IndexOf(".")) + scale);
-                    VariantScale = scale;
-                    goto TranslateData_Variant_Exit;
-                }
-
-                if (logcont.StartsWith("A501")) // varbinary
-                {
+                    VariantLength = Int16.Parse(logcont.Substring(4, 2), System.Globalization.NumberStyles.HexNumber);
+                    VariantScale = Int16.Parse(logcont.Substring(6, 2), System.Globalization.NumberStyles.HexNumber);
+                    fvalue = TranslateData_Decimal(data, pvc.FStartIndex + 4, length, Convert.ToInt16(VariantScale));
+                    break;
+                case "A501": // varbinary
                     VariantBaseType = SqlDbType.VarBinary;
-                    fvaluehex = logcont.Stuff(0, "A501".Length, "");
+                    fvaluehex = logcont.Stuff(0, "A501".Length + 4, "");
                     VariantLength = Int16.Parse(logcont.Substring(6, 2) + logcont.Substring(4, 2), System.Globalization.NumberStyles.HexNumber);
                     (_, fvalue) = TranslateData_VarBinary(data, new FVarColumnInfo() { InRow = true, FStartIndex = pvc.FStartIndex + 4, FEndIndex = pvc.FEndIndex });
-                    goto TranslateData_Variant_Exit;
-                }
-
-                if (logcont.StartsWith("AD01")) // binary
-                {
+                    break;
+                case "AD01": // binary
                     VariantBaseType = SqlDbType.Binary;
                     fvaluehex = logcont.Stuff(0, "AD01".Length + 4, "");
                     VariantLength = Int16.Parse(logcont.Substring(6, 2) + logcont.Substring(4, 2), System.Globalization.NumberStyles.HexNumber);
                     fvalue = TranslateData_Binary(data, pvc.FStartIndex + 4, Convert.ToInt16(VariantLength));
-                    goto TranslateData_Variant_Exit;
-                }
-
-                if (logcont.StartsWith("AF01")) // char
-                {
+                    break;
+                case "AF01": // char
                     VariantBaseType = SqlDbType.Char;
                     fvaluehex = logcont.Stuff(0, "AF01".Length + 12, "");
                     VariantLength = Int16.Parse(logcont.Substring(6, 2) + logcont.Substring(4, 2), System.Globalization.NumberStyles.HexNumber);
                     VariantCollation = CollationHelper.GetCollationName(logcont.Substring(8, 8));
                     fvalue = System.Text.Encoding.Default.GetString(data, pvc.FStartIndex + 8, Convert.ToInt16(VariantLength)).TrimEnd();
-                    goto TranslateData_Variant_Exit;
-                }
-
-                if (logcont.StartsWith("7A01")) // smallmoney
-                {
+                    break;
+                case "7A01": // smallmoney
                     VariantBaseType = SqlDbType.SmallMoney;
                     fvaluehex = logcont.Stuff(0, "7A01".Length, "");
                     fvalue = TranslateData_SmallMoney(data, pvc.FStartIndex + 2);
-                    goto TranslateData_Variant_Exit;
-                }
-
-                if (logcont.StartsWith("7F01")) // bigint
-                {
+                    break;
+                case "7F01": // bigint
                     VariantBaseType = SqlDbType.BigInt;
                     fvaluehex = logcont.Stuff(0, "7F01".Length, "");
                     fvalue = BitConverter.ToInt64(data, pvc.FStartIndex + 2).ToString();
-                    goto TranslateData_Variant_Exit;
-                }
-
-                if (logcont.StartsWith("A701")) // varchar
-                {
+                    break;
+                case "A701": // varchar
                     VariantBaseType = SqlDbType.VarChar;
                     fvaluehex = logcont.Stuff(0, "A701".Length + 12, "");
                     VariantLength = Int16.Parse(logcont.Substring(6, 2) + logcont.Substring(4, 2), System.Globalization.NumberStyles.HexNumber);
                     VariantCollation = CollationHelper.GetCollationName(logcont.Substring(8, 8));
                     fvalue = System.Text.Encoding.Default.GetString(fvaluehex.ToByteArray());
-                    goto TranslateData_Variant_Exit;
-                }
-
-                if (logcont.StartsWith("E701")) // nvarchar
-                {
+                    break;
+                case "E701": // nvarchar
                     VariantBaseType = SqlDbType.NVarChar;
                     fvaluehex = logcont.Stuff(0, "E701".Length + 12, "");
                     VariantLength = Convert.ToInt16(Int16.Parse(logcont.Substring(6, 2) + logcont.Substring(4, 2), System.Globalization.NumberStyles.HexNumber) / Convert.ToInt16(2));
                     VariantCollation = CollationHelper.GetCollationName(logcont.Substring(8, 8));
                     fvalue = System.Text.Encoding.Unicode.GetString(fvaluehex.ToByteArray());
-                    goto TranslateData_Variant_Exit;
-                }
-
-                if (logcont.StartsWith("EF01")) // nchar
-                {
+                    break;
+                case "EF01": // nchar
                     VariantBaseType = SqlDbType.NChar;
                     fvaluehex = logcont.Stuff(0, "EF01".Length + 12, "");
                     VariantLength = Convert.ToInt16(Int16.Parse(logcont.Substring(6, 2) + logcont.Substring(4, 2), System.Globalization.NumberStyles.HexNumber) / 2);
                     VariantCollation = CollationHelper.GetCollationName(logcont.Substring(8, 8));
                     fvalue = System.Text.Encoding.Unicode.GetString(data, pvc.FStartIndex + 8, Convert.ToInt16(VariantLength * 2)).TrimEnd();
-                    goto TranslateData_Variant_Exit;
-                }
-
-
-
-
-            TranslateData_Variant_Exit:
-                fvalue = fvalue + "";
+                    break;
+                default:
+                    break;
             }
-            catch (Exception ex)
-            {
-                fvaluehex = "";
-                fvalue = "";
-            }
+
+            return (fvaluehex, fvalue, VariantBaseType, VariantLength, VariantScale, VariantCollation);
         }
 
         private string GetLOBDataHEX(string lobpointer)
