@@ -226,7 +226,7 @@ namespace DBLOG
                         {
                             if (TableColumns[j].DataType == SqlDbType.Timestamp || TableColumns[j].isComputed == true) { continue; }
 
-                            sValue = ColumnValue2SQLValue(TableColumns[j].DataType, TableColumns[j].Value, TableColumns[j].isNull);
+                            sValue = ColumnValue2SQLValue(TableColumns[j], TableColumns[j].Value, TableColumns[j].isNull);
                             sValueList1 = sValueList1 + (sValueList1.Length > 0 ? "," : "") + sValue;
 
                             if (TableColumns[j].isNull == false)
@@ -631,11 +631,11 @@ namespace DBLOG
                     {
                         sValueList0 = sValueList0 + (sValueList0.Length > 0 ? "," : "")
                                       + "[" + columns0[i].ColumnName + "]="
-                                      + ColumnValue2SQLValue(columns0[i].DataType, columns0[i].Value, columns0[i].isNull);
+                                      + ColumnValue2SQLValue(columns0[i], columns0[i].Value, columns0[i].isNull);
 
                         sValueList1 = sValueList1 + (sValueList1.Length > 0 ? "," : "")
                                       + "[" + columns1[i].ColumnName + "]="
-                                      + ColumnValue2SQLValue(columns1[i].DataType, columns1[i].Value, columns1[i].isNull);
+                                      + ColumnValue2SQLValue(columns1[i], columns1[i].Value, columns1[i].isNull);
                     }
                     else
                     {
@@ -648,11 +648,11 @@ namespace DBLOG
                 {
                     sValueList0 = sValueList0 + (sValueList0.Length > 0 ? "," : "")
                                   + "[" + columns0[i].ColumnName + "]="
-                                  + ColumnValue2SQLValue(columns0[i].DataType, columns0[i].Value, columns0[i].isNull);
+                                  + ColumnValue2SQLValue(columns0[i], columns0[i].Value, columns0[i].isNull);
 
                     sValueList1 = sValueList1 + (sValueList1.Length > 0 ? "," : "")
                                   + "[" + columns1[i].ColumnName + "]="
-                                  + ColumnValue2SQLValue(columns1[i].DataType, columns1[i].Value, columns1[i].isNull);
+                                  + ColumnValue2SQLValue(columns1[i], columns1[i].Value, columns1[i].isNull);
                 }
             }
 
@@ -666,7 +666,7 @@ namespace DBLOG
                 {
                     sWhereList = sWhereList + (sWhereList.Length > 0 ? " and " : "")
                                  + "[" + lUnChangedColumns[i].ColumnName + "]="
-                                 + ColumnValue2SQLValue(lUnChangedColumns[i].DataType, lUnChangedColumns[i].Value, lUnChangedColumns[i].isNull);
+                                 + ColumnValue2SQLValue(lUnChangedColumns[i], lUnChangedColumns[i].Value, lUnChangedColumns[i].isNull);
 
                 }
                 else
@@ -675,7 +675,7 @@ namespace DBLOG
                     {
                         sWhereList = sWhereList + (sWhereList.Length > 0 ? " and " : "")
                                      + "[" + lUnChangedColumns[i].ColumnName + "]="
-                                     + ColumnValue2SQLValue(lUnChangedColumns[i].DataType, lUnChangedColumns[i].Value, lUnChangedColumns[i].isNull);
+                                     + ColumnValue2SQLValue(lUnChangedColumns[i], lUnChangedColumns[i].Value, lUnChangedColumns[i].isNull);
                     }
                 }
             }
@@ -969,6 +969,10 @@ namespace DBLOG
                    sValueHex,
                    sValue;
 
+            SqlDbType? VariantBaseType;
+            short? VariantLength, VariantScale;
+            string VariantCollation;
+
             bool isExceed,       // 指针是否已越界
                  hasJumpRowID;   // 是否已跳过RowID,用于无PrimaryKey的表.
 
@@ -1183,12 +1187,12 @@ namespace DBLOG
                             break;
 
                         case System.Data.SqlDbType.DateTime2:
-                            c.Value = TranslateData_DateTime2(data, index, c.Length, c.Precision, c.Scale);
+                            c.Value = TranslateData_DateTime2(data, index, c.Length, c.Scale);
                             index = index + c.Length;
                             break;
 
                         case System.Data.SqlDbType.DateTimeOffset:
-                            c.Value = TranslateData_DateTimeOffset(data, index, c.Length, c.Precision, c.Scale);
+                            c.Value = TranslateData_DateTimeOffset(data, index, c.Length, c.Scale);
                             index = index + c.Length;
                             break;
 
@@ -1203,7 +1207,7 @@ namespace DBLOG
                             break;
 
                         case System.Data.SqlDbType.Time:
-                            c.Value = TranslateData_Time(data, index, c.Length, c.Precision, c.Scale);
+                            c.Value = TranslateData_Time(data, index, c.Length, c.Scale);
                             index = index + c.Length;
                             break;
 
@@ -1325,7 +1329,7 @@ namespace DBLOG
                         tvc.FEndIndex = sVarColumnEndIndex;
 
                         tvc.FLogContents = sData.Substring(sVarColumnStartIndex * 2,
-                                                               (sVarColumnEndIndex - sVarColumnStartIndex) * 2);
+                                                           (sVarColumnEndIndex - sVarColumnStartIndex) * 2);
 
                         vcs.Add(tvc);
 
@@ -1412,37 +1416,44 @@ namespace DBLOG
                                 break;
 
                             case System.Data.SqlDbType.VarBinary:
-                                TranslateData_VarBinary(data, tvc, out sValueHex, out sValue);
+                                (sValueHex, sValue) = TranslateData_VarBinary(data, tvc);
                                 c.ValueHex = sValueHex;
                                 c.Value = sValue;
                                 break;
 
-                            case System.Data.SqlDbType.Variant:  // 通用型
-                                c.Value = string.Empty; // TODO
+                            case System.Data.SqlDbType.Variant:
+                                TranslateData_Variant(data, tvc, 
+                                                      out sValueHex, out sValue, out VariantBaseType, out VariantLength, out VariantScale, out VariantCollation);
+                                c.ValueHex = sValueHex;
+                                c.Value = sValue;
+                                c.VariantBaseType = VariantBaseType;
+                                c.VariantLength = VariantLength;
+                                c.VariantScale = VariantScale;
+                                c.VariantCollation = VariantCollation;
                                 break;
 
                             case System.Data.SqlDbType.Xml:
-                                TranslateData_XML(data, tvc, out sValueHex, out sValue);
+                                (sValueHex, sValue) = TranslateData_XML(data, tvc);
                                 c.ValueHex = sValueHex;
                                 c.Value = sValue;
                                 break;
 
                             case System.Data.SqlDbType.Text:
-                                TranslateData_Text(data, tvc, false, out sValueHex, out sValue);
+                                (sValueHex, sValue) = TranslateData_Text(data, tvc, false);
                                 c.ValueHex = sValueHex;
                                 c.Value = sValue;
                                 c.isNull = (sValueHex == null && sValue == "nullvalue");
                                 break;
 
                             case System.Data.SqlDbType.NText:
-                                TranslateData_Text(data, tvc, true, out sValueHex, out sValue);
+                                (sValueHex, sValue) = TranslateData_Text(data, tvc, true);
                                 c.ValueHex = sValueHex;
                                 c.Value = sValue;
                                 c.isNull = (sValueHex == null && sValue == "nullvalue");
                                 break;
 
                             case System.Data.SqlDbType.Image:
-                                TranslateData_Image(data, tvc, out sValueHex, out sValue);
+                                (sValueHex, sValue) = TranslateData_Image(data, tvc);
                                 c.ValueHex = sValueHex;
                                 c.Value = sValue;
                                 break;
@@ -1728,14 +1739,17 @@ namespace DBLOG
             return TableColumns;
         }
 
-        // 获取字段数据值的SQL形式
-        private string ColumnValue2SQLValue(System.Data.SqlDbType datatype, object oValue, bool isNull)
+        // 获取字段值的SQL形式
+        private string ColumnValue2SQLValue(TableColumn col, object oValue, bool isNull)
         {
             string sValue;
             bool bNeedSeparatorchar, bIsUnicodeType;
             string[] NoSeparatorchar, UnicodeType;
+            SqlDbType? datatype;
 
-            if (isNull == true || oValue == null)
+            datatype = (col.DataType != SqlDbType.Variant ? col.DataType : col.VariantBaseType);
+
+            if (isNull == true || oValue == null || datatype == null)
             {
                 sValue = "null";
             }
@@ -1748,6 +1762,83 @@ namespace DBLOG
                 bIsUnicodeType = (UnicodeType.Any(p => p == datatype.ToString().ToLower()) ? true : false);
                 
                 sValue = (bIsUnicodeType ? "N" : "") + (bNeedSeparatorchar ? "'" : "") + oValue.ToString().Replace("'", "''") + (bNeedSeparatorchar ? "'" : "");
+
+                if (col.DataType == SqlDbType.Variant)
+                {
+                    switch(datatype)
+                    {
+                        case SqlDbType.UniqueIdentifier:
+                            sValue = $"cast({sValue} as uniqueIdentifier)";
+                            break;
+                        case SqlDbType.Date:
+                            sValue = $"cast({sValue} as date)";
+                            break;
+                        case SqlDbType.Time:
+                            sValue = $"cast({sValue} as time({col.VariantScale.ToString()}))";
+                            break;
+                        case SqlDbType.DateTime2:
+                            sValue = $"cast({sValue} as datetime2({col.VariantScale.ToString()}))";
+                            break;
+                        case SqlDbType.DateTimeOffset:
+                            sValue = $"cast({sValue} as datetimeoffset({col.VariantScale.ToString()}))";
+                            break;
+                        case SqlDbType.TinyInt:
+                            sValue = $"cast({sValue} as tinyint)";
+                            break;
+                        case SqlDbType.SmallInt:
+                            sValue = $"cast({sValue} as smallint)";
+                            break;
+                        case SqlDbType.Int:
+                            sValue = $"cast({sValue} as int)";
+                            break;
+                        case SqlDbType.SmallDateTime:
+                            sValue = $"cast({sValue} as smalldatetime)";
+                            break;
+                        case SqlDbType.Real:
+                            sValue = $"cast({sValue} as real)";
+                            break;
+                        case SqlDbType.Money:
+                            sValue = $"cast({sValue} as money)";
+                            break;
+                        case SqlDbType.DateTime:
+                            sValue = $"cast({sValue} as datetime)";
+                            break;
+                        case SqlDbType.Float:
+                            sValue = $"cast({sValue} as float({col.VariantLength.ToString()}))";
+                            break;
+                        case SqlDbType.Bit:
+                            sValue = $"cast({sValue} as bit)";
+                            break;
+                        case SqlDbType.Decimal:  // numeric decimal
+                            sValue = $"cast({sValue} as numeric({col.VariantLength.ToString()},{col.VariantScale.ToString()}))";
+                            break;
+                        case SqlDbType.VarBinary:
+                            sValue = $"cast({sValue} as varbinary({col.VariantLength.ToString()}))";
+                            break;
+                        case SqlDbType.Binary:
+                            sValue = $"cast({sValue} as binary({col.VariantLength.ToString()}))";
+                            break;
+                        case SqlDbType.Char:
+                            sValue = $"cast({sValue} {(string.IsNullOrEmpty(col.VariantCollation) == false ? "collate " + col.VariantCollation : "")} as char({col.VariantLength.ToString()}))";
+                            break;
+                        case SqlDbType.SmallMoney:
+                            sValue = $"cast({sValue} as smallmoney)";
+                            break;
+                        case SqlDbType.BigInt:
+                            sValue = $"cast({sValue} as bigint)";
+                            break;
+                        case SqlDbType.VarChar:
+                            sValue = $"cast({sValue} {(string.IsNullOrEmpty(col.VariantCollation) == false ? "collate " + col.VariantCollation : "")} as varchar({col.VariantLength.ToString()}))";
+                            break;
+                        case SqlDbType.NVarChar:
+                            sValue = $"cast({sValue} {(string.IsNullOrEmpty(col.VariantCollation) == false ? "collate " + col.VariantCollation : "")} as nvarchar({col.VariantLength.ToString()}))";
+                            break;
+                        case SqlDbType.NChar:
+                            sValue = $"cast({sValue} {(string.IsNullOrEmpty(col.VariantCollation) == false ? "collate " + col.VariantCollation : "")} as nchar({col.VariantLength.ToString()}))";
+                            break;
+
+                    }
+                }
             }
 
             return sValue;
@@ -1849,21 +1940,22 @@ namespace DBLOG
             return sReturnDatetime;
         }
 
-        private string TranslateData_Time(byte[] data, int iCurrentIndex, short sLength, short sPrecision, short sScale)
+        private string TranslateData_Time(byte[] data, int iCurrentIndex, short sLength, short sScale)
         {
-            byte[] bTime = new byte[sLength];
-            Array.Copy(data, iCurrentIndex, bTime, 0, sLength);
+            string sTimeHex, sTimeDec, sTimeSeconds, sTimeSeconds2, sReturnTime;
+            byte[] bTime;
+            System.DateTime date2;
 
-            string sTimeHex;
+            bTime = new byte[sLength];
+            Array.Copy(data, iCurrentIndex, bTime, 0, sLength);
+            
             sTimeHex = "";
             foreach (byte b in bTime)
             {
                 sTimeHex = b.ToString("X2") + sTimeHex;
             }
-
-            string sTimeDec, sTimeSeconds, sTimeSeconds2, sReturnTime;
+             
             sTimeDec = Convert.ToInt64(sTimeHex, 16).ToString();
-
             if (sTimeDec.Length <= sScale)
             {
                 sTimeSeconds = "0";
@@ -1877,28 +1969,28 @@ namespace DBLOG
                 sTimeSeconds2 = sTimeDec.Substring(sTimeDec.Length - sScale, sScale);    // 秒的小数部分
             }
 
-            System.DateTime date2 = new DateTime(1900, 1, 1, 0, 0, 0);
+            date2 = new DateTime(1900, 1, 1, 0, 0, 0);
             date2 = date2.AddSeconds(Convert.ToDouble(sTimeSeconds));
             sReturnTime = date2.ToString("HH:mm:ss") + (sTimeSeconds2.Length > 0 ? "." : "") + sTimeSeconds2;
 
             return sReturnTime;
         }
 
-        private string TranslateData_DateTime2(byte[] data, int iCurrentIndex, short sLength, short sPrecision, short sScale)
+        private string TranslateData_DateTime2(byte[] data, int iCurrentIndex, short sLength, short sScale)
         {
             string sReturnDatetime2, sDate, sTime;
+            byte[] bDatetime2;
 
-            byte[] bDatetime2 = new byte[sLength];
+            bDatetime2 = new byte[sLength];
             Array.Copy(data, iCurrentIndex, bDatetime2, 0, sLength);
-
-            sTime = TranslateData_Time(bDatetime2, 0, (short)(sLength - 3), sPrecision, sScale);
+            sTime = TranslateData_Time(bDatetime2, 0, (short)(sLength - 3), sScale);
             sDate = TranslateData_Date(bDatetime2, sLength - 3);
             sReturnDatetime2 = sDate + " " + sTime;
 
             return sReturnDatetime2;
         }
 
-        private string TranslateData_DateTimeOffset(byte[] data, int iCurrentIndex, short sLength, short sPrecision, short sScale)
+        private string TranslateData_DateTimeOffset(byte[] data, int iCurrentIndex, short sLength, short sScale)
         {
             string sReturnDateTimeOffset, sDate, sTime, sOffset;
             short sSignOffset, iOffset;
@@ -1924,7 +2016,7 @@ namespace DBLOG
             sDate = TranslateData_Date(bDateTimeOffset, sLength - 5);
 
             // time
-            sTime = TranslateData_Time(bDateTimeOffset, 0, (short)(sLength - 5), sPrecision, sScale);
+            sTime = TranslateData_Time(bDateTimeOffset, 0, (short)(sLength - 5), sScale);
 
             // 计算offset
             d0 = new DateTime();
@@ -2069,15 +2161,15 @@ namespace DBLOG
             return sReturnSmallMoney;
         }
 
-        private string TranslateData_Decimal(byte[] data, int iCurrentIndex, short sLenth, short sScale)
+        private string TranslateData_Decimal(byte[] data, int iCurrentIndex, short sLength, short sScale)
         {
             byte[] bDecimal;
             string sDecimalHex, sDecimal, sTemp;
             short sSignDecimal;
             int iDecimal;
 
-            bDecimal = new byte[sLenth];
-            Array.Copy(data, iCurrentIndex, bDecimal, 0, sLenth);
+            bDecimal = new byte[sLength];
+            Array.Copy(data, iCurrentIndex, bDecimal, 0, sLength);
 
             sSignDecimal = 1;
             if (bDecimal[0].ToString("X2") == "00")
@@ -2223,10 +2315,9 @@ namespace DBLOG
             return sReturnBinary;
         }
 
-        private void TranslateData_VarBinary(byte[] data, FVarColumnInfo pvc,
-                                             out string fvaluehex, out string fvalue)
+        private (string, string) TranslateData_VarBinary(byte[] data, FVarColumnInfo pvc)
         {
-            string pointer, pagedata, tmpstr;
+            string fvaluehex, fvalue, pointer, pagedata, tmpstr;
             byte[] bVarBinary;
             short iVarBinary, sActualLenth;
             int iCurrentIndex, i, pageqty, cutlen;
@@ -2315,6 +2406,8 @@ namespace DBLOG
             }
 
             fvalue = "0x" + fvaluehex;
+
+            return (fvaluehex, fvalue);
         }
 
         private string TranslateData_UniqueIdentifier(byte[] data, int iCurrentIndex, short sLenth)
@@ -2352,9 +2445,10 @@ namespace DBLOG
             return sReturnUniqueIdentifier;
         }
 
-        private void TranslateData_Text(byte[] data, FVarColumnInfo pv, bool isNText,
-                                        out string fvaluehex, out string fvalue)
+        private (string, string) TranslateData_Text(byte[] data, FVarColumnInfo pv, bool isNText)
         {
+            string fvaluehex, fvalue;
+
             fvaluehex = GetLOBDataHEX(pv.FLogContents);
 
             if (fvaluehex != null)
@@ -2372,11 +2466,14 @@ namespace DBLOG
             {
                 fvalue = "nullvalue";
             }
+
+            return (fvaluehex, fvalue);
         }
 
-        private void TranslateData_Image(byte[] data, FVarColumnInfo pvc,
-                                         out string fvaluehex, out string fvalue)
+        private (string, string) TranslateData_Image(byte[] data, FVarColumnInfo pvc)
         {
+            string fvaluehex, fvalue;
+
             if (pvc.InRow == true)
             {
                 fvaluehex = pvc.FLogContents;
@@ -2387,25 +2484,27 @@ namespace DBLOG
             }
 
             fvalue = "0x" + fvaluehex;
+
+            return (fvaluehex, fvalue);
         }
 
-        private void TranslateData_XML(byte[] data, FVarColumnInfo pvc,
-                                       out string fvaluehex, out string fvalue)
+        private (string, string) TranslateData_XML(byte[] data, FVarColumnInfo pvc)
         {
             int i, length;
-            string logcont, ntype, nlen1, nlen2, ncont, nvalue, f0type, lastnode;
+            string fvaluehex, fvalue, logcont, ntype, nlen1, nlen2, ncont, nvalue, f0type, lastnode;
             List<string> stacks;
 
-            fvaluehex = "";
+            fvaluehex = pvc.FLogContents;
             fvalue = "";
-            logcont = pvc.FLogContents;
-            logcont = logcont.Stuff(0, 10, "");
 
             try
             {
+                logcont = pvc.FLogContents;
+                logcont = logcont.Stuff(0, 10, "");
                 stacks = new List<string>();
                 f0type = "";
                 lastnode = "";
+
                 for (i = 0; i <= logcont.Length - 1;)
                 {
                     ntype = logcont.Substring(i, 2);
@@ -2513,6 +2612,250 @@ namespace DBLOG
                     }
 
                 }
+            }
+            catch (Exception ex)
+            {
+                fvalue = "";
+            }
+
+            return (fvaluehex, fvalue);
+        }
+
+        private void TranslateData_Variant(byte[] data, FVarColumnInfo pvc,
+                                           out string fvaluehex, out string fvalue, 
+                                           out SqlDbType? VariantBaseType, out short? VariantLength, out short? VariantScale, out string VariantCollation)
+        {
+            int i;
+            string logcont, tmp;
+            short length, scale;
+
+            fvaluehex = "";
+            fvalue = "";
+            VariantBaseType = null;
+            VariantLength = null;
+            VariantScale = null;
+            VariantCollation = null;
+
+            try
+            {
+                logcont = pvc.FLogContents;
+
+                if (logcont.StartsWith("2401")) // uniqueidentifier
+                {
+                    VariantBaseType = SqlDbType.UniqueIdentifier;
+                    fvaluehex = logcont.Stuff(0, "2401".Length, "");
+                    fvalue = TranslateData_UniqueIdentifier(data, pvc.FStartIndex + 2, 16);
+                    goto TranslateData_Variant_Exit;
+                }
+
+                if (logcont.StartsWith("2801")) // date
+                {
+                    VariantBaseType = SqlDbType.Date;
+                    fvaluehex = logcont.Stuff(0, "2801".Length, "");
+                    fvalue = TranslateData_Date(data, pvc.FStartIndex + 2);
+                    goto TranslateData_Variant_Exit;
+                }
+
+                if (logcont.StartsWith("2901")) // time
+                {
+                    VariantBaseType = SqlDbType.Time;
+                    fvaluehex = logcont.Stuff(0, "2901".Length + 2, "");
+                    length = Convert.ToInt16(pvc.FEndIndex - pvc.FStartIndex - 3);
+                    scale = Int16.Parse(logcont.Substring(4, 2), System.Globalization.NumberStyles.HexNumber);
+                    VariantScale = scale;
+                    fvalue = TranslateData_Time(data, pvc.FStartIndex + 3, length, scale);
+                    goto TranslateData_Variant_Exit;
+                }
+
+                if (logcont.StartsWith("2A01")) // datetime2
+                {
+                    VariantBaseType = SqlDbType.DateTime2;
+                    fvaluehex = logcont.Stuff(0, "2A01".Length + 2, "");
+                    length = Convert.ToInt16(pvc.FEndIndex - pvc.FStartIndex - 3);
+                    scale = Int16.Parse(logcont.Substring(4, 2), System.Globalization.NumberStyles.HexNumber);
+                    VariantScale = scale;
+                    fvalue = TranslateData_DateTime2(data, pvc.FStartIndex + 3, length, scale);
+                    goto TranslateData_Variant_Exit;
+                }
+
+                if (logcont.StartsWith("2B01")) // datetimeoffset
+                {
+                    VariantBaseType = SqlDbType.DateTimeOffset;
+                    fvaluehex = logcont.Stuff(0, "2B01".Length + 2, "");
+                    length = Convert.ToInt16(pvc.FEndIndex - pvc.FStartIndex - 3);
+                    scale = Int16.Parse(logcont.Substring(4, 2), System.Globalization.NumberStyles.HexNumber);
+                    VariantScale = scale;
+                    fvalue = TranslateData_DateTimeOffset(data, pvc.FStartIndex + 3, length, scale);
+                    goto TranslateData_Variant_Exit;
+                }
+
+                if (logcont.StartsWith("3001")) // tinyint
+                {
+                    VariantBaseType = SqlDbType.TinyInt;
+                    fvaluehex = logcont.Stuff(0, "3001".Length, "");
+                    fvalue = Convert.ToInt32(fvaluehex, 16).ToString();
+                    goto TranslateData_Variant_Exit;
+                }
+
+                if (logcont.StartsWith("3401")) // smallint
+                {
+                    VariantBaseType = SqlDbType.SmallInt;
+                    fvaluehex = logcont.Stuff(0, "3401".Length, "");
+                    tmp = fvaluehex.Substring(2, 2) + fvaluehex.Substring(0, 2);
+                    fvalue = Convert.ToInt16(tmp, 16).ToString();
+                    goto TranslateData_Variant_Exit;
+                }
+
+                if (logcont.StartsWith("3801")) // int
+                {
+                    VariantBaseType = SqlDbType.Int;
+                    fvaluehex = logcont.Stuff(0, "3801".Length, "");
+                    tmp = fvaluehex.Substring(6, 2) + fvaluehex.Substring(4, 2) + fvaluehex.Substring(2, 2) + fvaluehex.Substring(0, 2);
+                    fvalue = Convert.ToInt32(tmp, 16).ToString();
+                    goto TranslateData_Variant_Exit;
+                }
+
+                if (logcont.StartsWith("3A01")) // smalldatetime
+                {
+                    VariantBaseType = SqlDbType.SmallDateTime;
+                    fvaluehex = logcont.Stuff(0, "3A01".Length, "");
+                    fvalue = TranslateData_SmallDateTime(data, pvc.FStartIndex + 2);
+                    goto TranslateData_Variant_Exit;
+                }
+
+                if (logcont.StartsWith("3B01")) // real
+                {
+                    VariantBaseType = SqlDbType.Real;
+                    fvaluehex = logcont.Stuff(0, "3B01".Length, "");
+                    VariantLength = Convert.ToInt16(fvaluehex.Length / 2);
+                    fvalue = TranslateData_Real(data, pvc.FStartIndex + 2, Convert.ToInt16(VariantLength));
+                    goto TranslateData_Variant_Exit;
+                }
+
+                if (logcont.StartsWith("3C01")) // money
+                {
+                    VariantBaseType = SqlDbType.Money;
+                    fvaluehex = logcont.Stuff(0, "3C01".Length, "");
+                    fvalue = TranslateData_Money(data, pvc.FStartIndex + 2);
+                    goto TranslateData_Variant_Exit;
+                }
+
+                if (logcont.StartsWith("3D01")) // datetime
+                {
+                    VariantBaseType = SqlDbType.DateTime;
+                    fvaluehex = logcont.Stuff(0, "3D01".Length, "");
+                    fvalue = TranslateData_DateTime(data, pvc.FStartIndex + 2);
+                    goto TranslateData_Variant_Exit;
+                }
+
+                if (logcont.StartsWith("3E01")) // float
+                {
+                    VariantBaseType = SqlDbType.Float;
+                    fvaluehex = logcont.Stuff(0, "3E01".Length, "");
+                    VariantLength = Convert.ToInt16((fvaluehex.Length / 2) == 8 ? 53 : 24);
+                    fvalue = TranslateData_Float(data, pvc.FStartIndex + 2, Convert.ToInt16(fvaluehex.Length / 2));
+                    goto TranslateData_Variant_Exit;
+                }
+
+                if (logcont.StartsWith("6801")) // bit
+                {
+                    VariantBaseType = SqlDbType.Bit;
+                    fvaluehex = logcont.Stuff(0, "6801".Length, "");
+                    fvalue = (fvaluehex == "01" ? "1" : "0");
+                    goto TranslateData_Variant_Exit;
+                }
+
+                if (logcont.StartsWith("6C01")) // numeric decimal
+                {
+                    VariantBaseType = SqlDbType.Decimal;
+                    fvaluehex = logcont.Stuff(0, "6C01".Length + 4, "");
+                    length = Convert.ToInt16(pvc.FEndIndex - pvc.FStartIndex - 4);
+                    scale = Int16.Parse(logcont.Substring(6, 2), System.Globalization.NumberStyles.HexNumber);
+                    fvalue = TranslateData_Decimal(data, pvc.FStartIndex + 4, length, scale);
+                    VariantLength = Convert.ToInt16((fvalue.StartsWith("0.") ? 0 : fvalue.IndexOf(".")) + scale);
+                    VariantScale = scale;
+                    goto TranslateData_Variant_Exit;
+                }
+
+                if (logcont.StartsWith("A501")) // varbinary
+                {
+                    VariantBaseType = SqlDbType.VarBinary;
+                    fvaluehex = logcont.Stuff(0, "A501".Length, "");
+                    VariantLength = Int16.Parse(logcont.Substring(6, 2) + logcont.Substring(4, 2), System.Globalization.NumberStyles.HexNumber);
+                    (_, fvalue) = TranslateData_VarBinary(data, new FVarColumnInfo() { InRow = true, FStartIndex = pvc.FStartIndex + 4, FEndIndex = pvc.FEndIndex });
+                    goto TranslateData_Variant_Exit;
+                }
+
+                if (logcont.StartsWith("AD01")) // binary
+                {
+                    VariantBaseType = SqlDbType.Binary;
+                    fvaluehex = logcont.Stuff(0, "AD01".Length + 4, "");
+                    VariantLength = Int16.Parse(logcont.Substring(6, 2) + logcont.Substring(4, 2), System.Globalization.NumberStyles.HexNumber);
+                    fvalue = TranslateData_Binary(data, pvc.FStartIndex + 4, Convert.ToInt16(VariantLength));
+                    goto TranslateData_Variant_Exit;
+                }
+
+                if (logcont.StartsWith("AF01")) // char
+                {
+                    VariantBaseType = SqlDbType.Char;
+                    fvaluehex = logcont.Stuff(0, "AF01".Length + 12, "");
+                    VariantLength = Int16.Parse(logcont.Substring(6, 2) + logcont.Substring(4, 2), System.Globalization.NumberStyles.HexNumber);
+                    VariantCollation = CollationHelper.GetCollationName(logcont.Substring(8, 8));
+                    fvalue = System.Text.Encoding.Default.GetString(data, pvc.FStartIndex + 8, Convert.ToInt16(VariantLength)).TrimEnd();
+                    goto TranslateData_Variant_Exit;
+                }
+
+                if (logcont.StartsWith("7A01")) // smallmoney
+                {
+                    VariantBaseType = SqlDbType.SmallMoney;
+                    fvaluehex = logcont.Stuff(0, "7A01".Length, "");
+                    fvalue = TranslateData_SmallMoney(data, pvc.FStartIndex + 2);
+                    goto TranslateData_Variant_Exit;
+                }
+
+                if (logcont.StartsWith("7F01")) // bigint
+                {
+                    VariantBaseType = SqlDbType.BigInt;
+                    fvaluehex = logcont.Stuff(0, "7F01".Length, "");
+                    fvalue = BitConverter.ToInt64(data, pvc.FStartIndex + 2).ToString();
+                    goto TranslateData_Variant_Exit;
+                }
+
+                if (logcont.StartsWith("A701")) // varchar
+                {
+                    VariantBaseType = SqlDbType.VarChar;
+                    fvaluehex = logcont.Stuff(0, "A701".Length + 12, "");
+                    VariantLength = Int16.Parse(logcont.Substring(6, 2) + logcont.Substring(4, 2), System.Globalization.NumberStyles.HexNumber);
+                    VariantCollation = CollationHelper.GetCollationName(logcont.Substring(8, 8));
+                    fvalue = System.Text.Encoding.Default.GetString(fvaluehex.ToByteArray());
+                    goto TranslateData_Variant_Exit;
+                }
+
+                if (logcont.StartsWith("E701")) // nvarchar
+                {
+                    VariantBaseType = SqlDbType.NVarChar;
+                    fvaluehex = logcont.Stuff(0, "E701".Length + 12, "");
+                    VariantLength = Convert.ToInt16(Int16.Parse(logcont.Substring(6, 2) + logcont.Substring(4, 2), System.Globalization.NumberStyles.HexNumber) / Convert.ToInt16(2));
+                    VariantCollation = CollationHelper.GetCollationName(logcont.Substring(8, 8));
+                    fvalue = System.Text.Encoding.Unicode.GetString(fvaluehex.ToByteArray());
+                    goto TranslateData_Variant_Exit;
+                }
+
+                if (logcont.StartsWith("EF01")) // nchar
+                {
+                    VariantBaseType = SqlDbType.NChar;
+                    fvaluehex = logcont.Stuff(0, "EF01".Length + 12, "");
+                    VariantLength = Convert.ToInt16(Int16.Parse(logcont.Substring(6, 2) + logcont.Substring(4, 2), System.Globalization.NumberStyles.HexNumber) / 2);
+                    VariantCollation = CollationHelper.GetCollationName(logcont.Substring(8, 8));
+                    fvalue = System.Text.Encoding.Unicode.GetString(data, pvc.FStartIndex + 8, Convert.ToInt16(VariantLength * 2)).TrimEnd();
+                    goto TranslateData_Variant_Exit;
+                }
+
+
+
+
+            TranslateData_Variant_Exit:
+                fvalue = fvalue + "";
             }
             catch (Exception ex)
             {
