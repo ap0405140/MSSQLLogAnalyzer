@@ -250,7 +250,7 @@ namespace DBLOG
                         if (log.Operation == "LOP_INSERT_ROWS")
                         {
                             REDOSQL = "insert into " + $"[{sSchemaName}].[{sTableName}]" + "(" + sColumnlist + ") values(" + sValueList1 + "); ";
-                            UNDOSQL = "delete from " + $"[{sSchemaName}].[{sTableName}]" + " where " + sWhereList + "; ";
+                            UNDOSQL = "delete top(1) from " + $"[{sSchemaName}].[{sTableName}]" + " where " + sWhereList + "; ";
 
                             if (TabInfos.IdentityColumn.Length > 0)
                             {
@@ -263,7 +263,7 @@ namespace DBLOG
                         // 产生redo sql和undo sql -- Delete
                         if (log.Operation == "LOP_DELETE_ROWS")
                         {
-                            REDOSQL = "delete from " + $"[{sSchemaName}].[{sTableName}]" + " where " + sWhereList + "; ";
+                            REDOSQL = "delete top(1) from " + $"[{sSchemaName}].[{sTableName}]" + " where " + sWhereList + "; ";
                             UNDOSQL = "insert into " + $"[{sSchemaName}].[{sTableName}]" + "(" + sColumnlist + ") values(" + sValueList1 + "); ";
 
                             if (TabInfos.IdentityColumn.Length > 0)
@@ -444,18 +444,18 @@ namespace DBLOG
                 oDB.ExecuteSQL(sTsql, false);
 
                 sTsql = " insert into #ModifiedRawData([RowLog Contents 0_var]) "
-                        + " select [RowLog Contents 0_var]=replace(stuff((select replace(substring(C.[Value],charindex(N':',[Value],1)+1,48),N'†',N'') "
-                        + "                                               from #temppagedata C "
-                        + "                                               where C.[LSN]=N'" + tl + "' "
-                        + "                                               and C.[ParentObject] like 'Slot '+ltrim(rtrim(A.[Slot ID]))+' Offset%' "
-                        + "                                               and C.[Object] like N'%Memory Dump%' "
-                        + "                                               group by C.[Value] "
-                        + "                                               for xml path('')),1,1,N''),N' ',N'') "
+                        + " select [RowLog Contents 0_var]=upper(replace(stuff((select replace(substring(C.[Value],charindex(N':',[Value],1)+1,48),N'†',N'') "
+                        + "                                                     from #temppagedata C "
+                        + "                                                     where C.[LSN]=N'" + tl + "' "
+                        + "                                                     and C.[ParentObject] like 'Slot '+ltrim(rtrim(A.[Slot ID]))+' Offset%' "
+                        + "                                                     and C.[Object] like N'%Memory Dump%' "
+                        + "                                                     group by C.[Value] "
+                        + "                                                     for xml path('')),1,1,N''),N' ',N'')) "
                         + " from #LogList A "
                         + " where A.[Current LSN]='" + pCurrentLSN + "'; ";
                 oDB.ExecuteSQL(sTsql, false);
 
-                sTsql = "select count(1) from #ModifiedRawData where substring([RowLog Contents 0_var],9,len([RowLog Contents 0_var])-8) like N'%" + (checkvalue1.Length <= 3998 ? checkvalue1 : checkvalue1.Substring(0, 3998)) + "%'; ";
+                sTsql = "select count(1) from #ModifiedRawData where [RowLog Contents 0_var] like N'%" + (checkvalue1.Length <= 3998 ? checkvalue1 : checkvalue1.Substring(0, 3998)) + "%'; ";
                 if (Convert.ToInt32(oDB.Query11(sTsql, false)) > 0)
                 {
                     isfound = true;
@@ -473,21 +473,21 @@ namespace DBLOG
                           + " and Object like N'%Memory Dump%'), "
                           + "u as("
                           + "select [SlotID]=a.SlotID, "
-                          + "       [RowLog Contents 0_var]=replace(stuff((select replace(substring(b.Value,charindex(N':',b.Value,1)+1,48),N'†',N'') "
-                          + "                                              from t b "
-                          + "                                              where b.SlotID=a.SlotID "
-                          + "                                              group by b.Value "
-                          + "                                              for xml path('')),1,1,N''),N' ',N'') "
+                          + "       [RowLog Contents 0_var]=upper(replace(stuff((select replace(substring(b.Value,charindex(N':',b.Value,1)+1,48),N'†',N'') "
+                          + "                                                    from t b "
+                          + "                                                    where b.SlotID=a.SlotID "
+                          + "                                                    group by b.Value "
+                          + "                                                    for xml path('')),1,1,N''),N' ',N'')) "
                           + " from t a "
                           + " group by a.SlotID) "
                           + "insert into #ModifiedRawData([SlotID],[RowLog Contents 0_var]) "
                           + "select [SlotID],[RowLog Contents 0_var] "
                           + " from u "
-                          + " where substring([RowLog Contents 0_var],9,len([RowLog Contents 0_var])-8) like N'%" + (checkvalue1.Length <= 3998 ? checkvalue1 : checkvalue1.Substring(0, 3998)) + "%' "
+                          + " where [RowLog Contents 0_var] like N'%" + (checkvalue1.Length <= 3998 ? checkvalue1 : checkvalue1.Substring(0, 3998)) + "%' "
                           + " and substring([RowLog Contents 0_var],9,len([RowLog Contents 0_var])-8) like N'%" + (checkvalue2.Length <= 3998 ? checkvalue2 : checkvalue2.Substring(0, 3998)) + "%'; ";
                     oDB.ExecuteSQL(sTsql, false);
 
-                    sTsql = "select count(1) from #ModifiedRawData where substring([RowLog Contents 0_var],9,len([RowLog Contents 0_var])-8) like N'%" + (checkvalue1.Length <= 3998 ? checkvalue1 : checkvalue1.Substring(0, 3998)) + "%'; ";
+                    sTsql = "select count(1) from #ModifiedRawData where [RowLog Contents 0_var] like N'%" + (checkvalue1.Length <= 3998 ? checkvalue1 : checkvalue1.Substring(0, 3998)) + "%'; ";
                     if (Convert.ToInt32(oDB.Query11(sTsql, false)) > 0)
                     {
                         isfound = true;
