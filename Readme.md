@@ -32,14 +32,15 @@ update dbo.OrderDetail set ItemNumber='!@#$%'
 -- transaction4: delete all rows
 delete  from dbo.OrderDetail
 ~~~~
-After run finish, There is no data in test table.
+After run, There is no records in test table.
 ~~~~sql
 -- query result
  select * from dbo.OrderDetail
 ~~~~
 ![pic1](https://img-blog.csdn.net/20160114160814768?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQv/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/SouthEast "")
 
-**And then, We can use this tool to recovery data online.**
+**At right now, We can use this tool to recovery data online(not need to restore database and restore logs).**
+**Please download zip file in Releases, and extract files to a folder.**
 
 **step1: Execute MSSQLLogAnalyzer.exe.**
 
