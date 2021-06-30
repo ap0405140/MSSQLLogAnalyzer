@@ -131,6 +131,81 @@ namespace DBLOG
             fs.Dispose();
         }
 
+        public static object ToSpecifiedType(this object x, Type TargetType)
+        {
+            object y;
+            TypeCode typecode;
+
+            if (x == null)
+            {
+                y = null;
+            }
+            else
+            {
+                if (TargetType.IsGenericType == true && TargetType.GetGenericTypeDefinition() == typeof(Nullable<>))
+                {
+                    typecode = Type.GetTypeCode(TargetType.GetGenericArguments()[0]);
+                }
+                else
+                {
+                    typecode = Type.GetTypeCode(TargetType);
+                }
+
+                switch (typecode)
+                {
+                    case TypeCode.Boolean:
+                        y = Convert.ToBoolean(x);
+                        break;
+                    case TypeCode.Char:
+                        y = Convert.ToChar(x);
+                        break;
+                    case TypeCode.SByte:
+                        y = Convert.ToSByte(x);
+                        break;
+                    case TypeCode.Byte:
+                        y = Convert.ToByte(x);
+                        break;
+                    case TypeCode.Int16:
+                        y = Convert.ToInt16(x);
+                        break;
+                    case TypeCode.UInt16:
+                        y = Convert.ToUInt16(x);
+                        break;
+                    case TypeCode.Int32:
+                        y = Convert.ToInt32(x);
+                        break;
+                    case TypeCode.UInt32:
+                        y = Convert.ToUInt32(x);
+                        break;
+                    case TypeCode.Int64:
+                        y = Convert.ToInt64(x);
+                        break;
+                    case TypeCode.UInt64:
+                        y = Convert.ToUInt64(x);
+                        break;
+                    case TypeCode.Single:
+                        y = Convert.ToSingle(x);
+                        break;
+                    case TypeCode.Double:
+                        y = Convert.ToDouble(x);
+                        break;
+                    case TypeCode.Decimal:
+                        y = Convert.ToDecimal(x);
+                        break;
+                    case TypeCode.DateTime:
+                        y = Convert.ToDateTime(x);
+                        break;
+                    case TypeCode.String:
+                        y = Convert.ToString(x);
+                        break;
+                    default:
+                        y = x;
+                        break;
+                }
+            }
+
+            return y;
+        }
     }
 
     // 表信息定义

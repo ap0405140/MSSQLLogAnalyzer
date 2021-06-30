@@ -108,38 +108,81 @@ namespace DBLOG
             DataTable dt;
             List<T> ls;
             T tt;
+            object tt2;
             PropertyInfo[] props;
+            FieldInfo fieldinfo;
             DataColumn[] dtcolumns;
             ColumnAttribute[] columnattributes;
-            string columnname;
+            string targettype, columnname;
+            int i;
 
             try
             {
                 dt = Query(sTsql, closeconnect);
-
-                props = typeof(T).GetProperties();
                 dtcolumns = dt.Columns.Cast<DataColumn>().ToArray();
                 ls = new List<T>();
-                foreach(DataRow dr in dt.Rows)
+
+                targettype = "";
+                if (typeof(T).IsValueType 
+                    || typeof(T).Name.ToLower().Contains("string"))
                 {
-                    tt = (T)Activator.CreateInstance(typeof(T));
+                    targettype = "ValueType";
+                }
+                if (typeof(T).Name.StartsWith("ValueTuple"))
+                {
+                    targettype = "ValueTuple";
+                }
+                if (typeof(T).GetConstructors().Any(p => p.GetParameters().Length == 0))
+                {
+                    targettype = "Class";
+                }
 
-                    foreach (PropertyInfo prop in props)
+                foreach (DataRow dr in dt.Rows)
+                {
+                    switch (targettype)
                     {
-                        columnattributes = prop.GetCustomAttributes(typeof(ColumnAttribute), false).Cast<ColumnAttribute>().ToArray();
-                        columnname = (columnattributes.Length > 0 && string.IsNullOrEmpty(columnattributes[0].Name) == false 
-                                        ? 
-                                           columnattributes[0].Name 
-                                        : 
-                                           prop.Name);
+                        case "ValueType":
+                            tt = (dr[0] == DBNull.Value ? default(T) : (T)dr[0]);
+                            ls.Add(tt);
+                            break;
 
-                        if (dtcolumns.Any(c => c.ColumnName == columnname))
-                        {
-                            prop.SetValue(tt, (dr[columnname] == DBNull.Value ? null : dr[columnname]));
-                        }
+                        case "ValueTuple":
+                            tt = Activator.CreateInstance<T>();
+                            tt2 = tt;
+                            for (i = 0; i <= dtcolumns.Length - 1; i++)
+                            {
+                                fieldinfo = tt2.GetType().GetField("Item" + (i + 1).ToString());
+                                if (fieldinfo != null)
+                                {
+                                    fieldinfo.SetValue(tt2, (dr[i] == DBNull.Value ? null : dr[i].ToSpecifiedType(fieldinfo.FieldType)));
+                                }
+                            }
+                            tt = (T)tt2;
+                            ls.Add(tt);
+                            break;
+
+                        case "Class":
+                            tt = (T)Activator.CreateInstance(typeof(T));
+                            props = typeof(T).GetProperties();
+                            foreach (PropertyInfo prop in props)
+                            {
+                                columnattributes = prop.GetCustomAttributes(typeof(ColumnAttribute), false).Cast<ColumnAttribute>().ToArray();
+                                columnname = (columnattributes.Length > 0 && string.IsNullOrEmpty(columnattributes[0].Name) == false
+                                                ?
+                                                   columnattributes[0].Name
+                                                :
+                                                   prop.Name);
+                                if (dtcolumns.Any(c => c.ColumnName == columnname))
+                                {
+                                    prop.SetValue(tt, (dr[columnname] == DBNull.Value ? null : dr[columnname]));
+                                }
+                            }
+                            ls.Add(tt);
+                            break;
+
+                        default:
+                            break;
                     }
-
-                    ls.Add(tt);
                 }
 
                 return ls;

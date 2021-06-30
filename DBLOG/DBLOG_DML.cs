@@ -93,7 +93,7 @@ namespace DBLOG
                     {
                         continue;
                     }
-                    
+
                     lsns.Add(log.Current_LSN, log.Page_ID);
 
                     sTsql = "select top 1 BeginTime=substring(BeginTime,1,19),EndTime=substring(EndTime,1,19) from #TransactionList where TransactionID='" + log.Transaction_ID + "'; ";
@@ -513,7 +513,7 @@ namespace DBLOG
         private FPageInfo GetPageInfo(string pPageID)
         {
             FPageInfo r;
-            List<DBCCPAGE_DATA> ds;
+            List<string> ds;
             int i, j, m_slotCnt;
             string tmpstr, slotarray;
 
@@ -538,8 +538,8 @@ namespace DBLOG
 
                 // pagedata
                 sTsql = "select rn=row_number() over(order by Value)-1,Value=replace(upper(substring(Value,21,44)),N' ',N'') from #temppagedatalob where ParentObject=N'DATA:'; ";
-                ds = oDB.Query<DBCCPAGE_DATA>(sTsql, false);
-                r.PageData = string.Join("", ds.Select(p => p.Value));
+                ds = oDB.Query<(int rn, string Value)>(sTsql, false).Select(p => p.Value).ToList();
+                r.PageData = string.Join("", ds);
 
                 // pagetype
                 sTsql = "select Value from #temppagedatalob where ParentObject=N'PAGE HEADER:' and Field=N'm_type'; ";
@@ -717,28 +717,17 @@ namespace DBLOG
 
         private string RESTORE_LOP_MODIFY_ROW(string mr1_str, string r1_str, string r0_str, short? pOffsetinRow, short? pModifySize)
         {
-            string mr0_str, stemp;
+            string mr0_str;
 
-            try
+            if (mr1_str.Length >= 8)
             {
-                if (mr1_str.Length >= 8)
-                {
-                    mr0_str = mr1_str.Stuff(Convert.ToInt32(pOffsetinRow) * 2,
-                                            r1_str.Length,
-                                            r0_str);
-                }
-                else
-                {
-                    mr0_str = mr1_str;
-                }
+                mr0_str = mr1_str.Stuff(Convert.ToInt32(pOffsetinRow) * 2,
+                                        r1_str.Length,
+                                        r0_str);
             }
-            catch (Exception ex)
+            else
             {
                 mr0_str = mr1_str;
-#if DEBUG
-                stemp = $"Message:{(ex.Message ?? "")} \r\nStackTrace:{(ex.StackTrace ?? "")} \r\nmr1_str={(mr1_str ?? "")}  r1_str={(r1_str ?? "")}  r0_str={(r0_str ?? "")}";
-                throw new Exception(stemp);
-#endif
             }
 
             return mr0_str;
@@ -2900,12 +2889,6 @@ namespace DBLOG
         public string FEndIndexHex { get; set; }
         public bool InRow { get; set; }
 
-    }
-
-    public class DBCCPAGE_DATA
-    {
-        public long rn { get; set; }
-        public string Value { get; set; }
     }
 
     public class FPageInfo
