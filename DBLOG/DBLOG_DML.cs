@@ -15,12 +15,11 @@ namespace DBLOG
     {
         private DatabaseOperation oDB; // 数据库操作
         private string sTsql,          // 动态SQL
-                       sDatabasename,  // 数据库名
+                       sDatabaseName,  // 数据库名
                        sTableName,     // 表名
                        sSchemaName;    // 架构名
-        private int iColumncount;
         private TableColumn[] TableColumns;  // 表结构定义
-        private TableInformation TabInfos;   // 表信息
+        private TableInformation TableInfos;   // 表信息
         private Dictionary<string, string> lsns; // key:lsn value:pageid
         private Dictionary<string, FPageInfo> lobpagedata; // key:fileid+pageid value:FPageInfo
         public List<FLOG> dtLogs;     // 原始日志信息
@@ -28,11 +27,11 @@ namespace DBLOG
         public DBLOG_DML(string pDatabasename, string pSchemaName, string pTableName, DatabaseOperation poDB)
         {
             oDB = poDB;
-            sDatabasename = pDatabasename;
+            sDatabaseName = pDatabasename;
             sTableName = pTableName;
             sSchemaName = pSchemaName;
 
-            (TabInfos, TableColumns) = GetTableInfo(sSchemaName, sTableName);
+            (TableInfos, TableColumns) = GetTableInfo(sSchemaName, sTableName);
         }
 
         // 解析日志
@@ -45,7 +44,7 @@ namespace DBLOG
                    EndTime = string.Empty,   // 事务结束时间
                    REDOSQL = string.Empty,   // redo sql
                    UNDOSQL = string.Empty,   // undo sql
-                   stemp, sColumnlist, sValueList1, sValueList0, sValue, sWhereList, sPrimaryKeyValue;
+                   stemp, sColumnlist, sValueList1, sValueList0, sValue, sWhereList1, sWhereList0, sPrimaryKeyValue;
             byte[] MR0 = null,
                    MR1 = null;
             DataRow Mrtemp;
@@ -55,8 +54,6 @@ namespace DBLOG
             DataRow[] drTemp;
 
             logs = new List<DatabaseLog>();
-
-            iColumncount = TableColumns.Length;
             sColumnlist = string.Join(",", TableColumns.Where(p => p.DataType != SqlDbType.Timestamp && p.isComputed == false).Select(p => $"[{p.ColumnName}]"));
 
             dtMRlist = new DataTable();
@@ -84,7 +81,7 @@ namespace DBLOG
             lsns = new Dictionary<string, string>();
             lobpagedata = new Dictionary<string, FPageInfo>();
 
-            foreach (FLOG log in dtLogs.Where(p => p.AllocUnitName == $"{sSchemaName}.{sTableName}" + (TabInfos.FAllocUnitName.Length == 0 ? "" : "." + TabInfos.FAllocUnitName))
+            foreach (FLOG log in dtLogs.Where(p => p.AllocUnitName == $"{sSchemaName}.{sTableName}" + (TableInfos.AllocUnitName.Length == 0 ? "" : "." + TableInfos.AllocUnitName))
                                        .OrderByDescending(p => p.Current_LSN))  // 从后往前解析
             {
                 try
@@ -194,7 +191,8 @@ namespace DBLOG
                     UNDOSQL = string.Empty;
                     sValueList1 = string.Empty;
                     sValueList0 = string.Empty;
-                    sWhereList = string.Empty;
+                    sWhereList1 = string.Empty;
+                    sWhereList0 = string.Empty;
                     MR0 = new byte[1];
 
                     #region Insert / Delete
@@ -206,7 +204,7 @@ namespace DBLOG
 
                         if (log.RowLog_Contents_0.Length >= iMinimumlength)
                         {
-                            TranslateData(log.RowLog_Contents_0, TableColumns, TabInfos.PrimarykeyColumnList, TabInfos.ClusteredindexColumnList);
+                            TranslateData(log.RowLog_Contents_0, TableColumns);
                             MR0 = new byte[log.RowLog_Contents_0.Length];
                             MR0 = log.RowLog_Contents_0;
                         }
@@ -219,28 +217,28 @@ namespace DBLOG
                                 continue;
                             }
 
-                            TranslateData(MR0, TableColumns, TabInfos.PrimarykeyColumnList, TabInfos.ClusteredindexColumnList);
+                            TranslateData(MR0, TableColumns);
                         }
 
-                        for (j = 0; j <= iColumncount - 1; j++)
+                        for (j = 0; j <= TableColumns.Length - 1; j++)
                         {
                             if (TableColumns[j].DataType == SqlDbType.Timestamp || TableColumns[j].isComputed == true) { continue; }
 
-                            sValue = ColumnValue2SQLValue(TableColumns[j], TableColumns[j].Value, TableColumns[j].isNull);
+                            sValue = ColumnValue2SQLValue(TableColumns[j]);
                             sValueList1 = sValueList1 + (sValueList1.Length > 0 ? "," : "") + sValue;
 
                             if (TableColumns[j].isNull == false)
                             {
                                 // 无主键时用全部字段过滤
-                                if (TabInfos.PrimarykeyColumnList.Length == 0)
+                                if (TableInfos.PrimaryKeyColumns.Count == 0)
                                 {
-                                    sWhereList = sWhereList + (sWhereList.Length > 0 ? " and " : "") + "[" + TableColumns[j].ColumnName + "]=" + sValue;
+                                    sWhereList0 = sWhereList0 + (sWhereList0.Length > 0 ? " and " : "") + "[" + TableColumns[j].ColumnName + "]=" + sValue;
                                 }
                                 else
                                 {
-                                    if (TabInfos.PrimarykeyColumnList.IndexOf("," + TableColumns[j].ColumnName + ",", 0) > -1)
+                                    if (TableInfos.PrimaryKeyColumns.Contains(TableColumns[j].ColumnName) == true)
                                     {
-                                        sWhereList = sWhereList + (sWhereList.Length > 0 ? " and " : "") + "[" + TableColumns[j].ColumnName + "]=" + sValue;
+                                        sWhereList0 = sWhereList0 + (sWhereList0.Length > 0 ? " and " : "") + "[" + TableColumns[j].ColumnName + "]=" + sValue;
                                     }
                                 }
                             }
@@ -250,9 +248,9 @@ namespace DBLOG
                         if (log.Operation == "LOP_INSERT_ROWS")
                         {
                             REDOSQL = "insert into " + $"[{sSchemaName}].[{sTableName}]" + "(" + sColumnlist + ") values(" + sValueList1 + "); ";
-                            UNDOSQL = "delete top(1) from " + $"[{sSchemaName}].[{sTableName}]" + " where " + sWhereList + "; ";
+                            UNDOSQL = "delete top(1) from " + $"[{sSchemaName}].[{sTableName}]" + " where " + sWhereList0 + "; ";
 
-                            if (TabInfos.IdentityColumn.Length > 0)
+                            if (TableInfos.IdentityColumn.Length > 0)
                             {
                                 REDOSQL = "set identity_insert " + $"[{sSchemaName}].[{sTableName}]" + " on; " + "\r\n"
                                           + REDOSQL + "\r\n"
@@ -263,10 +261,10 @@ namespace DBLOG
                         // 产生redo sql和undo sql -- Delete
                         if (log.Operation == "LOP_DELETE_ROWS")
                         {
-                            REDOSQL = "delete top(1) from " + $"[{sSchemaName}].[{sTableName}]" + " where " + sWhereList + "; ";
+                            REDOSQL = "delete top(1) from " + $"[{sSchemaName}].[{sTableName}]" + " where " + sWhereList0 + "; ";
                             UNDOSQL = "insert into " + $"[{sSchemaName}].[{sTableName}]" + "(" + sColumnlist + ") values(" + sValueList1 + "); ";
 
-                            if (TabInfos.IdentityColumn.Length > 0)
+                            if (TableInfos.IdentityColumn.Length > 0)
                             {
                                 UNDOSQL = "set identity_insert " + $"[{sSchemaName}].[{sTableName}]" + " on; " + "\r\n"
                                           + UNDOSQL + "\r\n"
@@ -282,12 +280,12 @@ namespace DBLOG
                     {
                         if (MR1 != null)
                         {
-                            AnalyzeUpdate(log.Transaction_ID, MR1, log.RowLog_Contents_0, log.RowLog_Contents_1, log.RowLog_Contents_3, log.RowLog_Contents_4, log.Log_Record, TableColumns, iColumncount, TabInfos.PrimarykeyColumnList, log.Operation, log.Current_LSN, log.Offset_in_Row, log.Modify_Size, ref sValueList1, ref sValueList0, ref sWhereList, ref MR0);
+                            AnalyzeUpdate(log.Transaction_ID, MR1, log.RowLog_Contents_0, log.RowLog_Contents_1, log.RowLog_Contents_3, log.RowLog_Contents_4, log.Log_Record, TableColumns, log.Operation, log.Current_LSN, log.Offset_in_Row, log.Modify_Size, ref sValueList1, ref sValueList0, ref sWhereList1, ref sWhereList0, ref MR0);
 
                             if (sValueList1.Length > 0)
                             {
-                                REDOSQL = $"update [{sSchemaName}].[{sTableName}] set {sValueList1} where {sWhereList}; ";
-                                UNDOSQL = $"update [{sSchemaName}].[{sTableName}] set {sValueList0} where {sWhereList}; ";
+                                REDOSQL = $"update top(1) [{sSchemaName}].[{sTableName}] set {sValueList1} where {sWhereList1}; ";
+                                UNDOSQL = $"update top(1) [{sSchemaName}].[{sTableName}] set {sValueList0} where {sWhereList0}; ";
                                 stemp = "S: "
                                         + " MR1=" + MR1.ToText() + ", "
                                         + " MR0=" + MR0.ToText() + ", "
@@ -399,7 +397,7 @@ namespace DBLOG
             pageid_dec = Convert.ToInt32(pPageID.Split(':')[1], 16).ToString();
 
             // #temppagedata
-            sTsql = "DBCC PAGE(''" + sDatabasename + "''," + fileid_dec + "," + pageid_dec + ",3) with tableresults,no_infomsgs; ";
+            sTsql = "DBCC PAGE(''" + sDatabaseName + "''," + fileid_dec + "," + pageid_dec + ",3) with tableresults,no_infomsgs; ";
             sTsql = "set transaction isolation level read uncommitted; "
                     + "insert into #temppagedata(ParentObject,Object,Field,Value) exec('" + sTsql + "'); ";
             oDB.ExecuteSQL(sTsql, false);
@@ -531,7 +529,7 @@ namespace DBLOG
                 sTsql = "truncate table #temppagedatalob; ";
                 oDB.ExecuteSQL(sTsql, false);
 
-                sTsql = "DBCC PAGE(''" + sDatabasename + "''," + r.FileNum.ToString() + "," + r.PageNum.ToString() + ",2) with tableresults,no_infomsgs; ";
+                sTsql = "DBCC PAGE(''" + sDatabaseName + "''," + r.FileNum.ToString() + "," + r.PageNum.ToString() + ",2) with tableresults,no_infomsgs; ";
                 sTsql = "set transaction isolation level read uncommitted; "
                         + "insert into #temppagedatalob(ParentObject,Object,Field,Value) exec('" + sTsql + "'); ";
                 oDB.ExecuteSQL(sTsql, false);
@@ -569,13 +567,12 @@ namespace DBLOG
             return r;
         }
 
-        public void AnalyzeUpdate(string pTransactionID, byte[] mr1, byte[] r0, byte[] r1, byte[] r3, byte[] r4, byte[] bLogRecord, TableColumn[] columns, int iColumncount, string sPrimarykeyColumnList, string sOperation, string pCurrentLSN, short? pOffsetinRow, short? pModifySize,
-                                  ref string sValueList1, ref string sValueList0, ref string sWhereList, ref byte[] mr0)
+        public void AnalyzeUpdate(string pTransactionID, byte[] mr1, byte[] r0, byte[] r1, byte[] r3, byte[] r4, byte[] bLogRecord, TableColumn[] columns, string sOperation, string pCurrentLSN, short? pOffsetinRow, short? pModifySize,
+                                  ref string sValueList1, ref string sValueList0, ref string sWhereList1, ref string sWhereList0, ref byte[] mr0)
         {
             int i;
             string mr0_str, mr1_str, r0_str, r1_str, r3_str, r4_str, sLogRecord;
             TableColumn[] columns0, columns1;
-            List<TableColumn> lUnChangedColumns;
 
             mr1_str = mr1.ToText();
             r0_str = r0.ToText();  // .RowLog Contents 0
@@ -584,8 +581,8 @@ namespace DBLOG
             r4_str = r4.ToText();  // .RowLog Contents 4
             sLogRecord = bLogRecord.ToText();  // .Log Record
 
-            columns0 = new TableColumn[iColumncount];
-            columns1 = new TableColumn[iColumncount];
+            columns0 = new TableColumn[columns.Length];
+            columns1 = new TableColumn[columns.Length];
             i = 0;
             foreach (TableColumn c in columns)
             {
@@ -594,8 +591,7 @@ namespace DBLOG
                 i = i + 1;
             }
 
-            TranslateData(mr1, columns1, TabInfos.PrimarykeyColumnList, TabInfos.ClusteredindexColumnList);
-
+            TranslateData(mr1, columns1);
             RestoreLobPage(pTransactionID);
 
             // 由 mr1_str 构造 mr0_str
@@ -613,73 +609,43 @@ namespace DBLOG
             }
 
             mr0 = mr0_str.ToByteArray();
-            TranslateData(mr0, columns0, TabInfos.PrimarykeyColumnList, TabInfos.ClusteredindexColumnList);
+            TranslateData(mr0, columns0);
 
-            // 新/旧值列表
-            lUnChangedColumns = new List<TableColumn>();
-            sValueList0 = "";
             sValueList1 = "";
-
-            for (i = 0; i <= iColumncount - 1; i++)
+            sValueList0 = "";
+            sWhereList1 = "";
+            sWhereList0 = "";
+            for (i = 0; i <= columns.Length - 1; i++)
             {
-                if (columns0[i].isNull == false
-                    && columns1[i].isNull == false
-                    && columns0[i].Value != null
-                    && columns1[i].Value != null)
-                {
-                    if (columns0[i].Value.ToString() != columns1[i].Value.ToString())
-                    {
-                        sValueList0 = sValueList0 + (sValueList0.Length > 0 ? "," : "")
-                                      + "[" + columns0[i].ColumnName + "]="
-                                      + ColumnValue2SQLValue(columns0[i], columns0[i].Value, columns0[i].isNull);
+                if (columns[i].DataType == SqlDbType.Timestamp) { continue; }
 
-                        sValueList1 = sValueList1 + (sValueList1.Length > 0 ? "," : "")
-                                      + "[" + columns1[i].ColumnName + "]="
-                                      + ColumnValue2SQLValue(columns1[i], columns1[i].Value, columns1[i].isNull);
-                    }
-                    else
-                    {
-                        lUnChangedColumns.Add(columns0[i]);
-                    }
-                }
-
-                if ((columns0[i].isNull == true && columns1[i].isNull == false)
+                if ((columns0[i].isNull == false
+                     && columns1[i].isNull == false
+                     && columns0[i].Value != null
+                     && columns1[i].Value != null
+                     && columns0[i].Value.ToString() != columns1[i].Value.ToString())
+                    || (columns0[i].isNull == true && columns1[i].isNull == false)
                     || (columns0[i].isNull == false && columns1[i].isNull == true))
                 {
                     sValueList0 = sValueList0 + (sValueList0.Length > 0 ? "," : "")
                                   + "[" + columns0[i].ColumnName + "]="
-                                  + ColumnValue2SQLValue(columns0[i], columns0[i].Value, columns0[i].isNull);
-
+                                  + ColumnValue2SQLValue(columns0[i]);
                     sValueList1 = sValueList1 + (sValueList1.Length > 0 ? "," : "")
                                   + "[" + columns1[i].ColumnName + "]="
-                                  + ColumnValue2SQLValue(columns1[i], columns1[i].Value, columns1[i].isNull);
+                                  + ColumnValue2SQLValue(columns1[i]);
+                }
+
+                if (TableInfos.PrimaryKeyColumns.Count == 0
+                    || TableInfos.PrimaryKeyColumns.Contains(columns[i].ColumnName))
+                {
+                    sWhereList0 = sWhereList0 + (sWhereList0.Length > 0 ? " and " : "")
+                                  + "[" + columns[i].ColumnName + "]="
+                                  + ColumnValue2SQLValue(columns1[i]);
+                    sWhereList1 = sWhereList1 + (sWhereList1.Length > 0 ? " and " : "")
+                                  + "[" + columns[i].ColumnName + "]="
+                                  + ColumnValue2SQLValue(columns0[i]);
                 }
             }
-
-            // where clause
-            sWhereList = "";
-            for (i = 0; i <= lUnChangedColumns.Count - 1; i++)
-            {
-                if (lUnChangedColumns[i].DataType == SqlDbType.Timestamp) { continue; }
-
-                if (sPrimarykeyColumnList.Length == 0)   // 无主键时,用所有未变更字段.
-                {
-                    sWhereList = sWhereList + (sWhereList.Length > 0 ? " and " : "")
-                                 + "[" + lUnChangedColumns[i].ColumnName + "]="
-                                 + ColumnValue2SQLValue(lUnChangedColumns[i], lUnChangedColumns[i].Value, lUnChangedColumns[i].isNull);
-
-                }
-                else
-                {
-                    if (sPrimarykeyColumnList.IndexOf("," + lUnChangedColumns[i].ColumnName + ",", 0) > -1)
-                    {
-                        sWhereList = sWhereList + (sWhereList.Length > 0 ? " and " : "")
-                                     + "[" + lUnChangedColumns[i].ColumnName + "]="
-                                     + ColumnValue2SQLValue(lUnChangedColumns[i], lUnChangedColumns[i].Value, lUnChangedColumns[i].isNull);
-                    }
-                }
-            }
-
         }
 
         private void RestoreLobPage(string pTransactionID)
@@ -783,7 +749,7 @@ namespace DBLOG
                 }
 
                 mr0 = mr0_str.ToByteArray();
-                TranslateData(mr0, columns0, TabInfos.PrimarykeyColumnList, TabInfos.ClusteredindexColumnList);
+                TranslateData(mr0, columns0);
                 bfinish = true;
             }
             catch(Exception ex)
@@ -870,7 +836,7 @@ namespace DBLOG
 
                         mr0 = mr0_str.ToByteArray();
 
-                        TranslateData(mr0, columns0, TabInfos.PrimarykeyColumnList, TabInfos.ClusteredindexColumnList);
+                        TranslateData(mr0, columns0);
                         bfinish = true;
                         break;
                     }
@@ -889,44 +855,67 @@ namespace DBLOG
             return mr0_str;
         }
 
-        private void TranslateData(byte[] data, TableColumn[] columns, string sPrimarykeyColumns, string sClusteredindexColumns)
+        private void TranslateData(byte[] data, TableColumn[] columns)
         {
+            int index, index2, index3,
+                iBitValueStartIndex,
+                iVarColumnCount;
+            string sData,
+                   sNullStatus,  // 列null值状态列表
+                   sTemp,
+                   sValueHex,
+                   sValue,
+                   VariantCollation;
+            byte[] m_bBitColumnData;
+            short i, j, 
+                  sBitColumnCount, 
+                  iUniqueidentifierColumnCount, 
+                  sBitColumnDataLength, 
+                  sBitColumnDataIndex,
+                  sAllColumnCount,              // 字段总数_实际字段总数
+                  sAllColumnCountLog,           // 字段总数_日志里的字段总数
+                  sMaxColumnID,                 // 最大ColumnID       
+                  sNullStatusLength,            // 列null值状态列表存储所需长度(字节)
+                  sVarColumnCount,              // 变长字段数量
+                  sVarColumnStartIndex,         // 变长列字段值开始位置
+                  sVarColumnEndIndex;           // 变长列字段值结束位置
+            short? VariantLength, 
+                   VariantScale;
+            bool hasJumpRowID;       // 是否已跳过RowID,用于无PrimaryKey的表.
+            TableColumn[] columns2,  // 补齐ColumnID,并移除所有计算列的字段列表.
+                          columns3;  // 实际用于解析的字段列表.
+            SqlDbType? VariantBaseType;
+            TableColumn tmpTableColumn;
+            List<FVarColumnInfo> varlencolumns;  // 变长字段数据
+            FVarColumnInfo tvc;
+
             if (data == null || data.Length <= 4) { return; }
 
-            // 行数据从第5字节开始
-            int index, index2, index3;  // 指针
-            string sData;
-
-            index = 4;
+            index = 4;  // 行数据从第5字节开始
             sData = data.ToText();
+            sAllColumnCount = Convert.ToInt16(columns.Length);
 
-            byte[] m_bBitColumnData;
-            short i, j, sBitColumnCount, iUniqueidentifierColumnCount, sBitColumnDataLength, sBitColumnDataIndex;
-            int sBitValueStartIndex;
-
-            // 预处理Bit数据
+            // 预处理Bit字段
             sBitColumnCount = Convert.ToInt16(columns.Count(p => p.DataType == SqlDbType.Bit));
-
-            // 根据Bit字段总数 计算Bit值列表长度(字节数)
-            sBitColumnDataLength = (short)Math.Ceiling((double)sBitColumnCount / (double)8.0);
+            sBitColumnDataLength = (short)Math.Ceiling((double)sBitColumnCount / (double)8.0); // 根据Bit字段数 计算Bit字段值列表长度(字节数)
             m_bBitColumnData = new byte[sBitColumnDataLength];
             sBitColumnDataIndex = -1;
-            sBitValueStartIndex = 0;
+            iBitValueStartIndex = 0;
 
-            // 预处理Uniqueidentifier数据
+            // 预处理Uniqueidentifier字段
             iUniqueidentifierColumnCount = Convert.ToInt16(columns.Count(p => p.DataType == SqlDbType.UniqueIdentifier));
 
             if (iUniqueidentifierColumnCount >= 2
-                && TabInfos.IsHeapTable == false) // 堆表不适用本规则
+                && TableInfos.IsHeapTable == false) // 堆表不适用本规则
             {
-                TableColumn[] columns_temp = new TableColumn[columns.Length];
+                columns2 = new TableColumn[columns.Length];
 
                 j = 0;
                 for (i = (short)(columns.Length - 1); i >= 0; i--)
                 {
                     if (columns[i].DataType == SqlDbType.UniqueIdentifier)
                     {
-                        columns_temp[j] = columns[i];
+                        columns2[j] = columns[i];
                         j++;
                     }
                 }
@@ -935,58 +924,24 @@ namespace DBLOG
                 {
                     if (columns[i].DataType != SqlDbType.UniqueIdentifier)
                     {
-                        columns_temp[j] = columns[i];
+                        columns2[j] = columns[i];
                         j++;
                     }
                 }
 
-                columns = columns_temp;
+                columns = columns2;
             }
 
             index2 = Convert.ToInt32(data[3].ToString("X2") + data[2].ToString("X2"), 16);  // 指针暂先跳过所有定长字段的值
-
-            short sAllColumnCount,              // 列总数_实际列总数
-                  sAllColumnCountLog,           // 列总数_日志里的列总数
-                  sMaxColumnID,                 // 最大ColumnID       
-                  sNullStatusLength,            // 列null值状态列表存储所需长度(字节)
-                  sVarColumnCount = 0,          // 变长字段数量
-                  sVarColumnStartIndex = 0,     // 变长列字段值开始位置
-                  sVarColumnEndIndex = 0;       // 变长列字段值结束位置
-
-            string sNullStatus,  // 列null值状态列表
-                   sTemp,
-                   sValueHex,
-                   sValue;
-
-            SqlDbType? VariantBaseType;
-            short? VariantLength, VariantScale;
-            string VariantCollation;
-
-            bool isExceed,       // 指针是否已越界
-                 hasJumpRowID;   // 是否已跳过RowID,用于无PrimaryKey的表.
-
-            TableColumn[] columns2,  // 补齐ColumnID, 并移除所有计算列的字段列表
-                          columns3;  // 实际用于解析的字段列表
-
-            TableColumn tmpTableColumn;
-
-            List<FVarColumnInfo> vcs = new List<FVarColumnInfo>(); // 变长字段数据
-            FVarColumnInfo tvc;
-
-            // 取字段总数
-            sAllColumnCount = Convert.ToInt16(columns.Length);
             sAllColumnCountLog = BitConverter.ToInt16(data, index2);
 
-            if (sPrimarykeyColumns.Length > 0) { sPrimarykeyColumns = sPrimarykeyColumns.Substring(1, sPrimarykeyColumns.Length - 2); }
-            if (sClusteredindexColumns.Length > 0) { sClusteredindexColumns = sClusteredindexColumns.Substring(1, sClusteredindexColumns.Length - 2); }
-
-            if (TabInfos.IsHeapTable == true)
+            if (TableInfos.IsHeapTable == true)
             {
-                hasJumpRowID = true; // true false  某些堆表没RowID
+                hasJumpRowID = true; // true false  某些堆表没RowID?
             }
             else
             {
-                hasJumpRowID = (sPrimarykeyColumns == sClusteredindexColumns ? true : false);
+                hasJumpRowID = (TableInfos.PrimaryKeyColumns.SequenceEqual(TableInfos.ClusteredIndexColumns) ? true : false);
             }
 
             index2 = index2 + 2;
@@ -1004,7 +959,6 @@ namespace DBLOG
                 for (i = 0; i <= sMaxColumnID - 1; i++)
                 {
                     tmpTableColumn = columns.Where(p => p.ColumnID == i + 1).FirstOrDefault();
-
                     if (tmpTableColumn == null)
                     {
                         columns2[i] = new TableColumn(Convert.ToInt16(i + 1), string.Empty, SqlDbType.Int, 4, 0, 0, 0, 0, true, false);  // 虚拟字段 isExists = false
@@ -1020,19 +974,15 @@ namespace DBLOG
             columns2 = columns2.Where(p => p.isComputed == false).ToArray();
 
             // 预处理聚集索引字段
-            if (sClusteredindexColumns.Length > 0)
+            if (TableInfos.ClusteredIndexColumns.Count > 0)
             {
-                List<string> sClusteredindexColumnList;
-
-                sClusteredindexColumnList = sClusteredindexColumns.Split(',').ToList();
                 i = 0;
                 columns3 = new TableColumn[columns2.Length];
 
                 // 主键字段置前
-                foreach (string sColumnname in sClusteredindexColumnList)
+                foreach (string cc in TableInfos.ClusteredIndexColumns)
                 {
-                    tmpTableColumn = columns2.Where(p => p.ColumnName == sColumnname && p.isVarLenDataType == false).FirstOrDefault();
-
+                    tmpTableColumn = columns2.Where(p => p.ColumnName == cc && p.isVarLenDataType == false).FirstOrDefault();
                     if (tmpTableColumn != null)
                     {
                         columns3[i] = tmpTableColumn;
@@ -1044,7 +994,6 @@ namespace DBLOG
                 foreach (TableColumn oth in columns2)
                 {
                     tmpTableColumn = columns3.Where(p => p != null && p.ColumnID == oth.ColumnID).FirstOrDefault();
-
                     if (tmpTableColumn == null)
                     {
                         columns3[i] = oth;
@@ -1060,19 +1009,15 @@ namespace DBLOG
             columns2 = columns3;
 
             // 预处理主键字段
-            if (sClusteredindexColumns.Length == 0 && sPrimarykeyColumns.Length > 0)
+            if (TableInfos.ClusteredIndexColumns.Count == 0 && TableInfos.PrimaryKeyColumns.Count > 0)
             {
-                List<string> sPrimarykeyColumnList;
-
-                sPrimarykeyColumnList = sPrimarykeyColumns.Split(',').ToList();
                 i = 0;
                 columns3 = new TableColumn[columns2.Length];
 
                 // 主键字段置前
-                foreach (string sColumnname in sPrimarykeyColumnList)
+                foreach (string pc in TableInfos.PrimaryKeyColumns)
                 {
-                    tmpTableColumn = columns2.Where(p => p.ColumnName == sColumnname && p.isVarLenDataType == false).FirstOrDefault();
-
+                    tmpTableColumn = columns2.Where(p => p.ColumnName == pc && p.isVarLenDataType == false).FirstOrDefault();
                     if (tmpTableColumn != null)
                     {
                         columns3[i] = tmpTableColumn;
@@ -1084,7 +1029,6 @@ namespace DBLOG
                 foreach (TableColumn oth in columns2)
                 {
                     tmpTableColumn = columns3.Where(p => p != null && p.ColumnID == oth.ColumnID).FirstOrDefault();
-
                     if (tmpTableColumn == null)
                     {
                         columns3[i] = oth;
@@ -1099,7 +1043,6 @@ namespace DBLOG
 
             // 根据字段总数 计算null值列表长度(字节数)
             sNullStatusLength = (short)Math.Ceiling((double)sAllColumnCountLog / (double)8.0);
-
             sNullStatus = "";
             for (i = 0; i <= sNullStatusLength - 1; i++)
             {
@@ -1107,10 +1050,9 @@ namespace DBLOG
                 sNullStatus = sTemp + sNullStatus;
                 index2 = index2 + 1;
             }
-
             sNullStatus = sNullStatus.Reverse();  // 字符串反转
 
-            if (TabInfos.IsHeapTable == false && sPrimarykeyColumns != sClusteredindexColumns)
+            if (TableInfos.IsHeapTable == false && TableInfos.PrimaryKeyColumns.SequenceEqual(TableInfos.ClusteredIndexColumns) == false)
             {
                 sNullStatus = sNullStatus.Substring(1, sNullStatus.Length - 1);
             }
@@ -1139,7 +1081,7 @@ namespace DBLOG
                 }
             }
 
-            //取定长字段
+            // 定长字段
             foreach (TableColumn c in columns3)
             {
                 if (c.isVarLenDataType == true || c.isExists == false) { continue; }
@@ -1164,119 +1106,97 @@ namespace DBLOG
                             c.Value = System.Text.Encoding.Default.GetString(data, index, c.Length).TrimEnd();
                             index = index + c.Length;
                             break;
-
                         case System.Data.SqlDbType.NChar:
                             c.Value = System.Text.Encoding.Unicode.GetString(data, index, c.Length).TrimEnd();
                             index = index + c.Length;
                             break;
-
                         case System.Data.SqlDbType.DateTime:
                             c.Value = TranslateData_DateTime(data, index);
                             index = index + c.Length;
                             break;
-
                         case System.Data.SqlDbType.DateTime2:
                             c.Value = TranslateData_DateTime2(data, index, c.Length, c.Scale);
                             index = index + c.Length;
                             break;
-
                         case System.Data.SqlDbType.DateTimeOffset:
                             c.Value = TranslateData_DateTimeOffset(data, index, c.Length, c.Scale);
                             index = index + c.Length;
                             break;
-
                         case System.Data.SqlDbType.SmallDateTime:
                             c.Value = TranslateData_SmallDateTime(data, index);
                             index = index + c.Length;
                             break;
-
                         case System.Data.SqlDbType.Date:
                             c.Value = TranslateData_Date(data, index);
                             index = index + 3;
                             break;
-
                         case System.Data.SqlDbType.Time:
                             c.Value = TranslateData_Time(data, index, c.Length, c.Scale);
                             index = index + c.Length;
                             break;
-
                         case System.Data.SqlDbType.Int:
                             c.Value = BitConverter.ToInt32(data, index);
                             index = index + c.Length;
                             break;
-
                         case System.Data.SqlDbType.BigInt:
                             c.Value = BitConverter.ToInt64(data, index);
                             index = index + c.Length;
                             break;
-
                         case System.Data.SqlDbType.SmallInt:
                             c.Value = BitConverter.ToInt16(data, index);
                             index = index + c.Length;
                             break;
-
                         case System.Data.SqlDbType.TinyInt:
                             c.Value = Convert.ToInt32(data[index]);
                             index = index + c.Length;
                             break;
-
                         case System.Data.SqlDbType.Decimal:
                             c.Value = TranslateData_Decimal(data, index, c.Length, c.Scale);
                             index = index + c.Length;
                             break;
-
                         case System.Data.SqlDbType.Real:
                             c.Value = TranslateData_Real(data, index, c.Length);
                             index = index + c.Length;
                             break;
-
                         case System.Data.SqlDbType.Float:
                             c.Value = TranslateData_Float(data, index, c.Length);
                             index = index + c.Length;
                             break;
-
                         case System.Data.SqlDbType.Money:
                             c.Value = TranslateData_Money(data, index);
                             index = index + c.Length;
                             break;
-
                         case System.Data.SqlDbType.SmallMoney:
                             c.Value = TranslateData_SmallMoney(data, index);
                             index = index + c.Length;
                             break;
-
                         case System.Data.SqlDbType.Bit:
                             int iJumpIndexLength;
                             string bValueBit;
 
-                            sBitValueStartIndex = (sBitColumnDataIndex == -1 ? index : sBitValueStartIndex);
+                            iBitValueStartIndex = (sBitColumnDataIndex == -1 ? index : iBitValueStartIndex);
                             iJumpIndexLength = 0;
                             bValueBit = TranslateData_Bit(data, columns, index, c.ColumnName, sBitColumnCount, m_bBitColumnData, sBitColumnDataIndex, ref iJumpIndexLength, ref m_bBitColumnData, ref sBitColumnDataIndex);
 
-                            sBitValueStartIndex = (iJumpIndexLength > 0 ? index : sBitValueStartIndex);
+                            iBitValueStartIndex = (iJumpIndexLength > 0 ? index : iBitValueStartIndex);
                             index = index + iJumpIndexLength;
 
-                            c.LogContentsStartIndex = sBitValueStartIndex;
+                            c.LogContentsStartIndex = iBitValueStartIndex;
                             c.Value = bValueBit;
-                            c.LogContentsEndIndex = sBitValueStartIndex;
-
+                            c.LogContentsEndIndex = iBitValueStartIndex;
                             break;
-
                         case System.Data.SqlDbType.Binary:
                             c.Value = TranslateData_Binary(data, index, c.Length);
                             index = index + c.Length;
                             break;
-
                         case System.Data.SqlDbType.Timestamp:
                             c.Value = "null";
                             index = index + c.Length;
                             break;
-
                         case System.Data.SqlDbType.UniqueIdentifier:
                             c.Value = TranslateData_UniqueIdentifier(data, index, c.Length);
                             index = index + c.Length;
                             break;
-
                         default:
                             break;
                     }
@@ -1289,20 +1209,30 @@ namespace DBLOG
 
             index = index2;
 
-            if (index + 2 < data.Length - 1)
+            // 变长字段
+            if (index + 1 <= data.Length - 1)
             {
-                isExceed = false;
-                sVarColumnCount = BitConverter.ToInt16(data, index); // 变长字段数量(不一定等于字段类型=变长类型的字段数量)
+                // 变长字段数量(不一定等于字段类型=变长类型的字段数量)
+                sTemp = sData.Substring((index + 1) * 2, 2) + sData.Substring(index * 2, 2);
+                iVarColumnCount = Int32.Parse(sTemp, System.Globalization.NumberStyles.HexNumber);
+                if (iVarColumnCount < 32767 && iVarColumnCount <= sAllColumnCountLog)
+                {
+                    sVarColumnCount = (short)iVarColumnCount;
+                }
+                else
+                {
+                    sVarColumnCount = (short)columns3.Count(p => p.isVarLenDataType == true);
+                }
+                
                 index = index + 2;
-
+                varlencolumns = new List<FVarColumnInfo>();
                 if (index < data.Length - 1)
                 {
                     // 接下来每2个字节保存一个变长字段的结束位置,第一个变长字段的开始和结束位置可以算出来.
                     sTemp = sData.Substring(index * 2, 2 * 2);
                     sVarColumnStartIndex = (short)(index + sVarColumnCount * 2);
                     sVarColumnEndIndex = BitConverter.ToInt16(data, index);
-
-                    vcs = new List<FVarColumnInfo>();
+                    
                     for (i = 1, index2 = index; i <= sVarColumnCount; i++)
                     {
                         tvc = new FVarColumnInfo();
@@ -1320,7 +1250,7 @@ namespace DBLOG
                         tvc.FLogContents = sData.Substring(sVarColumnStartIndex * 2,
                                                            (sVarColumnEndIndex - sVarColumnStartIndex) * 2);
 
-                        vcs.Add(tvc);
+                        varlencolumns.Add(tvc);
 
                         if (i < sVarColumnCount)
                         {
@@ -1332,45 +1262,24 @@ namespace DBLOG
                         }
                     }
                 }
-            }
-            else
-            {
-                isExceed = true;
-            }
 
-            if (isExceed == true)
-            {
-                foreach (TableColumn c in columns)
-                {
-                    if (c.isVarLenDataType == true) { c.isNull = true; }
-                }
-            }
-            else
-            {
                 // 跳过1个变长字段(可能为表的RowID).
-                if (hasJumpRowID == false)
-                {
-                    hasJumpRowID = true;
+                //if (hasJumpRowID == false)
+                //{
+                //    hasJumpRowID = true;
 
-                    if (isExceed == false)
-                    {
-                        sVarColumnStartIndex = sVarColumnEndIndex;
-                        index = index + 2;
-                        if (index + 2 >= data.Length - 1) { return; }
-                        sVarColumnEndIndex = BitConverter.ToInt16(data, index);
-                    }
-                }
+                //    sVarColumnStartIndex = sVarColumnEndIndex;
+                //    index = index + 2;
+                //    if (index + 2 >= data.Length - 1) { return; }
+                //    sVarColumnEndIndex = BitConverter.ToInt16(data, index);
+                //}
 
                 // 循环变长字段列表读取数据
                 foreach (TableColumn c in columns3)
                 {
-                    if (c.isVarLenDataType == false && c.isExists == true)
-                    {
-                        continue;
-                    }
+                    if (c.isVarLenDataType == false && c.isExists == true) { continue; }
 
-                    tvc = vcs.FirstOrDefault(p => p.FIndex == c.LeafOffset);
-
+                    tvc = varlencolumns.FirstOrDefault(p => p.FIndex == c.LeafOffset);
                     if (tvc != null)
                     {
                         c.LogContentsStartIndex = tvc.FStartIndex;
@@ -1398,18 +1307,15 @@ namespace DBLOG
                                 c.ValueHex = tvc.FLogContents;
                                 c.Value = System.Text.Encoding.Default.GetString(tvc.FLogContents.ToByteArray()).TrimEnd();
                                 break;
-
                             case System.Data.SqlDbType.NVarChar:
                                 c.ValueHex = tvc.FLogContents;
                                 c.Value = System.Text.Encoding.Unicode.GetString(tvc.FLogContents.ToByteArray()).TrimEnd();
                                 break;
-
                             case System.Data.SqlDbType.VarBinary:
                                 (sValueHex, sValue) = TranslateData_VarBinary(data, tvc);
                                 c.ValueHex = sValueHex;
                                 c.Value = sValue;
                                 break;
-
                             case System.Data.SqlDbType.Variant:
                                 (sValueHex, sValue, VariantBaseType, VariantLength, VariantScale, VariantCollation) = TranslateData_Variant(data, tvc);
                                 c.ValueHex = sValueHex;
@@ -1419,33 +1325,28 @@ namespace DBLOG
                                 c.VariantScale = VariantScale;
                                 c.VariantCollation = VariantCollation;
                                 break;
-
                             case System.Data.SqlDbType.Xml:
                                 (sValueHex, sValue) = TranslateData_XML(data, tvc);
                                 c.ValueHex = sValueHex;
                                 c.Value = sValue;
                                 break;
-
                             case System.Data.SqlDbType.Text:
                                 (sValueHex, sValue) = TranslateData_Text(data, tvc, false);
                                 c.ValueHex = sValueHex;
                                 c.Value = sValue;
                                 c.isNull = (sValueHex == null && sValue == "nullvalue");
                                 break;
-
                             case System.Data.SqlDbType.NText:
                                 (sValueHex, sValue) = TranslateData_Text(data, tvc, true);
                                 c.ValueHex = sValueHex;
                                 c.Value = sValue;
                                 c.isNull = (sValueHex == null && sValue == "nullvalue");
                                 break;
-
                             case System.Data.SqlDbType.Image:
                                 (sValueHex, sValue) = TranslateData_Image(data, tvc);
                                 c.ValueHex = sValueHex;
                                 c.Value = sValue;
                                 break;
-
                             default:
                                 break;
                         }
@@ -1465,8 +1366,15 @@ namespace DBLOG
                     }
                 }
             }
+            else
+            {
+                foreach (TableColumn c in columns)
+                {
+                    if (c.isVarLenDataType == true) { c.isNull = true; }
+                }
+            }
 
-            // 重新赋值回columns后返回.
+            // 重新赋值回columns.
             foreach (TableColumn x in columns)
             {
                 tmpTableColumn = columns3.Where(p => p.ColumnID == x.ColumnID).FirstOrDefault();
@@ -1494,74 +1402,68 @@ namespace DBLOG
             TableInformation tableinfo;
             TableColumn[] tablecolumns;
 
-            sTsql = "declare @primarykeyColumnList nvarchar(1000),@ClusteredindexColumnList nvarchar(1000),@identityColumn nvarchar(100),@IsHeapTable bit,@FAllocUnitName nvarchar(1000) "
-                      + " select @primarykeyColumnList=isnull(@primarykeyColumnList+N',',N'')+c.name "
-                      + "    from sys.indexes a "
-                      + "    inner join sys.index_columns b on a.object_id=b.object_id and a.index_id=b.index_id "
-                      + "    inner join sys.columns c on b.object_id=c.object_id and b.column_id=c.column_id "
-                      + "    inner join sys.objects d on a.object_id=d.object_id "
-                      + "    inner join sys.schemas s on d.schema_id=s.schema_id "
-                      + "    where a.is_primary_key=1 "
-                      + $"   and s.name=N'{pSchemaName}' "
-                      + "    and d.type='U' "
-                      + $"   and d.name=N'{pTablename}' "
-                      + "    order by b.key_ordinal; "
+            tableinfo = new TableInformation();
 
-                      + " select @ClusteredindexColumnList=isnull(@ClusteredindexColumnList+N',',N'')+c.name "
-                      + "    from sys.indexes a "
-                      + "    inner join sys.index_columns b on a.object_id=b.object_id and a.index_id=b.index_id "
-                      + "    inner join sys.columns c on b.object_id=c.object_id and b.column_id=c.column_id "
-                      + "    inner join sys.objects d on a.object_id=d.object_id "
-                      + "    inner join sys.schemas s on d.schema_id=s.schema_id "
-                      + "    where a.index_id<=1 "
-                      + "    and a.type=1 "
-                      + $"   and s.name=N'{pSchemaName}' "
-                      + "    and d.type='U' "
-                      + $"   and d.name=N'{pTablename}' "
-                      + "    order by b.key_ordinal; "
+            // PrimaryKeyColumns
+            sTsql = "select primarykeycolumn=c.name "
+                     + " from sys.indexes a "
+                     + " join sys.index_columns b on a.object_id=b.object_id and a.index_id=b.index_id "
+                     + " join sys.columns c on b.object_id=c.object_id and b.column_id=c.column_id "
+                     + " join sys.objects d on a.object_id=d.object_id "
+                     + " join sys.schemas s on d.schema_id=s.schema_id "
+                     + " where a.is_primary_key=1 "
+                     + $" and s.name=N'{pSchemaName}' "
+                     + "  and d.type='U' "
+                     + $" and d.name=N'{pTablename}' "
+                     + "  order by b.key_ordinal; ";
+            tableinfo.PrimaryKeyColumns = oDB.Query<string>(sTsql, false).ToList();
 
-                      + " select @identityColumn=a.name "
-                      + "    from sys.columns a "
-                      + "    inner join sys.objects b on a.object_id=b.object_id "
-                      + "    inner join sys.schemas s on b.schema_id=s.schema_id "
-                      + "    where a.is_identity=1 "
-                      + $"   and s.name=N'{pSchemaName}' "
-                      + "    and b.type='U' "
-                      + $"   and b.name=N'{pTablename}'; "
+            // ClusteredIndexColumns
+            sTsql = "select clusteredindexcolumn=c.name "
+                    + "  from sys.indexes a "
+                    + "  join sys.index_columns b on a.object_id=b.object_id and a.index_id=b.index_id "
+                    + "  join sys.columns c on b.object_id=c.object_id and b.column_id=c.column_id "
+                    + "  join sys.objects d on a.object_id=d.object_id "
+                    + "  join sys.schemas s on d.schema_id=s.schema_id "
+                    + "  where a.index_id<=1 "
+                    + "  and a.type=1 "
+                    + $" and s.name=N'{pSchemaName}' "
+                    + "  and d.type='U' "
+                    + $" and d.name=N'{pTablename}' "
+                    + "  order by b.key_ordinal; ";
+            tableinfo.ClusteredIndexColumns = oDB.Query<string>(sTsql, false).ToList();
 
-                      + " select @IsHeapTable=case when exists(select 1 "
-                      + "                                       from sys.tables t "
-                      + "                                       inner join sys.schemas s on t.schema_id=s.schema_id "
-                      + "                                       inner join sys.indexes i on t.object_id=i.object_id "
-                      + $"                                      where s.name=N'{pSchemaName}' and t.name=N'{pTablename}' "
-                      + "                                       and i.index_id=0) then 1 else 0 end; "
+            // IdentityColumn
+            sTsql = "select identitycolumn=a.name "
+                    + "  from sys.columns a "
+                    + "  join sys.objects b on a.object_id=b.object_id "
+                    + "  join sys.schemas s on b.schema_id=s.schema_id "
+                    + "  where a.is_identity=1 "
+                    + $" and s.name=N'{pSchemaName}' "
+                    + "  and b.type='U' "
+                    + $" and b.name=N'{pTablename}'; ";
+            tableinfo.IdentityColumn = oDB.Query<string>(sTsql, false).FirstOrDefault();
 
-                      + " select @FAllocUnitName=isnull(d.name,N'') "
-                      + "  from sys.tables a "
-                      + "  inner join sys.schemas s on a.schema_id=s.schema_id "
-                      + "  inner join sys.indexes d on a.object_id=d.object_id "
-                      + "  where d.type in(0,1) "
-                      + $" and s.name=N'{pSchemaName}' "
-                      + $" and a.name=N'{pTablename}'; "
+            // IsHeapTable
+            sTsql = "select isheaptable=cast(case when exists(select 1 "
+                      + "                                     from sys.tables t "
+                      + "                                     join sys.schemas s on t.schema_id=s.schema_id "
+                      + "                                     join sys.indexes i on t.object_id=i.object_id "
+                      + $"                                    where s.name=N'{pSchemaName}' "
+                      + $"                                    and t.name=N'{pTablename}' "
+                      + "                                     and i.index_id=0) then 1 else 0 end as bit); ";
+            tableinfo.IsHeapTable = oDB.Query<bool>(sTsql, false).FirstOrDefault();
 
-                      + " select ItemName,ItemValue "
-                      + "    from (select ItemName='PrimarykeyColumnList', "
-                      + "                 ItemValue=isnull(','+@primarykeyColumnList+',','') "
-                      + "          union all "
-                      + "          select ItemName='ClusteredindexColumnList', "
-                      + "                 ItemValue=isnull(','+@ClusteredindexColumnList+',','') "
-                      + "          union all "
-                      + "          select ItemName='IdentityColumn', "
-                      + "                 ItemValue=isnull(@identityColumn,'') "
-                      + "          union all "
-                      + "          select ItemName='IsHeapTable', "
-                      + "                 ItemValue=rtrim(isnull(@IsHeapTable,0)) "
-                      + "          union all "
-                      + "          select ItemName='FAllocUnitName', "
-                      + "                 ItemValue=rtrim(isnull(@FAllocUnitName,N'')) "
-                      + "        ) t for xml raw('Item'),root('TableInfomation'); ";
-            stemp = oDB.Query11(sTsql, false);
-            tableinfo = AnalyzeTableInformation(stemp);
+            // AllocUnitName
+            sTsql = "select allocunitname=isnull(d.name,N'') "
+                    + "  from sys.tables a "
+                    + "  join sys.schemas s on a.schema_id=s.schema_id "
+                    + "  join sys.indexes d on a.object_id=d.object_id "
+                    + "  where d.type in(0,1) "
+                    + $" and s.name=N'{pSchemaName}' "
+                    + $" and a.name=N'{pTablename}'; ";
+            tableinfo.AllocUnitName = oDB.Query<string>(sTsql, false).FirstOrDefault();
+            
 
             sTsql = "select cast(("
                         + "select ColumnID,ColumnName,DataType,Length,Precision,Nullable,Scale,IsComputed,LeafOffset,LeafNullBit "
@@ -1576,17 +1478,17 @@ namespace DBLOG
                         + "              'LeafOffset'=isnull(d2.leaf_offset,0), "
                         + "              'LeafNullBit'=isnull(d2.leaf_null_bit,0) "
                         + "       from sys.tables a "
-                        + "       inner join sys.schemas s on a.schema_id=s.schema_id "
-                        + "       inner join sys.columns b on a.object_id=b.object_id "
-                        + "       inner join sys.systypes c on b.system_type_id=c.xtype and b.user_type_id=c.xusertype "
+                        + "       join sys.schemas s on a.schema_id=s.schema_id "
+                        + "       join sys.columns b on a.object_id=b.object_id "
+                        + "       join sys.systypes c on b.system_type_id=c.xtype and b.user_type_id=c.xusertype "
                         + "       outer apply (select d.leaf_offset,d.leaf_null_bit "
-                        + "                     from sys.system_internals_partition_columns d "
-                        + "                     where d.partition_column_id=b.column_id "
-                        + "                     and d.partition_id in (select partitionss.partition_id "
-                        + "                                             from sys.allocation_units allocunits "
-                        + "                                             inner join sys.partitions partitionss on (allocunits.type in(1, 3) and allocunits.container_id=partitionss.hobt_id) "
-                        + "                                                                                       or (allocunits.type=2 and allocunits.container_id=partitionss.partition_id) "
-                        + "                                             where partitionss.object_id=a.object_id and partitionss.index_id<=1)) d2 "
+                        + "                    from sys.system_internals_partition_columns d "
+                        + "                    where d.partition_column_id=b.column_id "
+                        + "                    and d.partition_id in (select partitionss.partition_id "
+                        + "                                           from sys.allocation_units allocunits "
+                        + "                                           join sys.partitions partitionss on (allocunits.type in(1, 3) and allocunits.container_id=partitionss.hobt_id) "
+                        + "                                                                              or (allocunits.type=2 and allocunits.container_id=partitionss.partition_id) "
+                        + "                                           where partitionss.object_id=a.object_id and partitionss.index_id<=1)) d2 "
                         + $"      where s.name=N'{pSchemaName}' and a.name=N'{pTablename}') t "
                         + " order by ColumnID "
                         + " for xml raw('Column'),root('ColumnList') "
@@ -1595,41 +1497,6 @@ namespace DBLOG
             tablecolumns = AnalyzeTablelayout(stemp);
 
             return (tableinfo, tablecolumns);
-        }
-
-        // 解析表信息.
-        private TableInformation AnalyzeTableInformation(string sTableInformation)
-        {
-            TableInformation TabInfo;
-            XmlDocument xmlDoc;
-            XmlNode xmlRootnode;
-            XmlNodeList xmlNodelist;
-            string sItemvalue;
-
-            TabInfo = new TableInformation();
-
-            xmlDoc = new XmlDocument();
-            xmlDoc.LoadXml(sTableInformation);
-            xmlRootnode = xmlDoc.SelectSingleNode("TableInfomation");
-            xmlNodelist = xmlRootnode.ChildNodes;
-            sItemvalue = "";
-
-            foreach (XmlNode xmlNode in xmlNodelist)
-            {
-                sItemvalue = xmlNode.Attributes["ItemValue"].Value;
-
-                switch (xmlNode.Attributes["ItemName"].Value)
-                {
-                    case "PrimarykeyColumnList": TabInfo.PrimarykeyColumnList = sItemvalue; break;
-                    case "ClusteredindexColumnList": TabInfo.ClusteredindexColumnList = sItemvalue; break;
-                    case "IdentityColumn": TabInfo.IdentityColumn = sItemvalue; break;
-                    case "IsHeapTable": TabInfo.IsHeapTable = (sItemvalue == "1" ? true : false); break;
-                    case "FAllocUnitName": TabInfo.FAllocUnitName = sItemvalue; break;
-                    default: break;
-                }
-            }
-
-            return TabInfo;
         }
 
         // 解析表结构定义(XML).
@@ -1728,16 +1595,16 @@ namespace DBLOG
         }
 
         // 获取字段值的SQL形式
-        private string ColumnValue2SQLValue(TableColumn col, object oValue, bool isNull)
+        private string ColumnValue2SQLValue(TableColumn pcol)
         {
             string sValue;
             bool bNeedSeparatorchar, bIsUnicodeType;
             string[] NoSeparatorchar, UnicodeType;
             SqlDbType? datatype;
 
-            datatype = (col.DataType != SqlDbType.Variant ? col.DataType : col.VariantBaseType);
+            datatype = (pcol.DataType != SqlDbType.Variant ? pcol.DataType : pcol.VariantBaseType);
 
-            if (isNull == true || oValue == null || datatype == null)
+            if (pcol.isNull == true || pcol.Value == null || datatype == null)
             {
                 sValue = "null";
             }
@@ -1749,9 +1616,9 @@ namespace DBLOG
                 bNeedSeparatorchar = (NoSeparatorchar.Any(p => p == datatype.ToString().ToLower()) ? false : true);
                 bIsUnicodeType = (UnicodeType.Any(p => p == datatype.ToString().ToLower()) ? true : false);
                 
-                sValue = (bIsUnicodeType ? "N" : "") + (bNeedSeparatorchar ? "'" : "") + oValue.ToString().Replace("'", "''") + (bNeedSeparatorchar ? "'" : "");
+                sValue = (bIsUnicodeType ? "N" : "") + (bNeedSeparatorchar ? "'" : "") + pcol.Value.ToString().Replace("'", "''") + (bNeedSeparatorchar ? "'" : "");
 
-                if (col.DataType == SqlDbType.Variant)
+                if (pcol.DataType == SqlDbType.Variant)
                 {
                     switch(datatype)
                     {
@@ -1762,13 +1629,13 @@ namespace DBLOG
                             sValue = $"cast({sValue} as date)";
                             break;
                         case SqlDbType.Time:
-                            sValue = $"cast({sValue} as time({col.VariantScale.ToString()}))";
+                            sValue = $"cast({sValue} as time({pcol.VariantScale.ToString()}))";
                             break;
                         case SqlDbType.DateTime2:
-                            sValue = $"cast({sValue} as datetime2({col.VariantScale.ToString()}))";
+                            sValue = $"cast({sValue} as datetime2({pcol.VariantScale.ToString()}))";
                             break;
                         case SqlDbType.DateTimeOffset:
-                            sValue = $"cast({sValue} as datetimeoffset({col.VariantScale.ToString()}))";
+                            sValue = $"cast({sValue} as datetimeoffset({pcol.VariantScale.ToString()}))";
                             break;
                         case SqlDbType.TinyInt:
                             sValue = $"cast({sValue} as tinyint)";
@@ -1792,22 +1659,22 @@ namespace DBLOG
                             sValue = $"cast({sValue} as datetime)";
                             break;
                         case SqlDbType.Float:
-                            sValue = $"cast({sValue} as float({col.VariantLength.ToString()}))";
+                            sValue = $"cast({sValue} as float({pcol.VariantLength.ToString()}))";
                             break;
                         case SqlDbType.Bit:
                             sValue = $"cast({sValue} as bit)";
                             break;
                         case SqlDbType.Decimal:  // numeric decimal
-                            sValue = $"cast({sValue} as numeric({col.VariantLength.ToString()},{col.VariantScale.ToString()}))";
+                            sValue = $"cast({sValue} as numeric({pcol.VariantLength.ToString()},{pcol.VariantScale.ToString()}))";
                             break;
                         case SqlDbType.VarBinary:
-                            sValue = $"cast({sValue} as varbinary({col.VariantLength.ToString()}))";
+                            sValue = $"cast({sValue} as varbinary({pcol.VariantLength.ToString()}))";
                             break;
                         case SqlDbType.Binary:
-                            sValue = $"cast({sValue} as binary({col.VariantLength.ToString()}))";
+                            sValue = $"cast({sValue} as binary({pcol.VariantLength.ToString()}))";
                             break;
                         case SqlDbType.Char:
-                            sValue = $"cast({sValue} {(string.IsNullOrEmpty(col.VariantCollation) == false ? "collate " + col.VariantCollation : "")} as char({col.VariantLength.ToString()}))";
+                            sValue = $"cast({sValue} {(string.IsNullOrEmpty(pcol.VariantCollation) == false ? "collate " + pcol.VariantCollation : "")} as char({pcol.VariantLength.ToString()}))";
                             break;
                         case SqlDbType.SmallMoney:
                             sValue = $"cast({sValue} as smallmoney)";
@@ -1816,13 +1683,13 @@ namespace DBLOG
                             sValue = $"cast({sValue} as bigint)";
                             break;
                         case SqlDbType.VarChar:
-                            sValue = $"cast({sValue} {(string.IsNullOrEmpty(col.VariantCollation) == false ? "collate " + col.VariantCollation : "")} as varchar({col.VariantLength.ToString()}))";
+                            sValue = $"cast({sValue} {(string.IsNullOrEmpty(pcol.VariantCollation) == false ? "collate " + pcol.VariantCollation : "")} as varchar({pcol.VariantLength.ToString()}))";
                             break;
                         case SqlDbType.NVarChar:
-                            sValue = $"cast({sValue} {(string.IsNullOrEmpty(col.VariantCollation) == false ? "collate " + col.VariantCollation : "")} as nvarchar({col.VariantLength.ToString()}))";
+                            sValue = $"cast({sValue} {(string.IsNullOrEmpty(pcol.VariantCollation) == false ? "collate " + pcol.VariantCollation : "")} as nvarchar({pcol.VariantLength.ToString()}))";
                             break;
                         case SqlDbType.NChar:
-                            sValue = $"cast({sValue} {(string.IsNullOrEmpty(col.VariantCollation) == false ? "collate " + col.VariantCollation : "")} as nchar({col.VariantLength.ToString()}))";
+                            sValue = $"cast({sValue} {(string.IsNullOrEmpty(pcol.VariantCollation) == false ? "collate " + pcol.VariantCollation : "")} as nchar({pcol.VariantLength.ToString()}))";
                             break;
 
                     }
@@ -2479,7 +2346,7 @@ namespace DBLOG
         private (string, string) TranslateData_XML(byte[] data, FVarColumnInfo pvc)
         {
             int i, length;
-            string fvaluehex, fvalue, logcont, ntype, nlen1, nlen2, ncont, nvalue, f0type, lastnode;
+            string fvaluehex, fvalue, logcont, nlen1, nlen2, ncont, nvalue, f0type, lastnode;
             List<string> stacks;
 
             fvaluehex = pvc.FLogContents;
@@ -2495,9 +2362,7 @@ namespace DBLOG
 
                 for (i = 0; i <= logcont.Length - 1;)
                 {
-                    ntype = logcont.Substring(i, 2);
-
-                    switch (ntype)
+                    switch (logcont.Substring(i, 2)) // node type
                     {
                         case "F0":
                             i = i + 2;
@@ -2512,13 +2377,11 @@ namespace DBLOG
                                 nlen2 = logcont.Substring(i, 2);
                                 length = (Convert.ToInt32(nlen2, 16) * 128) + (Convert.ToInt32(nlen1, 16) - 128);
                             }
-
                             i = i + 2;
                             ncont = logcont.Substring(i, length * 4);
                             nvalue = System.Text.Encoding.Unicode.GetString(ncont.ToByteArray());
                             i = i + length * 4;
                             i = i + 12;
-
                             f0type = logcont.Substring(i - 4, 2);
                             if (f0type == "F8")
                             {
@@ -2526,19 +2389,15 @@ namespace DBLOG
                                 lastnode = nvalue;
                                 stacks.Add(nvalue);
                             }
-
                             if (f0type == "F6")
                             {
                                 if (fvalue.EndsWith(">"))
                                 {
                                     fvalue = fvalue.Substring(0, fvalue.Length - 1);
                                 }
-
                                 fvalue = fvalue + $" {nvalue}=";
                             }
-
                             break;
-
                         case "11":
                             i = i + 2;
                             nlen1 = logcont.Substring(i, 2);
@@ -2552,50 +2411,37 @@ namespace DBLOG
                                 nlen2 = logcont.Substring(i, 2);
                                 length = (Convert.ToInt32(nlen2, 16) * 128) + (Convert.ToInt32(nlen1, 16) - 128);
                             }
-
                             i = i + 2;
                             ncont = logcont.Substring(i, length * 4);
                             nvalue = System.Text.Encoding.Unicode.GetString(ncont.ToByteArray());
-
                             if (f0type == "F8")
                             {
                                 fvalue = fvalue + $"{nvalue}";
                             }
-
                             if (f0type == "F6")
                             {
                                 fvalue = fvalue + $"\"{nvalue}\"";
                             }
-
                             i = i + length * 4;
-
                             break;
-
                         case "F7":
                             nvalue = stacks.Last();
                             fvalue = fvalue + $"</{nvalue}>";
                             i = i + 2;
                             stacks.RemoveAt(stacks.Count - 1);
-
                             break;
-
                         case "F5":
                             fvalue = fvalue + ">";
                             f0type = "F8";
                             i = i + 2;
-
                             break;
-
                         case "F8":
                             fvalue = fvalue + $"<{lastnode}>";
                             stacks.Add(lastnode);
                             i = i + 4;
-
                             break;
-
                         default:
                             i = i + 2;
-
                             break;
                     }
 
@@ -2804,12 +2650,10 @@ namespace DBLOG
                         tmpstr = tmpstr.Stuff(0, 6 * 2, "");
                         fvaluehex = tmpstr.Substring(0, cutlen * 2);
                         break;
-
                     case "0500":
                         tmpstr = tmpstr.Stuff(0, 4 * 2, "");
                         pageqty = Convert.ToInt32(tmpstr.Substring(2, 2) + tmpstr.Substring(0, 2), 16);
                         tmpstr = tmpstr.Stuff(0, 8 * 2, "");
-
                         tmps = new List<FPageInfo>();
                         for (i = 0; i <= pageqty - 1; i++)
                         {
@@ -2838,9 +2682,7 @@ namespace DBLOG
                                 }
                                 continue;
                             }
-
                         }
-
                         fvaluehex = "";
                         i = 0;
                         foreach (FPageInfo tp in tmps)
@@ -2858,11 +2700,9 @@ namespace DBLOG
                             i = i + 1;
                         }
                         break;
-
                     case "0800":
                         fvaluehex = null;
                         break;
-
                     default:
                         fvaluehex = "";
                         break;

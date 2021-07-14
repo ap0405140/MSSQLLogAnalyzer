@@ -211,11 +211,23 @@ namespace DBLOG
     // 表信息定义
     public class TableInformation
     {
-        public string PrimarykeyColumnList;
-        public string ClusteredindexColumnList;
-        public string IdentityColumn;
+        private string _IdentityColumn;
+
+        public List<string> PrimaryKeyColumns;
+        public List<string> ClusteredIndexColumns;
+        public string IdentityColumn
+        {
+            get
+            {
+                return _IdentityColumn;
+            }
+            set
+            {
+                _IdentityColumn = (value == null ? "" : value);
+            }
+        }
         public bool IsHeapTable;  // 是否堆表
-        public string FAllocUnitName;
+        public string AllocUnitName;
 
         public TableInformation()
         {

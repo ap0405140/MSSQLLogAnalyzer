@@ -195,15 +195,15 @@ namespace DBLOG
             }
             finally
             {
-                if (closeconnect == true)
-                {
-                    if (scn.State == ConnectionState.Open)
-                    {
-                        scn.Close();
-                    }
+                //if (closeconnect == true)
+                //{
+                //    if (scn.State == ConnectionState.Open)
+                //    {
+                //        scn.Close();
+                //    }
 
-                    scn.Dispose();
-                }
+                //    scn.Dispose();
+                //}
             }
         }
 
