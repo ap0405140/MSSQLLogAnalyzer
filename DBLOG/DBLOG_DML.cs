@@ -198,9 +198,7 @@ namespace DBLOG
                     #region Insert / Delete
                     if (log.Operation == "LOP_INSERT_ROWS" || log.Operation == "LOP_DELETE_ROWS")
                     {
-                        iMinimumlength = 2;
-                        iMinimumlength = iMinimumlength + TableColumns.Where(p => p.isVarLenDataType == false).Sum(p => p.Length);
-                        iMinimumlength = iMinimumlength + 2;
+                        iMinimumlength = 2 + TableColumns.Where(p => p.isVarLenDataType == false).Sum(p => p.Length) + 2;
 
                         if (log.RowLog_Contents_0.Length >= iMinimumlength)
                         {
@@ -211,12 +209,7 @@ namespace DBLOG
                         else
                         {
                             MR0 = GetMR1(log.Operation, log.Page_ID, log.AllocUnitId.ToString(), log.Current_LSN, pStartLSN, pEndLSN, log.RowLog_Contents_0.ToText(), log.RowLog_Contents_1.ToText(), "");
-                            
-                            if (MR0.Length < iMinimumlength)
-                            {
-                                continue;
-                            }
-
+                            if (MR0.Length < iMinimumlength) { continue; }
                             TranslateData(MR0, TableColumns);
                         }
 
@@ -227,51 +220,44 @@ namespace DBLOG
                             sValue = ColumnValue2SQLValue(TableColumns[j]);
                             sValueList1 = sValueList1 + (sValueList1.Length > 0 ? "," : "") + sValue;
 
-                            if (TableColumns[j].isNull == false)
+                            if (TableInfos.PrimaryKeyColumns.Count == 0
+                                || TableInfos.PrimaryKeyColumns.Contains(TableColumns[j].ColumnName))
                             {
-                                // 无主键时用全部字段过滤
-                                if (TableInfos.PrimaryKeyColumns.Count == 0)
-                                {
-                                    sWhereList0 = sWhereList0 + (sWhereList0.Length > 0 ? " and " : "") + "[" + TableColumns[j].ColumnName + "]=" + sValue;
-                                }
-                                else
-                                {
-                                    if (TableInfos.PrimaryKeyColumns.Contains(TableColumns[j].ColumnName) == true)
-                                    {
-                                        sWhereList0 = sWhereList0 + (sWhereList0.Length > 0 ? " and " : "") + "[" + TableColumns[j].ColumnName + "]=" + sValue;
-                                    }
-                                }
+                                sWhereList0 = sWhereList0
+                                              + (sWhereList0.Length > 0 ? " and " : "")
+                                              + ColumnName2SQLName(TableColumns[j])
+                                              + (TableColumns[j].isNull ? " is " : "=")
+                                              + sValue;
                             }
                         }
 
                         // 产生redo sql和undo sql -- Insert
                         if (log.Operation == "LOP_INSERT_ROWS")
                         {
-                            REDOSQL = "insert into " + $"[{sSchemaName}].[{sTableName}]" + "(" + sColumnlist + ") values(" + sValueList1 + "); ";
-                            UNDOSQL = "delete top(1) from " + $"[{sSchemaName}].[{sTableName}]" + " where " + sWhereList0 + "; ";
+                            REDOSQL = $"insert into [{sSchemaName}].[{sTableName}]({sColumnlist}) values({sValueList1}); ";
+                            UNDOSQL = $"delete top(1) from [{sSchemaName}].[{sTableName}] where {sWhereList0}; ";
 
                             if (TableInfos.IdentityColumn.Length > 0)
                             {
-                                REDOSQL = "set identity_insert " + $"[{sSchemaName}].[{sTableName}]" + " on; " + "\r\n"
+                                REDOSQL = $"set identity_insert [{sSchemaName}].[{sTableName}] on; " + "\r\n"
                                           + REDOSQL + "\r\n"
-                                          + "set identity_insert " + $"[{sSchemaName}].[{sTableName}]" + " off; " + "\r\n";
+                                          + $"set identity_insert [{sSchemaName}].[{sTableName}] off; " + "\r\n";
                             }
                         }
 
                         // 产生redo sql和undo sql -- Delete
                         if (log.Operation == "LOP_DELETE_ROWS")
                         {
-                            REDOSQL = "delete top(1) from " + $"[{sSchemaName}].[{sTableName}]" + " where " + sWhereList0 + "; ";
-                            UNDOSQL = "insert into " + $"[{sSchemaName}].[{sTableName}]" + "(" + sColumnlist + ") values(" + sValueList1 + "); ";
+                            REDOSQL = $"delete top(1) from [{sSchemaName}].[{sTableName}] where {sWhereList0}; ";
+                            UNDOSQL = $"insert into [{sSchemaName}].[{sTableName}]({sColumnlist}) values({sValueList1}); ";
 
                             if (TableInfos.IdentityColumn.Length > 0)
                             {
-                                UNDOSQL = "set identity_insert " + $"[{sSchemaName}].[{sTableName}]" + " on; " + "\r\n"
+                                UNDOSQL = $"set identity_insert [{sSchemaName}].[{sTableName}] on; " + "\r\n"
                                           + UNDOSQL + "\r\n"
-                                          + "set identity_insert " + $"[{sSchemaName}].[{sTableName}]" + " off; " + "\r\n";
+                                          + $"set identity_insert [{sSchemaName}].[{sTableName}] off; " + "\r\n";
                             }
                         }
-
                     }
                     #endregion
 
@@ -281,7 +267,6 @@ namespace DBLOG
                         if (MR1 != null)
                         {
                             AnalyzeUpdate(log.Transaction_ID, MR1, log.RowLog_Contents_0, log.RowLog_Contents_1, log.RowLog_Contents_3, log.RowLog_Contents_4, log.Log_Record, TableColumns, log.Operation, log.Current_LSN, log.Offset_in_Row, log.Modify_Size, ref sValueList1, ref sValueList0, ref sWhereList1, ref sWhereList0, ref MR0);
-
                             if (sValueList1.Length > 0)
                             {
                                 REDOSQL = $"update top(1) [{sSchemaName}].[{sTableName}] set {sValueList1} where {sWhereList1}; ";
@@ -571,14 +556,13 @@ namespace DBLOG
                                   ref string sValueList1, ref string sValueList0, ref string sWhereList1, ref string sWhereList0, ref byte[] mr0)
         {
             int i;
-            string mr0_str, mr1_str, r0_str, r1_str, r3_str, r4_str, sLogRecord;
+            string mr0_str, mr1_str, r0_str, r1_str, r3_str, sLogRecord;
             TableColumn[] columns0, columns1;
 
             mr1_str = mr1.ToText();
             r0_str = r0.ToText();  // .RowLog Contents 0
             r1_str = r1.ToText();  // .RowLog Contents 1
             r3_str = r3.ToText();  // .RowLog Contents 3
-            r4_str = r4.ToText();  // .RowLog Contents 4
             sLogRecord = bLogRecord.ToText();  // .Log Record
 
             columns0 = new TableColumn[columns.Length];
@@ -604,7 +588,7 @@ namespace DBLOG
                     mr0_str = RESTORE_LOP_MODIFY_COLUMNS(sLogRecord, r3_str, r0, r1, mr1, mr1_str, columns0, columns1);
                     break;
                 default:
-                    mr0_str = null;
+                    mr0_str = mr1_str;
                     break;
             }
 
@@ -617,7 +601,7 @@ namespace DBLOG
             sWhereList0 = "";
             for (i = 0; i <= columns.Length - 1; i++)
             {
-                if (columns[i].DataType == SqlDbType.Timestamp) { continue; }
+                if (columns[i].DataType == SqlDbType.Timestamp || columns[i].isComputed == true) { continue; }
 
                 if ((columns0[i].isNull == false
                      && columns1[i].isNull == false
@@ -628,10 +612,10 @@ namespace DBLOG
                     || (columns0[i].isNull == false && columns1[i].isNull == true))
                 {
                     sValueList0 = sValueList0 + (sValueList0.Length > 0 ? "," : "")
-                                  + "[" + columns0[i].ColumnName + "]="
+                                  + $"[{columns0[i].ColumnName}]="
                                   + ColumnValue2SQLValue(columns0[i]);
                     sValueList1 = sValueList1 + (sValueList1.Length > 0 ? "," : "")
-                                  + "[" + columns1[i].ColumnName + "]="
+                                  + $"[{columns1[i].ColumnName}]="
                                   + ColumnValue2SQLValue(columns1[i]);
                 }
 
@@ -639,10 +623,12 @@ namespace DBLOG
                     || TableInfos.PrimaryKeyColumns.Contains(columns[i].ColumnName))
                 {
                     sWhereList0 = sWhereList0 + (sWhereList0.Length > 0 ? " and " : "")
-                                  + "[" + columns[i].ColumnName + "]="
+                                  + ColumnName2SQLName(columns[i]) 
+                                  + (columns1[i].isNull ? " is " : "=")
                                   + ColumnValue2SQLValue(columns1[i]);
                     sWhereList1 = sWhereList1 + (sWhereList1.Length > 0 ? " and " : "")
-                                  + "[" + columns[i].ColumnName + "]="
+                                  + ColumnName2SQLName(columns[i]) 
+                                  + (columns0[i].isNull ? " is " : "=")
                                   + ColumnValue2SQLValue(columns0[i]);
                 }
             }
@@ -1215,7 +1201,7 @@ namespace DBLOG
                 // 变长字段数量(不一定等于字段类型=变长类型的字段数量)
                 sTemp = sData.Substring((index + 1) * 2, 2) + sData.Substring(index * 2, 2);
                 iVarColumnCount = Int32.Parse(sTemp, System.Globalization.NumberStyles.HexNumber);
-                if (iVarColumnCount < 32767 && iVarColumnCount <= sAllColumnCountLog)
+                if (iVarColumnCount <= 32767 && iVarColumnCount <= sAllColumnCountLog)
                 {
                     sVarColumnCount = (short)iVarColumnCount;
                 }
@@ -1331,13 +1317,13 @@ namespace DBLOG
                                 c.Value = sValue;
                                 break;
                             case System.Data.SqlDbType.Text:
-                                (sValueHex, sValue) = TranslateData_Text(data, tvc, false);
+                                (sValueHex, sValue) = TranslateData_Text(data, tvc, false, TableInfos.TextInRow);
                                 c.ValueHex = sValueHex;
                                 c.Value = sValue;
                                 c.isNull = (sValueHex == null && sValue == "nullvalue");
                                 break;
                             case System.Data.SqlDbType.NText:
-                                (sValueHex, sValue) = TranslateData_Text(data, tvc, true);
+                                (sValueHex, sValue) = TranslateData_Text(data, tvc, true, TableInfos.TextInRow);
                                 c.ValueHex = sValueHex;
                                 c.Value = sValue;
                                 c.isNull = (sValueHex == null && sValue == "nullvalue");
@@ -1463,7 +1449,15 @@ namespace DBLOG
                     + $" and s.name=N'{pSchemaName}' "
                     + $" and a.name=N'{pTablename}'; ";
             tableinfo.AllocUnitName = oDB.Query<string>(sTsql, false).FirstOrDefault();
-            
+
+            // TextInRow
+            sTsql = "select textinrow=a.text_in_row_limit "
+                    + "  from sys.tables a "
+                    + "  join sys.schemas s on a.schema_id=s.schema_id "
+                    + $" where s.name=N'{pSchemaName}' "
+                    + $" and a.name=N'{pTablename}'; ";
+            tableinfo.TextInRow = oDB.Query<int>(sTsql, false).FirstOrDefault();
+
 
             sTsql = "select cast(("
                         + "select ColumnID,ColumnName,DataType,Length,Precision,Nullable,Scale,IsComputed,LeafOffset,LeafNullBit "
@@ -1697,6 +1691,26 @@ namespace DBLOG
             }
 
             return sValue;
+        }
+
+        private string ColumnName2SQLName(TableColumn pcol)
+        {
+            string sqlname;
+
+            switch(pcol.DataType)
+            {
+                case SqlDbType.Text:
+                    sqlname = $"cast([{pcol.ColumnName}] as varchar(max))";
+                    break;
+                case SqlDbType.NText:
+                    sqlname = $"cast([{pcol.ColumnName}] as nvarchar(max))";
+                    break;
+                default:
+                    sqlname = $"[{pcol.ColumnName}]";
+                    break;
+            }
+
+            return sqlname;
         }
 
         // 字节转二进制数格式(8位)
@@ -2300,12 +2314,26 @@ namespace DBLOG
             return sReturnUniqueIdentifier;
         }
 
-        private (string, string) TranslateData_Text(byte[] data, FVarColumnInfo pv, bool isNText)
+        private (string, string) TranslateData_Text(byte[] data, FVarColumnInfo pv, bool isNText, int textinrow)
         {
             string fvaluehex, fvalue;
 
-            fvaluehex = GetLOBDataHEX(pv.FLogContents);
-
+            if (pv.InRow == false)
+            {
+                if (textinrow == 0)
+                {
+                    fvaluehex = GetLOBDataHEX(pv.FLogContents);
+                }
+                else
+                {
+                    fvaluehex = GetLOBDataHEX_ForTextInRow(pv.FLogContents);
+                }
+            }
+            else
+            {
+                fvaluehex = pv.FLogContents;
+            }
+            
             if (fvaluehex != null)
             {
                 if (isNText == false)
@@ -2709,6 +2737,50 @@ namespace DBLOG
                 }
             }
             catch (Exception ex)
+            {
+                fvaluehex = "";
+            }
+
+            return fvaluehex;
+        }
+
+        private string GetLOBDataHEX_ForTextInRow(string logcontents)
+        {
+            int i, pageqty, cutlen;
+            string tmpstr, subpage, fvaluehex;
+            List<FPageInfo> tmps;
+            FPageInfo tmppage;
+
+            try
+            {
+                tmpstr = logcontents;
+                tmpstr = tmpstr.Stuff(0, 12 * 2, "");
+                pageqty = tmpstr.Length / 2 / 12;
+                tmps = new List<FPageInfo>();
+                for (i = 0; i <= pageqty - 1; i++)
+                {
+                    subpage = tmpstr.Substring(i * 12 * 2, 12 * 2);
+                    tmppage = new FPageInfo(subpage);
+                    tmps.Add(tmppage);
+                }
+
+                fvaluehex = "";
+                i = 0;
+                foreach (FPageInfo tp in tmps)
+                {
+                    cutlen = Convert.ToInt32(tp.Offset - (i == 0 ? 0 : tmps[i - 1].Offset));
+                    tmppage = GetPageInfo(tp.FileNumPageNum_Hex);
+
+                    subpage = tmppage.PageData;
+                    subpage = subpage.Stuff(0, tmppage.SlotBeginIndex[tp.SlotNum] * 2, "");
+                    subpage = subpage.Stuff(0, 14 * 2, "");
+                    subpage = subpage.Substring(0, cutlen * 2);
+
+                    fvaluehex = fvaluehex + subpage;
+                    i = i + 1;
+                }
+            }
+            catch(Exception ex)
             {
                 fvaluehex = "";
             }

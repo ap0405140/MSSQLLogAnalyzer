@@ -228,6 +228,7 @@ namespace DBLOG
         }
         public bool IsHeapTable;  // 是否堆表
         public string AllocUnitName;
+        public int TextInRow; // sp_tableoption @TableName,'text in row',@OptionValue --> When specified and @OptionValue is ON (enabled) or an integer value from 24 through 7000, new text, ntext, or image strings are stored directly in the data row. 
 
         public TableInformation()
         {
