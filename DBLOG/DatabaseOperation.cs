@@ -145,7 +145,6 @@ namespace DBLOG
                             tt = (dr[0] == DBNull.Value ? default(T) : (T)dr[0]);
                             ls.Add(tt);
                             break;
-
                         case "ValueTuple":
                             tt = Activator.CreateInstance<T>();
                             tt2 = tt;
@@ -160,7 +159,6 @@ namespace DBLOG
                             tt = (T)tt2;
                             ls.Add(tt);
                             break;
-
                         case "Class":
                             tt = (T)Activator.CreateInstance(typeof(T));
                             props = typeof(T).GetProperties();
@@ -179,7 +177,6 @@ namespace DBLOG
                             }
                             ls.Add(tt);
                             break;
-
                         default:
                             break;
                     }
