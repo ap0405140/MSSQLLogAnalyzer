@@ -109,6 +109,17 @@ namespace DBLOG
             return filedata;
         }
 
+        // 字节转二进制数格式(8位)
+        public static string ToBinaryString(this byte pByte)
+        {
+            string r;
+
+            r = Convert.ToString(pByte, 2);
+            r = new string('0', 8 - r.Length) + r;
+
+            return r;
+        }
+
         public static void ToFile(this byte[] filedata, string tfile)
         {
             FileStream fs;
