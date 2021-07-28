@@ -252,6 +252,8 @@ namespace DBLOG
     {
         private string _redosql,
                        _undosql;
+        private byte[] _redosqlfile,
+                       _undosqlfile;
 
         public string LSN { get; set; }
         public string Type { get; set; } // DML / DDL / DCL
@@ -265,41 +267,49 @@ namespace DBLOG
         { 
             get
             {
-                return _redosql;
+                return (_redosql.Length <= 1000 ? _redosql : _redosql.Substring(0, 1000) + "...");
             }
             set
             {
-                if (value.Length <= 1000)
-                {
-                    _redosql = value;
-                }
-                else
-                {
-                    _redosql = value.Substring(0, 1000) + "...";
-                }
+                _redosql = value;
             }
         }
-        public byte[] RedoSQLFile { get; set; }
+        public byte[] RedoSQLFile 
+        { 
+            get
+            {
+                if (_redosqlfile == null)
+                {
+                    _redosqlfile = _redosql.ToFileByteArray();
+                }
+
+                return _redosqlfile;
+            }
+        }
 
         public string UndoSQL
         {
             get
             {
-                return _undosql;
+                return (_undosql.Length <= 1000 ? _undosql : _undosql.Substring(0, 1000) + "...");
             }
             set
             {
-                if (value.Length <= 1000)
-                {
-                    _undosql = value;
-                }
-                else
-                {
-                    _undosql = value.Substring(0, 1000) + "...";
-                }
+                _undosql = value;
             }
         }
-        public byte[] UndoSQLFile { get; set; }
+        public byte[] UndoSQLFile
+        {
+            get
+            {
+                if (_undosqlfile == null)
+                {
+                    _undosqlfile = _undosql.ToFileByteArray();
+                }
+
+                return _undosqlfile;
+            }
+        }
 
         public string Message { get; set; }
     }

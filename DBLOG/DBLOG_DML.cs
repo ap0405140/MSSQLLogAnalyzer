@@ -295,9 +295,9 @@ namespace DBLOG
                         tmplog.ObjectName = $"[{sSchemaName}].[{sTableName}]";
                         tmplog.Operation = log.Operation;
                         tmplog.RedoSQL = REDOSQL;
-                        tmplog.RedoSQLFile = REDOSQL.ToFileByteArray();
+                        //tmplog.RedoSQLFile = REDOSQL.ToFileByteArray();
                         tmplog.UndoSQL = UNDOSQL;
-                        tmplog.UndoSQLFile = UNDOSQL.ToFileByteArray();
+                        //tmplog.UndoSQLFile = UNDOSQL.ToFileByteArray();
                         tmplog.Message = stemp;
                         logs.Add(tmplog);
                     }
@@ -318,8 +318,8 @@ namespace DBLOG
                     tmplog.Operation = log.Operation;
                     tmplog.RedoSQL = "";
                     tmplog.UndoSQL = "";
-                    tmplog.RedoSQLFile = "".ToFileByteArray();
-                    tmplog.UndoSQLFile = "".ToFileByteArray();
+                    //tmplog.RedoSQLFile = "".ToFileByteArray();
+                    //tmplog.UndoSQLFile = "".ToFileByteArray();
                     tmplog.Message = "";
                     logs.Add(tmplog);
 #endif
