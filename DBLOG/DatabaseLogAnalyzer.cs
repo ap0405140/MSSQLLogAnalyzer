@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Data;
+using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
@@ -25,6 +26,7 @@ namespace DBLOG
         /// Readed Percent (0-100).
         /// </summary>
         public int ReadPercent;       // 读取进度百分比 1-100
+        public string LogFile = "AnalysisLog.txt";
 
         /// <summary>
         /// Initializes a new instance of the DBLOG.DatabaseLogAnalyzer class.
@@ -65,6 +67,11 @@ namespace DBLOG
             _starttime = pStartTime;
             _endtime = pEndTime;
 
+            if (File.Exists(LogFile) == true)
+            {
+                File.Delete(LogFile);
+            }
+
             logs = new List<DatabaseLog>();
             ReadPercent = 0;
 
@@ -93,21 +100,6 @@ namespace DBLOG
                 schemaname = _objectname.Substring(0, _objectname.IndexOf(".", 0));
                 tablename = _objectname.Substring(_objectname.IndexOf(".", 0) + 1, _objectname.Length - _objectname.IndexOf(".", 0) - 1);
             }
-
-#if DEBUG
-            _tsql = "if exists(select 1 from sys.tables where name=N'LogExplorer_AnalysisLog') drop table dbo.LogExplorer_AnalysisLog; ";
-            DB.ExecuteSQL(_tsql, false);
-
-            _tsql = @"create table dbo.LogExplorer_AnalysisLog
-                      (LogID int identity(1,1) not null,
-                       ADate datetime not null,
-                       TableName nvarchar(280),
-                       Logdescr nvarchar(max),
-                       Operation varchar(100),
-                       LSN varchar(100)
-                       constraint pk_LogExplorer_AnalysisLog primary key (LogID)) ";
-            DB.ExecuteSQL(_tsql, false);
-#endif
 
             // get DML Transaction list
             _tsql = "if object_id('tempdb..#TransactionList') is not null drop table #TransactionList; ";
@@ -169,8 +161,7 @@ namespace DBLOG
                     + " and [Operation] in('LOP_INSERT_ROWS','LOP_DELETE_ROWS','LOP_MODIFY_ROW','LOP_MODIFY_COLUMNS') "
                     + " and [AllocUnitName]<>'Unknown Alloc Unit' "
                     + " and [AllocUnitName] not like 'sys.%' "
-                    + " and [AllocUnitName] is not null "
-                    + " and [AllocUnitName] not like '%LogExplorer_AnalysisLog%' ";
+                    + " and [AllocUnitName] is not null ";
 
             if (_objectname.Length > 0)
             {
@@ -187,8 +178,7 @@ namespace DBLOG
                     + "   and [Operation] in('LOP_MODIFY_ROW','LOP_MODIFY_COLUMNS') "
                     + "   and [AllocUnitName]<>'Unknown Alloc Unit' "
                     + "   and [AllocUnitName] not like 'sys.%' "
-                    + "   and [AllocUnitName] is not null "
-                    + "   and [AllocUnitName] not like '%LogExplorer_AnalysisLog%' ";
+                    + "   and [AllocUnitName] is not null ";
 
             if (_objectname.Length > 0)
             {
@@ -216,14 +206,12 @@ namespace DBLOG
             {
                 tablename = dr["TableName"].ToString();
                 schemaname = dr["SchemaName"].ToString();
-                tablelist[i] = new DBLOG_DML(databasename, schemaname, tablename, DB);
+                tablelist[i] = new DBLOG_DML(databasename, schemaname, tablename, DB, LogFile);
                 tablelist[i].dtLogs = dtLoglist.Where(p => p.AllocUnitName == $"{schemaname}.{tablename}"
                                                            || p.AllocUnitName.StartsWith($"{schemaname}.{tablename}.")).ToList();
 
 #if DEBUG
-                _tsql = "insert into dbo.LogExplorer_AnalysisLog(ADate,TableName,Logdescr,Operation,LSN) "
-                        + " select getdate(),'" + schemaname + "." + tablename + "', N'Start Analysis Log.', '', '' ";
-                DB.ExecuteSQL(_tsql, false);
+                FCommon.WriteTextFile(LogFile, $"Start Analysis Log for [{schemaname}].[{tablename}]. ");
 #endif
 
                 tmplog = tablelist[i].AnalyzeLog(_startLSN, _endLSN);
@@ -231,9 +219,7 @@ namespace DBLOG
                 ReadPercent = ReadPercent + Convert.ToInt32(Math.Floor((tablelist[i].dtLogs.Count * 1.0) / (dtLoglist.Count * 1.0) * 85.0));
 
 #if DEBUG
-                _tsql = "insert into dbo.LogExplorer_AnalysisLog(ADate,TableName,Logdescr,Operation,LSN) "
-                        + " select getdate(),'" + schemaname + "." + tablename + "', N'End Analysis Log.', '', '' ";
-                DB.ExecuteSQL(_tsql, false);
+                FCommon.WriteTextFile(LogFile, $"End Analysis Log for [{schemaname}].[{tablename}]. ");
 #endif
 
                 i = i + 1;

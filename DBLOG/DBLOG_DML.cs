@@ -17,18 +17,20 @@ namespace DBLOG
         private string sTsql,          // 动态SQL
                        sDatabaseName,  // 数据库名
                        sTableName,     // 表名
-                       sSchemaName;    // 架构名
+                       sSchemaName,    // 架构名
+                       LogFile;
         private TableColumn[] TableColumns;  // 表结构定义
         private TableInformation TableInfos;   // 表信息
         private Dictionary<string, FPageInfo> lobpagedata; // key:fileid+pageid value:FPageInfo
         public List<FLOG> dtLogs;     // 原始日志信息
 
-        public DBLOG_DML(string pDatabasename, string pSchemaName, string pTableName, DatabaseOperation poDB)
+        public DBLOG_DML(string pDatabasename, string pSchemaName, string pTableName, DatabaseOperation poDB, string pLogFile)
         {
             DB = poDB;
             sDatabaseName = pDatabasename;
             sTableName = pTableName;
             sSchemaName = pSchemaName;
+            LogFile = pLogFile;
 
             (TableInfos, TableColumns) = GetTableInfo(sSchemaName, sTableName);
         }
@@ -88,9 +90,7 @@ namespace DBLOG
                     (BeginTime, EndTime) = DB.Query<(string BeginTime, string EndTime)>(sTsql, false).FirstOrDefault();
 
 #if DEBUG
-                    sTsql = "insert into dbo.LogExplorer_AnalysisLog(ADate,TableName,Logdescr,Operation,LSN) "
-                            + " select getdate(),'" + $"[{sSchemaName}].[{sTableName}]" + "', N'RunAnalysisLog...', '" + log.Operation + "','" + log.Current_LSN + "' ";
-                    DB.ExecuteSQL(sTsql, false);
+                    FCommon.WriteTextFile(LogFile, $"LSN={log.Current_LSN},Operation={log.Operation} ");
 #endif
 
                     if (log.Operation == "LOP_MODIFY_ROW" || log.Operation == "LOP_MODIFY_COLUMNS")
@@ -279,9 +279,7 @@ namespace DBLOG
                     }
 
 #if DEBUG
-                    sTsql = "insert into dbo.LogExplorer_AnalysisLog(ADate,TableName,Logdescr,Operation,LSN) "
-                            + $" select ADate=getdate(),TableName=N'[{sSchemaName}].[{sTableName}]',Logdescr=N'{REDOSQL.Replace("'", "''")}',Operation='{log.Operation}',LSN='{log.Current_LSN}'; ";
-                    DB.ExecuteSQL(sTsql, false);
+                    FCommon.WriteTextFile(LogFile, $"LSN={log.Current_LSN},Operation={log.Operation},REDOSQL={REDOSQL} ");
 #endif
 
                     if (string.IsNullOrEmpty(BeginTime) == false)
@@ -295,9 +293,7 @@ namespace DBLOG
                         tmplog.ObjectName = $"[{sSchemaName}].[{sTableName}]";
                         tmplog.Operation = log.Operation;
                         tmplog.RedoSQL = REDOSQL;
-                        //tmplog.RedoSQLFile = REDOSQL.ToFileByteArray();
                         tmplog.UndoSQL = UNDOSQL;
-                        //tmplog.UndoSQLFile = UNDOSQL.ToFileByteArray();
                         tmplog.Message = stemp;
                         logs.Add(tmplog);
                     }
@@ -318,8 +314,6 @@ namespace DBLOG
                     tmplog.Operation = log.Operation;
                     tmplog.RedoSQL = "";
                     tmplog.UndoSQL = "";
-                    //tmplog.RedoSQLFile = "".ToFileByteArray();
-                    //tmplog.UndoSQLFile = "".ToFileByteArray();
                     tmplog.Message = "";
                     logs.Add(tmplog);
 #endif

@@ -217,6 +217,39 @@ namespace DBLOG
 
             return y;
         }
+
+        public static void WriteTextFile(string pFileName, string pContent, bool pAppend = true, bool pLogTime = true)
+        {
+            FileStream fs;
+            StreamWriter writer;
+            FileMode fm;
+
+            if (pLogTime == true)
+            {
+                pContent = $"{DateTime.Now.ToString("yyyy/MM/dd HH:mm:ss.fff")}: {pContent}";
+            }
+
+            if (System.IO.File.Exists(pFileName) == true && pAppend == true)
+            {
+                fm = FileMode.Append;
+            }
+            else
+            {
+                fm = FileMode.Create;
+            }
+            fs = new FileStream(pFileName,
+                                fm,
+                                FileAccess.Write,
+                                FileShare.None);
+            writer = new StreamWriter(fs, Encoding.Unicode);
+            writer.WriteLine(pContent);
+
+            writer.Close();
+            fs.Close();
+            writer.Dispose();
+            fs.Dispose();
+        }
+
     }
 
     // 表信息定义
