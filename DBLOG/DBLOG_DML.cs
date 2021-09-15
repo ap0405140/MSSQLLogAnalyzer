@@ -243,7 +243,7 @@ namespace DBLOG
                         case "LOP_MODIFY_COLUMNS":
                             if (MR1 != null)
                             {
-                                AnalyzeUpdate(log.Transaction_ID, MR1, log.RowLog_Contents_0, log.RowLog_Contents_1, log.RowLog_Contents_3, log.RowLog_Contents_4, log.Log_Record, TableColumns, log.Operation, log.Current_LSN, log.Offset_in_Row, log.Modify_Size, ref sValueList1, ref sValueList0, ref sWhereList1, ref sWhereList0, ref MR0);
+                                AnalyzeUpdate(log, MR1, ref sValueList1, ref sValueList0, ref sWhereList1, ref sWhereList0, ref MR0);
                                 if (sValueList1.Length > 0)
                                 {
                                     REDOSQL = $"update top(1) [{sSchemaName}].[{sTableName}] set {sValueList1} where {sWhereList1}; ";
@@ -492,23 +492,19 @@ namespace DBLOG
             return r;
         }
 
-        public void AnalyzeUpdate(string pTransactionID, byte[] mr1, byte[] r0, byte[] r1, byte[] r3, byte[] r4, byte[] bLogRecord, TableColumn[] columns, string sOperation, string pCurrentLSN, short? pOffsetinRow, short? pModifySize,
-                                  ref string sValueList1, ref string sValueList0, ref string sWhereList1, ref string sWhereList0, ref byte[] mr0)
+        public void AnalyzeUpdate(FLOG curlog, byte[] mr1,
+                                  ref string sValueList1, ref string sValueList0, 
+                                  ref string sWhereList1, ref string sWhereList0, 
+                                  ref byte[] mr0)
         {
             int i;
-            string mr0_str, mr1_str, r0_str, r1_str, r3_str, sLogRecord;
+            string mr0_str;
             TableColumn[] columns0, columns1;
-
-            mr1_str = mr1.ToText();
-            r0_str = r0.ToText();  // .RowLog Contents 0
-            r1_str = r1.ToText();  // .RowLog Contents 1
-            r3_str = r3.ToText();  // .RowLog Contents 3
-            sLogRecord = bLogRecord.ToText();  // .Log Record
-
-            columns0 = new TableColumn[columns.Length];
-            columns1 = new TableColumn[columns.Length];
+            
+            columns0 = new TableColumn[TableColumns.Length];
+            columns1 = new TableColumn[TableColumns.Length];
             i = 0;
-            foreach (TableColumn c in columns)
+            foreach (TableColumn c in TableColumns)
             {
                 columns0[i] = new TableColumn(c.ColumnID, c.ColumnName, c.DataType, c.Length, c.Precision, c.Scale, c.LeafOffset, c.LeafNullBit, c.isNullable, c.isComputed);
                 columns1[i] = new TableColumn(c.ColumnID, c.ColumnName, c.DataType, c.Length, c.Precision, c.Scale, c.LeafOffset, c.LeafNullBit, c.isNullable, c.isComputed);
@@ -516,19 +512,18 @@ namespace DBLOG
             }
 
             TranslateData(mr1, columns1);
-            RestoreLobPage(pTransactionID);
-
-            // 由 mr1_str 构造 mr0_str
-            switch (sOperation)
+            RestoreLobPage(curlog.Transaction_ID);
+            
+            switch (curlog.Operation)
             {
                 case "LOP_MODIFY_ROW":
-                    mr0_str = RESTORE_LOP_MODIFY_ROW(mr1_str, r1_str, r0_str, pOffsetinRow, pModifySize);
+                    mr0_str = RESTORE_LOP_MODIFY_ROW(curlog, mr1);
                     break;
                 case "LOP_MODIFY_COLUMNS":
-                    mr0_str = RESTORE_LOP_MODIFY_COLUMNS(sLogRecord, r3_str, r0, r1, mr1, mr1_str, columns0, columns1);
+                    mr0_str = RESTORE_LOP_MODIFY_COLUMNS(curlog, mr1, columns0, columns1);
                     break;
                 default:
-                    mr0_str = mr1_str;
+                    mr0_str = mr1.ToText();
                     break;
             }
 
@@ -539,9 +534,9 @@ namespace DBLOG
             sValueList0 = "";
             sWhereList1 = "";
             sWhereList0 = "";
-            for (i = 0; i <= columns.Length - 1; i++)
+            for (i = 0; i <= TableColumns.Length - 1; i++)
             {
-                if (columns[i].DataType == SqlDbType.Timestamp || columns[i].isComputed == true) { continue; }
+                if (TableColumns[i].DataType == SqlDbType.Timestamp || TableColumns[i].isComputed == true) { continue; }
 
                 if ((columns0[i].isNull == false
                      && columns1[i].isNull == false
@@ -560,14 +555,14 @@ namespace DBLOG
                 }
 
                 if (TableInfos.PrimaryKeyColumns.Count == 0
-                    || TableInfos.PrimaryKeyColumns.Contains(columns[i].ColumnName))
+                    || TableInfos.PrimaryKeyColumns.Contains(TableColumns[i].ColumnName))
                 {
                     sWhereList0 = sWhereList0 + (sWhereList0.Length > 0 ? " and " : "")
-                                  + ColumnName2SQLName(columns[i]) 
+                                  + ColumnName2SQLName(TableColumns[i]) 
                                   + (columns1[i].isNull ? " is " : "=")
                                   + ColumnValue2SQLValue(columns1[i]);
                     sWhereList1 = sWhereList1 + (sWhereList1.Length > 0 ? " and " : "")
-                                  + ColumnName2SQLName(columns[i]) 
+                                  + ColumnName2SQLName(TableColumns[i]) 
                                   + (columns0[i].isNull ? " is " : "=")
                                   + ColumnValue2SQLValue(columns0[i]);
                 }
@@ -607,27 +602,27 @@ namespace DBLOG
             }
         }
 
-        private string RESTORE_LOP_MODIFY_ROW(string mr1_str, string r1_str, string r0_str, short? pOffsetinRow, short? pModifySize)
+        private string RESTORE_LOP_MODIFY_ROW(FLOG log, byte[] mr1)
         {
             string mr0_str;
 
-            if (mr1_str.Length >= 8)
+            if (mr1.Length >= 4)
             {
-                mr0_str = mr1_str.Stuff(Convert.ToInt32(pOffsetinRow) * 2,
-                                        r1_str.Length,
-                                        r0_str);
+                mr0_str = mr1.ToText().Stuff(Convert.ToInt32(log.Offset_in_Row) * 2,
+                                             log.RowLog_Contents_1.ToText().Length,
+                                             log.RowLog_Contents_0.ToText());
             }
             else
             {
-                mr0_str = mr1_str;
+                mr0_str = mr1.ToText();
             }
 
             return mr0_str;
         }
 
-        private string RESTORE_LOP_MODIFY_COLUMNS(string sLogRecord, string r3_str, byte[] r0, byte[] r1, byte[] mr1, string mr1_str, TableColumn[] columns0, TableColumn[] columns1)
+        private string RESTORE_LOP_MODIFY_COLUMNS(FLOG log, byte[] mr1, TableColumn[] columns0, TableColumn[] columns1)
         {
-            string mr0_str, rowlogdata, fvalue0, fvalue1, ts;
+            string mr0_str, mr1_str, LogRecord_str, r3_str, rowlogdata, fvalue0, fvalue1, ts;
             int i, j, k, n, m, fstart0, fstart1, flength0, flength0f4, flength1, flength1f4;
             List<string> tls;
             byte[] mr0;
@@ -635,22 +630,25 @@ namespace DBLOG
             TableColumn tmpcol;
 
             mr0_str = null;
-            rowlogdata = sLogRecord.Substring(sLogRecord.IndexOf(r3_str) + r3_str.Length,
-                                              sLogRecord.Length - sLogRecord.IndexOf(r3_str) - r3_str.Length);
-            if ((sLogRecord.Length - rowlogdata.Length) % 8 != 0)
+            mr1_str = mr1.ToText();
+            LogRecord_str = log.Log_Record.ToText();
+            r3_str = log.RowLog_Contents_3.ToText();
+            rowlogdata = LogRecord_str.Substring(LogRecord_str.IndexOf(r3_str) + r3_str.Length,
+                                                 LogRecord_str.Length - LogRecord_str.IndexOf(r3_str) - r3_str.Length);
+            if ((LogRecord_str.Length - rowlogdata.Length) % 8 != 0)
             {
-                rowlogdata = rowlogdata.Substring((sLogRecord.Length - rowlogdata.Length) % 8);
+                rowlogdata = rowlogdata.Substring((LogRecord_str.Length - rowlogdata.Length) % 8);
             }
 
             try
             {
                 mr0_str = mr1_str;
-                for (i = 1, j = 0; i <= (r0.Length / 4); i++)
+                for (i = 1, j = 0; i <= (log.RowLog_Contents_0.Length / 4); i++)
                 {
-                    fstart0 = Convert.ToInt32(r0[i * 4 - 3].ToString("X2") + r0[i * 4 - 4].ToString("X2"), 16);
-                    fstart1 = Convert.ToInt32(r0[i * 4 - 1].ToString("X2") + r0[i * 4 - 2].ToString("X2"), 16);
+                    fstart0 = Convert.ToInt32(log.RowLog_Contents_0[i * 4 - 3].ToString("X2") + log.RowLog_Contents_0[i * 4 - 4].ToString("X2"), 16);
+                    fstart1 = Convert.ToInt32(log.RowLog_Contents_0[i * 4 - 1].ToString("X2") + log.RowLog_Contents_0[i * 4 - 2].ToString("X2"), 16);
 
-                    flength0 = Convert.ToInt32(r1[i * 2 - 1].ToString("X2") + r1[i * 2 - 2].ToString("X2"), 16);
+                    flength0 = Convert.ToInt32(log.RowLog_Contents_1[i * 2 - 1].ToString("X2") + log.RowLog_Contents_1[i * 2 - 2].ToString("X2"), 16);
                     flength0f4 = (flength0 % 4 == 0 ? flength0 : flength0 + (4 - flength0 % 4));
 
                     fvalue0 = rowlogdata.Substring(j * 2, flength0 * 2);
@@ -662,7 +660,7 @@ namespace DBLOG
                     fvalue1 = rowlogdata.Substring(j * 2, flength1 * 2);
                     j = j + flength1f4;
 
-                    if (i == (r0.Length / 4) && (j * 2) < (rowlogdata.Length - 1))
+                    if (i == (log.RowLog_Contents_0.Length / 4) && (j * 2) < (rowlogdata.Length - 1))
                     {
                         flength1 = rowlogdata.Length / 2 - j;
                         flength1f4 = (flength1 % 4 == 0 ? flength1 : flength1 + (4 - flength1 % 4));
@@ -686,9 +684,9 @@ namespace DBLOG
             if (bfinish == false)
             {
                 tls = new List<string>();
-                for (i = 0; i <= (int)(Math.Pow(2, (r0.Length / 4)) - 1); i++)
+                for (i = 0; i <= (int)(Math.Pow(2, (log.RowLog_Contents_0.Length / 4)) - 1); i++)
                 {
-                    ts = Convert.ToString(i, 2).PadLeft(r0.Length / 4, '0');
+                    ts = Convert.ToString(i, 2).PadLeft(log.RowLog_Contents_0.Length / 4, '0');
                     tls.Add(ts);
                 }
 
@@ -697,12 +695,12 @@ namespace DBLOG
                     try
                     {
                         mr0_str = mr1_str;
-                        for (i = 1, j = 0; i <= (r0.Length / 4); i++)
+                        for (i = 1, j = 0; i <= (log.RowLog_Contents_0.Length / 4); i++)
                         {
-                            fstart0 = Convert.ToInt32(r0[i * 4 - 3].ToString("X2") + r0[i * 4 - 4].ToString("X2"), 16);
-                            fstart1 = Convert.ToInt32(r0[i * 4 - 1].ToString("X2") + r0[i * 4 - 2].ToString("X2"), 16);
+                            fstart0 = Convert.ToInt32(log.RowLog_Contents_0[i * 4 - 3].ToString("X2") + log.RowLog_Contents_0[i * 4 - 4].ToString("X2"), 16);
+                            fstart1 = Convert.ToInt32(log.RowLog_Contents_0[i * 4 - 1].ToString("X2") + log.RowLog_Contents_0[i * 4 - 2].ToString("X2"), 16);
 
-                            flength0 = Convert.ToInt32(r1[i * 2 - 1].ToString("X2") + r1[i * 2 - 2].ToString("X2"), 16);
+                            flength0 = Convert.ToInt32(log.RowLog_Contents_1[i * 2 - 1].ToString("X2") + log.RowLog_Contents_1[i * 2 - 2].ToString("X2"), 16);
                             flength0f4 = (flength0 % 4 == 0 ? flength0 : flength0 + (4 - flength0 % 4));
 
                             fvalue0 = rowlogdata.Substring(j * 2, flength0 * 2);
