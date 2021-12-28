@@ -80,7 +80,12 @@ namespace DBLOG
 
             lobpagedata = new Dictionary<string, FPageInfo>();
 
-            foreach (FLOG log in dtLogs.Where(p => p.AllocUnitName == $"{sSchemaName}.{sTableName}" + (TableInfos.AllocUnitName.Length == 0 ? "" : "." + TableInfos.AllocUnitName)
+            stemp = $"{sSchemaName}.{sTableName}{(TableInfos.AllocUnitName.Length == 0 ? "" : "." + TableInfos.AllocUnitName)}";
+            foreach (FLOG log in dtLogs.Where(p => (
+                                                    (TableInfos.IsColumnStore == false && p.AllocUnitName == stemp)
+                                                    ||
+                                                    (TableInfos.IsColumnStore == true && p.AllocUnitName.StartsWith(stemp) == true)
+                                                   )
                                                    && (p.Context != "LCX_TEXT_TREE" && p.Context != "LCX_TEXT_MIX"))
                                        .OrderByDescending(p => p.Current_LSN))  // 从后往前解析
             {
@@ -1382,7 +1387,7 @@ namespace DBLOG
                     + "  from sys.tables a "
                     + "  join sys.schemas s on a.schema_id=s.schema_id "
                     + "  join sys.indexes d on a.object_id=d.object_id "
-                    + "  where d.type in(0,1) "
+                    + "  where d.type in(0,1,5) "
                     + $" and s.name=N'{pSchemaName}' "
                     + $" and a.name=N'{pTablename}'; ";
             tableinfo.AllocUnitName = DB.Query<string>(sTsql, false).FirstOrDefault();
@@ -1394,6 +1399,17 @@ namespace DBLOG
                     + $" where s.name=N'{pSchemaName}' "
                     + $" and a.name=N'{pTablename}'; ";
             tableinfo.TextInRow = DB.Query<int>(sTsql, false).FirstOrDefault();
+
+            // IsColumnStore
+            sTsql = "select iscolumnstore=cast(case when exists(select 1 "
+                      + "                                       from sys.tables t "
+                      + "                                       join sys.schemas s on t.schema_id=s.schema_id "
+                      + "                                       join sys.indexes i on t.object_id=i.object_id "
+                      + $"                                      where s.name=N'{pSchemaName}' "
+                      + $"                                      and t.name=N'{pTablename}' "
+                      + "                                       and i.index_id=1 "
+                      + "                                       and i.type=5) then 1 else 0 end as bit); ";
+            tableinfo.IsColumnStore = DB.Query<bool>(sTsql, false).FirstOrDefault();
 
             sTsql = "select cast(("
                         + "select ColumnID,ColumnName,DataType,Length,Precision,Nullable,Scale,IsComputed,LeafOffset,LeafNullBit "
