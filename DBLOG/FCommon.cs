@@ -286,7 +286,8 @@ namespace DBLOG
     {
         public short ColumnID;
         public string ColumnName;
-        public System.Data.SqlDbType DataType;
+        public string DataType;
+        public System.Data.SqlDbType PhysicalStorageType;
         public string CSDataType;
 
         public short Length = -1;
@@ -315,11 +316,12 @@ namespace DBLOG
         public short? VariantLength;
         public string VariantCollation;
 
-        public TableColumn(short cid, string name, SqlDbType type, short length, short precision, short scale, short pLeafOffset, short pLeafNullBit, bool pIsNullable, bool pIsComputed)
+        public TableColumn(short cid, string name, string ftype, SqlDbType ptype, short length, short precision, short scale, short pLeafOffset, short pLeafNullBit, bool pIsNullable, bool pIsComputed)
         {
             ColumnID = cid;
             ColumnName = name;
-            DataType = type;
+            DataType = ftype;
+            PhysicalStorageType = ptype;
             Length = length;
             Precision = precision;
             Scale = scale;
@@ -329,14 +331,14 @@ namespace DBLOG
             isExists = (name.Length > 0 ? true : false);
             isComputed = pIsComputed;
 
-            if (DataType == SqlDbType.VarChar
-                || DataType == SqlDbType.NVarChar
-                || DataType == SqlDbType.VarBinary
-                || DataType == SqlDbType.Variant
-                || DataType == SqlDbType.Xml
-                || DataType == SqlDbType.Image
-                || DataType == SqlDbType.Text
-                || DataType == SqlDbType.NText)
+            if (ptype == SqlDbType.VarChar
+                || ptype == SqlDbType.NVarChar
+                || ptype == SqlDbType.VarBinary
+                || ptype == SqlDbType.Variant
+                || ptype == SqlDbType.Xml
+                || ptype == SqlDbType.Image
+                || ptype == SqlDbType.Text
+                || ptype == SqlDbType.NText)
             {
                 isVarLenDataType = true;
             }
@@ -345,33 +347,33 @@ namespace DBLOG
                 isVarLenDataType = false;
             }
 
-            if (DataType == SqlDbType.VarChar
-                || DataType == SqlDbType.NVarChar
-                || DataType == SqlDbType.Char
-                || DataType == SqlDbType.NChar
-                || DataType == SqlDbType.Text)
+            if (ptype == SqlDbType.VarChar
+                || ptype == SqlDbType.NVarChar
+                || ptype == SqlDbType.Char
+                || ptype == SqlDbType.NChar
+                || ptype == SqlDbType.Text)
             {
                 CSDataType = "System.String";
             }
 
-            if (DataType == SqlDbType.Int
-                || DataType == SqlDbType.SmallInt
-                || DataType == SqlDbType.TinyInt
-                || DataType == SqlDbType.BigInt)
+            if (ptype == SqlDbType.Int
+                || ptype == SqlDbType.SmallInt
+                || ptype == SqlDbType.TinyInt
+                || ptype == SqlDbType.BigInt)
             {
                 CSDataType = "System.Int32";
             }
 
-            if (DataType == SqlDbType.DateTime
-                || DataType == SqlDbType.DateTime2
-                || DataType == SqlDbType.SmallDateTime
-                || DataType == SqlDbType.Date)
+            if (ptype == SqlDbType.DateTime
+                || ptype == SqlDbType.DateTime2
+                || ptype == SqlDbType.SmallDateTime
+                || ptype == SqlDbType.Date)
             {
                 CSDataType = "System.DateTime";
             }
 
-            if (DataType == SqlDbType.Binary
-                || DataType == SqlDbType.VarBinary)
+            if (ptype == SqlDbType.Binary
+                || ptype == SqlDbType.VarBinary)
             {
                 CSDataType = "System.Object";
             }

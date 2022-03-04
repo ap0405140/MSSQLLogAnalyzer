@@ -54,7 +54,7 @@ namespace DBLOG
             DataRow[] drTemp;
 
             logs = new List<DatabaseLog>();
-            sColumnlist = string.Join(",", TableColumns.Where(p => p.DataType != SqlDbType.Timestamp && p.isComputed == false).Select(p => $"[{p.ColumnName}]"));
+            sColumnlist = string.Join(",", TableColumns.Where(p => p.PhysicalStorageType != SqlDbType.Timestamp && p.isComputed == false).Select(p => $"[{p.ColumnName}]"));
 
             dtMRlist = new DataTable();
             dtMRlist.Columns.Add("PAGEID", typeof(string));
@@ -201,7 +201,7 @@ namespace DBLOG
                             }
                             for (j = 0; j <= TableColumns.Length - 1; j++)
                             {
-                                if (TableColumns[j].DataType == SqlDbType.Timestamp || TableColumns[j].isComputed == true) { continue; }
+                                if (TableColumns[j].PhysicalStorageType == SqlDbType.Timestamp || TableColumns[j].isComputed == true) { continue; }
 
                                 sValue = ColumnValue2SQLValue(TableColumns[j]);
                                 sValueList1 = sValueList1 + (sValueList1.Length > 0 ? "," : "") + sValue;
@@ -511,8 +511,8 @@ namespace DBLOG
             i = 0;
             foreach (TableColumn c in TableColumns)
             {
-                columns0[i] = new TableColumn(c.ColumnID, c.ColumnName, c.DataType, c.Length, c.Precision, c.Scale, c.LeafOffset, c.LeafNullBit, c.isNullable, c.isComputed);
-                columns1[i] = new TableColumn(c.ColumnID, c.ColumnName, c.DataType, c.Length, c.Precision, c.Scale, c.LeafOffset, c.LeafNullBit, c.isNullable, c.isComputed);
+                columns0[i] = new TableColumn(c.ColumnID, c.ColumnName, c.DataType, c.PhysicalStorageType, c.Length, c.Precision, c.Scale, c.LeafOffset, c.LeafNullBit, c.isNullable, c.isComputed);
+                columns1[i] = new TableColumn(c.ColumnID, c.ColumnName, c.DataType, c.PhysicalStorageType, c.Length, c.Precision, c.Scale, c.LeafOffset, c.LeafNullBit, c.isNullable, c.isComputed);
                 i = i + 1;
             }
 
@@ -541,7 +541,7 @@ namespace DBLOG
             sWhereList0 = "";
             for (i = 0; i <= TableColumns.Length - 1; i++)
             {
-                if (TableColumns[i].DataType == SqlDbType.Timestamp || TableColumns[i].isComputed == true) { continue; }
+                if (TableColumns[i].PhysicalStorageType == SqlDbType.Timestamp || TableColumns[i].isComputed == true) { continue; }
 
                 if ((columns0[i].isNull == false
                      && columns1[i].isNull == false
@@ -825,14 +825,14 @@ namespace DBLOG
             sAllColumnCount = Convert.ToInt16(columns.Length);
 
             // 预处理Bit字段
-            sBitColumnCount = Convert.ToInt16(columns.Count(p => p.DataType == SqlDbType.Bit));
+            sBitColumnCount = Convert.ToInt16(columns.Count(p => p.PhysicalStorageType == SqlDbType.Bit));
             sBitColumnDataLength = (short)Math.Ceiling((double)sBitColumnCount / (double)8.0); // 根据Bit字段数 计算Bit字段值列表长度(字节数)
             m_bBitColumnData = new byte[sBitColumnDataLength];
             sBitColumnDataIndex = -1;
             iBitValueStartIndex = 0;
 
             // 预处理Uniqueidentifier字段
-            iUniqueidentifierColumnCount = Convert.ToInt16(columns.Count(p => p.DataType == SqlDbType.UniqueIdentifier));
+            iUniqueidentifierColumnCount = Convert.ToInt16(columns.Count(p => p.PhysicalStorageType == SqlDbType.UniqueIdentifier));
 
             if (iUniqueidentifierColumnCount >= 2
                 && TableInfos.IsHeapTable == false) // 堆表不适用本规则
@@ -842,7 +842,7 @@ namespace DBLOG
                 j = 0;
                 for (i = (short)(columns.Length - 1); i >= 0; i--)
                 {
-                    if (columns[i].DataType == SqlDbType.UniqueIdentifier)
+                    if (columns[i].PhysicalStorageType == SqlDbType.UniqueIdentifier)
                     {
                         columns2[j] = columns[i];
                         j++;
@@ -851,7 +851,7 @@ namespace DBLOG
 
                 for (i = 0; i <= columns.Length - 1; i++)
                 {
-                    if (columns[i].DataType != SqlDbType.UniqueIdentifier)
+                    if (columns[i].PhysicalStorageType != SqlDbType.UniqueIdentifier)
                     {
                         columns2[j] = columns[i];
                         j++;
@@ -890,7 +890,7 @@ namespace DBLOG
                     tmpTableColumn = columns.Where(p => p.ColumnID == i + 1).FirstOrDefault();
                     if (tmpTableColumn == null)
                     {
-                        columns2[i] = new TableColumn(Convert.ToInt16(i + 1), string.Empty, SqlDbType.Int, 4, 0, 0, 0, 0, true, false);  // 虚拟字段 isExists = false
+                        columns2[i] = new TableColumn(Convert.ToInt16(i + 1), string.Empty, "", SqlDbType.Int, 4, 0, 0, 0, 0, true, false);  // 虚拟字段 isExists = false
                     }
                     else
                     {
@@ -1021,14 +1021,14 @@ namespace DBLOG
                 }
                 c.LogContentsStartIndex = index;
 
-                if (c.isNull == true && c.isNullable == true && c.DataType != System.Data.SqlDbType.Bit)
+                if (c.isNull == true && c.isNullable == true && c.PhysicalStorageType != System.Data.SqlDbType.Bit)
                 {
                     c.Value = "nullvalue";
                     index = index + c.Length;
                 }
                 else
                 {
-                    switch (c.DataType)
+                    switch (c.PhysicalStorageType)
                     {
                         case System.Data.SqlDbType.Char:
                             c.Value = System.Text.Encoding.Default.GetString(data, index, c.Length).TrimEnd();
@@ -1130,7 +1130,7 @@ namespace DBLOG
                     }
                 }
 
-                c.LogContentsEndIndex = (c.DataType != SqlDbType.Bit ? index - 1 : c.LogContentsEndIndex);
+                c.LogContentsEndIndex = (c.PhysicalStorageType != SqlDbType.Bit ? index - 1 : c.LogContentsEndIndex);
                 c.LogContents = sData.Substring(c.LogContentsStartIndex * 2, (c.LogContentsEndIndex - c.LogContentsStartIndex + 1) * 2);
                 index = index3;
             }
@@ -1229,7 +1229,7 @@ namespace DBLOG
 
                     if (tvc != null)
                     {
-                        switch (c.DataType)
+                        switch (c.PhysicalStorageType)
                         {
                             case System.Data.SqlDbType.VarChar:
                                 c.ValueHex = tvc.FLogContents;
@@ -1284,7 +1284,7 @@ namespace DBLOG
                     else
                     {
                         if (c.isNull == false
-                            && (c.DataType == System.Data.SqlDbType.VarChar || c.DataType == System.Data.SqlDbType.NVarChar))
+                            && (c.PhysicalStorageType == System.Data.SqlDbType.VarChar || c.PhysicalStorageType == System.Data.SqlDbType.NVarChar))
                         {
                             c.Value = "";
                             c.ValueHex = "";
@@ -1412,13 +1412,14 @@ namespace DBLOG
             tableinfo.IsColumnStore = DB.Query<bool>(sTsql, false).FirstOrDefault();
 
             sTsql = "select cast(("
-                        + "select ColumnID,ColumnName,DataType,Length,Precision,Nullable,Scale,IsComputed,LeafOffset,LeafNullBit "
+                        + "select ColumnID,ColumnName,DataType,PhysicalStorageType,Length,Precision,IsNullable,Scale,IsComputed,LeafOffset,LeafNullBit "
                         + " from (select 'ColumnID'=b.column_id, "
                         + "              'ColumnName'=b.name, "
                         + "              'DataType'=c.name, "
+                        + "              'PhysicalStorageType'=c2.name, "
                         + "              'Length'=b.max_length, "
                         + "              'Precision'=b.precision, "
-                        + "              'Nullable'=b.is_nullable, "
+                        + "              'IsNullable'=b.is_nullable, "
                         + "              'Scale'=b.scale, "
                         + "              'IsComputed'=b.is_computed, "
                         + "              'LeafOffset'=isnull(d2.leaf_offset,0), "
@@ -1427,6 +1428,7 @@ namespace DBLOG
                         + "       join sys.schemas s on a.schema_id=s.schema_id "
                         + "       join sys.columns b on a.object_id=b.object_id "
                         + "       join sys.systypes c on b.system_type_id=c.xtype and b.user_type_id=c.xusertype "
+                        + "       join sys.systypes c2 on c.xtype=c2.xtype and c.xtype=c2.xusertype "
                         + "       outer apply (select d.leaf_offset,d.leaf_null_bit "
                         + "                    from sys.system_internals_partition_columns d "
                         + "                    where d.partition_column_id=b.column_id "
@@ -1435,7 +1437,8 @@ namespace DBLOG
                         + "                                           join sys.partitions partitionss on (allocunits.type in(1, 3) and allocunits.container_id=partitionss.hobt_id) "
                         + "                                                                              or (allocunits.type=2 and allocunits.container_id=partitionss.partition_id) "
                         + "                                           where partitionss.object_id=a.object_id and partitionss.index_id<=1)) d2 "
-                        + $"      where s.name=N'{pSchemaName}' and a.name=N'{pTablename}') t "
+                        + $"      where s.name=N'{pSchemaName}' "
+                        + $"      and a.name=N'{pTablename}') t "
                         + " order by ColumnID "
                         + " for xml raw('Column'),root('ColumnList') "
                         + ") as nvarchar(max)); ";
@@ -1446,90 +1449,81 @@ namespace DBLOG
         }
 
         // 解析表结构定义(XML).
-        public TableColumn[] AnalyzeTablelayout(string sTableLayout)
+        public TableColumn[] AnalyzeTablelayout(string TableLayout)
         {
-            short iColumnID;
-            string sColumnName;
-            SqlDbType sDataType;
-            short sLength, sPrecision, sScale, sLeafOffset, sLeafNullBit;
-            int i, iColumncount;
-            bool isNullable, isComputed;
+            short ColumnID;
+            string ColumnName, DataType;
+            SqlDbType PhysicalStorageType;
+            short Length, Precision, Scale, LeafOffset, LeafNullBit;
+            int i, Columncount;
+            bool IsNullable, IsComputed;
             XmlDocument xmlDoc;
             XmlNode xmlRootnode;
             XmlNodeList xmlNodelist;
             TableColumn[] TableColumns;
 
             xmlDoc = new XmlDocument();
-            xmlDoc.LoadXml(sTableLayout);
+            xmlDoc.LoadXml(TableLayout);
             xmlRootnode = xmlDoc.SelectSingleNode("ColumnList");
             xmlNodelist = xmlRootnode.ChildNodes;
-            iColumncount = xmlNodelist.Count;
+            Columncount = xmlNodelist.Count;
 
-            TableColumns = new TableColumn[iColumncount];
+            TableColumns = new TableColumn[Columncount];
             i = 0;
-            sDataType = SqlDbType.Int;
+            PhysicalStorageType = SqlDbType.Int;
 
             foreach (XmlNode xmlNode in xmlNodelist)
             {
-                // ColumnID
-                iColumnID = Convert.ToInt16(xmlNode.Attributes["ColumnID"].Value.ToString());
-                // ColumnName
-                sColumnName = xmlNode.Attributes["ColumnName"].Value;
-                // DataType
-                switch (xmlNode.Attributes["DataType"].Value)
+                ColumnID = Convert.ToInt16(xmlNode.Attributes["ColumnID"].Value.ToString());
+                ColumnName = xmlNode.Attributes["ColumnName"].Value;
+                DataType = xmlNode.Attributes["DataType"].Value;
+                switch (xmlNode.Attributes["PhysicalStorageType"].Value)
                 {
-                    case "bigint": sDataType = System.Data.SqlDbType.BigInt; break;
-                    case "binary": sDataType = System.Data.SqlDbType.Binary; break;
-                    case "bit": sDataType = System.Data.SqlDbType.Bit; break;
-                    case "char": sDataType = System.Data.SqlDbType.Char; break;
-                    case "date": sDataType = System.Data.SqlDbType.Date; break;
-                    case "datetime": sDataType = System.Data.SqlDbType.DateTime; break;
-                    case "datetime2": sDataType = System.Data.SqlDbType.DateTime2; break;
-                    case "datetimeoffset": sDataType = System.Data.SqlDbType.DateTimeOffset; break;
-                    case "decimal": sDataType = System.Data.SqlDbType.Decimal; break;
-                    case "float": sDataType = System.Data.SqlDbType.Float; break;
-                    case "geography": sDataType = System.Data.SqlDbType.VarBinary; break;
-                    case "geometry": sDataType = System.Data.SqlDbType.VarBinary; break;
-                    case "hierarchyid": sDataType = System.Data.SqlDbType.VarBinary; break;
-                    case "image": sDataType = System.Data.SqlDbType.Image; break;
-                    case "int": sDataType = System.Data.SqlDbType.Int; break;
-                    case "money": sDataType = System.Data.SqlDbType.Money; break;
-                    case "nchar": sDataType = System.Data.SqlDbType.NChar; break;
-                    case "ntext": sDataType = System.Data.SqlDbType.NText; break;
-                    case "numeric": sDataType = System.Data.SqlDbType.Decimal; break;    // numeric=decimal
-                    case "nvarchar": sDataType = System.Data.SqlDbType.NVarChar; break;
-                    case "real": sDataType = System.Data.SqlDbType.Real; break;
-                    case "smalldatetime": sDataType = System.Data.SqlDbType.SmallDateTime; break;
-                    case "smallint": sDataType = System.Data.SqlDbType.SmallInt; break;
-                    case "smallmoney": sDataType = System.Data.SqlDbType.SmallMoney; break;
-                    case "sql_variant": sDataType = System.Data.SqlDbType.Variant; break;
-                    case "sysname": sDataType = System.Data.SqlDbType.NVarChar; break;
-                    case "text": sDataType = System.Data.SqlDbType.Text; break;
-                    case "time": sDataType = System.Data.SqlDbType.Time; break;
-                    case "timestamp": sDataType = System.Data.SqlDbType.Timestamp; break;
-                    case "tinyint": sDataType = System.Data.SqlDbType.TinyInt; break;
-                    case "uniqueidentifier": sDataType = System.Data.SqlDbType.UniqueIdentifier; break;
-                    case "varbinary": sDataType = System.Data.SqlDbType.VarBinary; break;
-                    case "varchar": sDataType = System.Data.SqlDbType.VarChar; break;
-                    case "xml": sDataType = System.Data.SqlDbType.Xml; break;
+                    case "bigint": PhysicalStorageType = System.Data.SqlDbType.BigInt; break;
+                    case "binary": PhysicalStorageType = System.Data.SqlDbType.Binary; break;
+                    case "bit": PhysicalStorageType = System.Data.SqlDbType.Bit; break;
+                    case "char": PhysicalStorageType = System.Data.SqlDbType.Char; break;
+                    case "date": PhysicalStorageType = System.Data.SqlDbType.Date; break;
+                    case "datetime": PhysicalStorageType = System.Data.SqlDbType.DateTime; break;
+                    case "datetime2": PhysicalStorageType = System.Data.SqlDbType.DateTime2; break;
+                    case "datetimeoffset": PhysicalStorageType = System.Data.SqlDbType.DateTimeOffset; break;
+                    case "decimal": PhysicalStorageType = System.Data.SqlDbType.Decimal; break;
+                    case "float": PhysicalStorageType = System.Data.SqlDbType.Float; break;
+                    case "geography": PhysicalStorageType = System.Data.SqlDbType.VarBinary; break;
+                    case "geometry": PhysicalStorageType = System.Data.SqlDbType.VarBinary; break;
+                    case "hierarchyid": PhysicalStorageType = System.Data.SqlDbType.VarBinary; break;
+                    case "image": PhysicalStorageType = System.Data.SqlDbType.Image; break;
+                    case "int": PhysicalStorageType = System.Data.SqlDbType.Int; break;
+                    case "money": PhysicalStorageType = System.Data.SqlDbType.Money; break;
+                    case "nchar": PhysicalStorageType = System.Data.SqlDbType.NChar; break;
+                    case "ntext": PhysicalStorageType = System.Data.SqlDbType.NText; break;
+                    case "numeric": PhysicalStorageType = System.Data.SqlDbType.Decimal; break;    // numeric=decimal
+                    case "nvarchar": PhysicalStorageType = System.Data.SqlDbType.NVarChar; break;
+                    case "real": PhysicalStorageType = System.Data.SqlDbType.Real; break;
+                    case "smalldatetime": PhysicalStorageType = System.Data.SqlDbType.SmallDateTime; break;
+                    case "smallint": PhysicalStorageType = System.Data.SqlDbType.SmallInt; break;
+                    case "smallmoney": PhysicalStorageType = System.Data.SqlDbType.SmallMoney; break;
+                    case "sql_variant": PhysicalStorageType = System.Data.SqlDbType.Variant; break;
+                    case "sysname": PhysicalStorageType = System.Data.SqlDbType.NVarChar; break;
+                    case "text": PhysicalStorageType = System.Data.SqlDbType.Text; break;
+                    case "time": PhysicalStorageType = System.Data.SqlDbType.Time; break;
+                    case "timestamp": PhysicalStorageType = System.Data.SqlDbType.Timestamp; break;
+                    case "tinyint": PhysicalStorageType = System.Data.SqlDbType.TinyInt; break;
+                    case "uniqueidentifier": PhysicalStorageType = System.Data.SqlDbType.UniqueIdentifier; break;
+                    case "varbinary": PhysicalStorageType = System.Data.SqlDbType.VarBinary; break;
+                    case "varchar": PhysicalStorageType = System.Data.SqlDbType.VarChar; break;
+                    case "xml": PhysicalStorageType = System.Data.SqlDbType.Xml; break;
                     default: break;
                 }
-                // Length
-                sLength = Convert.ToInt16(xmlNode.Attributes["Length"].Value);
-                // Precision
-                sPrecision = Convert.ToInt16(xmlNode.Attributes["Precision"].Value);
-                // Scale
-                sScale = Convert.ToInt16(xmlNode.Attributes["Scale"].Value);
-                // IsComputed
-                isComputed = (xmlNode.Attributes["IsComputed"].Value.ToString() == "0" ? false : true);
-                // LeafOffset
-                sLeafOffset = Convert.ToInt16(xmlNode.Attributes["LeafOffset"].Value);
-                // LeafNullBit
-                sLeafNullBit = Convert.ToInt16(xmlNode.Attributes["LeafNullBit"].Value);
-                // Nullable
-                isNullable = (Convert.ToInt16(xmlNode.Attributes["Nullable"].Value) == 1 ? true : false);
+                Length = Convert.ToInt16(xmlNode.Attributes["Length"].Value);
+                Precision = Convert.ToInt16(xmlNode.Attributes["Precision"].Value);
+                Scale = Convert.ToInt16(xmlNode.Attributes["Scale"].Value);
+                IsComputed = (xmlNode.Attributes["IsComputed"].Value.ToString() == "0" ? false : true);
+                LeafOffset = Convert.ToInt16(xmlNode.Attributes["LeafOffset"].Value);
+                LeafNullBit = Convert.ToInt16(xmlNode.Attributes["LeafNullBit"].Value);
+                IsNullable = (Convert.ToInt16(xmlNode.Attributes["IsNullable"].Value) == 1 ? true : false);
 
-                TableColumns[i] = new TableColumn(iColumnID, sColumnName, sDataType, sLength, sPrecision, sScale, sLeafOffset, sLeafNullBit, isNullable, isComputed);
+                TableColumns[i] = new TableColumn(ColumnID, ColumnName, DataType, PhysicalStorageType, Length, Precision, Scale, LeafOffset, LeafNullBit, IsNullable, IsComputed);
                 i = i + 1;
             }
 
@@ -1543,7 +1537,7 @@ namespace DBLOG
             string[] NoSeparatorchar, UnicodeType;
             SqlDbType? datatype;
 
-            datatype = (pcol.DataType != SqlDbType.Variant ? pcol.DataType : pcol.VariantBaseType);
+            datatype = (pcol.PhysicalStorageType != SqlDbType.Variant ? pcol.PhysicalStorageType : pcol.VariantBaseType);
 
             if (pcol.isNull == true || pcol.Value == null || datatype == null)
             {
@@ -1559,7 +1553,7 @@ namespace DBLOG
                 
                 sValue = (bIsUnicodeType ? "N" : "") + (bNeedSeparatorchar ? "'" : "") + pcol.Value.ToString().Replace("'", "''") + (bNeedSeparatorchar ? "'" : "");
 
-                if (pcol.DataType == SqlDbType.Variant)
+                if (pcol.PhysicalStorageType == SqlDbType.Variant)
                 {
                     switch (datatype)
                     {
@@ -1643,7 +1637,7 @@ namespace DBLOG
         {
             string sqlname;
 
-            switch (pcol.DataType)
+            switch (pcol.PhysicalStorageType)
             {
                 case SqlDbType.Text:
                     sqlname = $"cast([{pcol.ColumnName}] as varchar(max))";
@@ -1672,7 +1666,7 @@ namespace DBLOG
             sCurrentColumnIDinBit = 0;
             for (i = 0; i <= columns.Length - 1; i++)
             {
-                if (columns[i].DataType == SqlDbType.Bit)
+                if (columns[i].PhysicalStorageType == SqlDbType.Bit)
                 {
                     sCurrentColumnIDinBit = (short)(sCurrentColumnIDinBit + 1);
                     if (columns[i].ColumnName == sColumnName) { break; }
