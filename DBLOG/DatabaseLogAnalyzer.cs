@@ -19,7 +19,7 @@ namespace DBLOG
     {
         private string _objectname,    // 对象名
                        _starttime, _endtime, // 开始时间 结束时间
-                       _startLSN, _endLSN, _endLSN_var, // 开始LSN 结束LSN
+                       _MinLSN, // 开始LSN
                        _tsql;
         private DatabaseOperation DB;  // 数据库操作对象
         /// <summary>
@@ -117,73 +117,50 @@ namespace DBLOG
                     + " and exists(select 1 from sys.fn_dblog(null,null) b where b.[Transaction ID]=a.[Transaction ID] and b.Operation=N'LOP_COMMIT_XACT') "
                     + " group by a.[Transaction ID] "
                     + " having cast(min(a.[Begin Time]) as datetime) between '" + _starttime + "' and '" + _endtime + "' "
-                    + " or cast(max(a.[End Time]) as datetime) between '" + _starttime + "' and '" + _endtime + "' ";
+                    + "        or cast(max(a.[End Time]) as datetime) between '" + _starttime + "' and '" + _endtime + "' ";
             DB.ExecuteSQL(_tsql, false);
             ReadPercent = ReadPercent + 5;
 
             // get StartLSN and EndLSN
-            _tsql = "select 'StartLSN'=cast(cast(convert(varbinary,substring(t.StartLSN,1,8),2) as bigint) as varchar)+':'+cast(cast(convert(varbinary,substring(t.StartLSN,10,8),2) as bigint) as varchar)+':'+cast(cast(convert(varbinary,substring(t.StartLSN,19,4),2) as bigint) as varchar), "
-                    + "     'EndLSN'=cast(cast(convert(varbinary,substring(t.EndLSN,1,8),2) as bigint) as varchar)+':'+cast(cast(convert(varbinary,substring(t.EndLSN,10,8),2) as bigint) as varchar)+':'+cast(cast(convert(varbinary,substring(t.EndLSN,19,4),2) as bigint) as varchar), "
-                    + "     'EndLSNvar'=EndLSN "
-                    + " from (select 'StartLSN'=cast(min(BeginLSN) as varchar),'EndLSN'=cast(max(EndLSN) as varchar) from #TransactionList) t ";
+            _tsql = "select 'MinLSN'=cast(min(BeginLSN) as varchar) from #TransactionList; ";
             dtTemp = DB.Query(_tsql, false);
 
             if (dtTemp != null && dtTemp.Rows.Count > 0)
             {
-                _startLSN = "'" + dtTemp.Rows[0]["StartLSN"].ToString() + "'";
-                _endLSN = "'" + dtTemp.Rows[0]["EndLSN"].ToString() + "'";
-                _endLSN_var = "'" + dtTemp.Rows[0]["EndLSNvar"].ToString() + "'";
+                _MinLSN = dtTemp.Rows[0]["MinLSN"].ToString();
             }
             else
             {
-                _startLSN = "null";
-                _endLSN = "null";
-                _endLSN_var = "";
+                _MinLSN = "";
             }
 
             // get DML original log list
             _tsql = "if object_id('tempdb..#LogList') is not null drop table #LogList; ";
             DB.ExecuteSQL(_tsql, false);
 
-            _tsql = "select *,istail=cast(0 as bit) "
+            _tsql = "select * "
                   + " into #LogList "
                   + " from sys.fn_dblog(null,null) t "
                   + " where 1=2; ";
             DB.ExecuteSQL(_tsql, false);
 
             _tsql = "set transaction isolation level read uncommitted; "
-                    + " insert into #LogList "
-                    + " output inserted.* "
-                    + "select *,istail=0 "
-                    + " from sys.fn_dblog(" + _startLSN + ", " + _endLSN + ") t "
-                    + " where [Transaction ID] in(select [TransactionID] from #TransactionList) "
-                    + " and [Context] in('LCX_HEAP','LCX_CLUSTERED','LCX_MARK_AS_GHOST','LCX_TEXT_TREE','LCX_TEXT_MIX') "
-                    + " and [Operation] in('LOP_INSERT_ROWS','LOP_DELETE_ROWS','LOP_MODIFY_ROW','LOP_MODIFY_COLUMNS') "
-                    + " and [AllocUnitName]<>'Unknown Alloc Unit' "
-                    + " and [AllocUnitName] not like 'sys.%' "
-                    + " and [AllocUnitName] is not null ";
+                    + "insert into #LogList "
+                    + "output inserted.* "
+                    + "select * "
+                    + "  from sys.fn_dblog(null,null) t "
+                    + $" where [Current LSN]>'{_MinLSN}' "
+                    + "  and [Context] in('LCX_HEAP','LCX_CLUSTERED','LCX_MARK_AS_GHOST','LCX_TEXT_TREE','LCX_TEXT_MIX') "
+                    + "  and [Operation] in('LOP_INSERT_ROWS','LOP_DELETE_ROWS','LOP_MODIFY_ROW','LOP_MODIFY_COLUMNS') "
+                    + "  and [AllocUnitName]<>'Unknown Alloc Unit' "
+                    + "  and [AllocUnitName] not like 'sys.%' "
+                    + "  and [AllocUnitName] is not null ";
 
             if (_objectname.Length > 0)
             {
-                _tsql = _tsql + " and case when parsename([AllocUnitName],3) is not null then parsename([AllocUnitName],2) else parsename([AllocUnitName],1) end='" + tablename + "' "
-                              + " and case when parsename([AllocUnitName],3) is not null then parsename([AllocUnitName],3) else parsename([AllocUnitName],2) end='" + schemaname + "' ";
-            }
-
-            _tsql = _tsql 
-                    + "union all "
-                    + "select *,istail=1 "
-                    + "   from sys.fn_dblog(null,null) t "
-                    + "   where [Current LSN]>" + _endLSN_var
-                    + "   and [Context] in('LCX_HEAP','LCX_CLUSTERED','LCX_MARK_AS_GHOST','LCX_TEXT_TREE','LCX_TEXT_MIX') "
-                    + "   and [Operation] in('LOP_MODIFY_ROW','LOP_MODIFY_COLUMNS') "
-                    + "   and [AllocUnitName]<>'Unknown Alloc Unit' "
-                    + "   and [AllocUnitName] not like 'sys.%' "
-                    + "   and [AllocUnitName] is not null ";
-
-            if (_objectname.Length > 0)
-            {
-                _tsql = _tsql + " and case when parsename([AllocUnitName],3) is not null then parsename([AllocUnitName],2) else parsename([AllocUnitName],1) end='" + tablename + "' "
-                              + " and case when parsename([AllocUnitName],3) is not null then parsename([AllocUnitName],3) else parsename([AllocUnitName],2) end='" + schemaname + "' ";
+                _tsql = _tsql 
+                        + " and case when parsename([AllocUnitName],3) is not null then parsename([AllocUnitName],2) else parsename([AllocUnitName],1) end='" + tablename + "' "
+                        + " and case when parsename([AllocUnitName],3) is not null then parsename([AllocUnitName],3) else parsename([AllocUnitName],2) end='" + schemaname + "' ";
             }
             dtLoglist = DB.Query<FLOG>(_tsql, false);
 
@@ -194,7 +171,7 @@ namespace DBLOG
             _tsql = "select distinct 'TableName'=case when parsename([AllocUnitName],3) is not null then parsename([AllocUnitName],2) else parsename([AllocUnitName],1) end, "
                     + "              'SchemaName'=case when parsename([AllocUnitName],3) is not null then parsename([AllocUnitName],3) else parsename([AllocUnitName],2) end "
                     + " from #LogList "
-                    + " where istail=0; ";
+                    + " where [Transaction ID] in(select TransactionID from #TransactionList); ";
             dtTables = DB.Query(_tsql, false);
 
             ReadPercent = ReadPercent + 5;
@@ -214,7 +191,7 @@ namespace DBLOG
                 FCommon.WriteTextFile(LogFile, $"Start Analysis Log for [{schemaname}].[{tablename}]. ");
 #endif
 
-                tmplog = tablelist[i].AnalyzeLog(_startLSN, _endLSN);
+                tmplog = tablelist[i].AnalyzeLog();
                 dmllog.AddRange(tmplog);
                 ReadPercent = ReadPercent + Convert.ToInt32(Math.Floor((tablelist[i].dtLogs.Count * 1.0) / (dtLoglist.Count * 1.0) * 85.0));
 

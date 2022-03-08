@@ -36,7 +36,7 @@ namespace DBLOG
         }
 
         // 解析日志
-        public List<DatabaseLog> AnalyzeLog(string pStartLSN, string pEndLSN)
+        public List<DatabaseLog> AnalyzeLog()
         {
             List<DatabaseLog> logs;
             DatabaseLog tmplog;
@@ -147,7 +147,7 @@ namespace DBLOG
 
                         if (isfound == false)
                         {
-                            MR1 = GetMR1(log.Operation, log.Page_ID, log.AllocUnitId.ToString(), log.Current_LSN, pStartLSN, pEndLSN, log.RowLog_Contents_0.ToText(), log.RowLog_Contents_1.ToText(), sPrimaryKeyValue);
+                            MR1 = GetMR1(log.Operation, log.Page_ID, log.AllocUnitId.ToString(), log.Current_LSN, log.RowLog_Contents_0.ToText(), log.RowLog_Contents_1.ToText(), sPrimaryKeyValue);
 
                             if (MR1 != null)
                             {
@@ -195,7 +195,7 @@ namespace DBLOG
                             }
                             else
                             {
-                                MR0 = GetMR1(log.Operation, log.Page_ID, log.AllocUnitId.ToString(), log.Current_LSN, pStartLSN, pEndLSN, log.RowLog_Contents_0.ToText(), log.RowLog_Contents_1.ToText(), "");
+                                MR0 = GetMR1(log.Operation, log.Page_ID, log.AllocUnitId.ToString(), log.Current_LSN, log.RowLog_Contents_0.ToText(), log.RowLog_Contents_1.ToText(), "");
                                 if (MR0.Length < iMinimumlength) { continue; }
                                 TranslateData(MR0, TableColumns);
                             }
@@ -328,7 +328,7 @@ namespace DBLOG
             return logs;
         }
 
-        private byte[] GetMR1(string pOperation, string pPageID, string pAllocUnitId, string pCurrentLSN, string pStartLSN, string pEndLSN, string pR0, string pR1, string pPrimaryKeyValue)
+        private byte[] GetMR1(string pOperation, string pPageID, string pAllocUnitId, string pCurrentLSN, string pR0, string pR1, string pPrimaryKeyValue)
         {
             byte[] mr1;
             string fileid_dec, pageid_dec, checkvalue1, checkvalue2;
