@@ -326,7 +326,7 @@ namespace DBLOG
                     tmplog.TransactionID = log.Transaction_ID;
                     tmplog.BeginTime = BeginTime;
                     tmplog.EndTime = EndTime;
-                    tmplog.ObjectName = $"[{sSchemaName}].[{sTableName}]";
+                    tmplog.ObjectName = $"[{SchemaName}].[{TableName}]";
                     tmplog.Operation = log.Operation;
                     tmplog.RedoSQL = "";
                     tmplog.UndoSQL = "";
