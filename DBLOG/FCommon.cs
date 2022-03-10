@@ -302,12 +302,12 @@ namespace DBLOG
         public string LogContentsEndIndexHex = "";  // LogContents的结束位置(16进制)
         public string Oth = "";
 
-        public bool isNull = false;       // 字段值是否为Null
-        public bool isNullable = false;   // 是否允许Null
-        public bool isComputed = false;   // 是否是计算列
+        public bool IsNull = false;       // 字段值是否为Null
+        public bool IsNullable = false;   // 是否允许Null
+        public bool IsComputed = false;   // 是否是计算列
 
-        public bool isVarLenDataType;     // 是否是变长型
-        public bool isExists;             // 是否存在
+        public bool IsVarLenDataType;     // 是否是变长型
+        public bool IsExists;             // 是否存在
         public short LeafOffset;
         public short LeafNullBit;
 
@@ -327,9 +327,9 @@ namespace DBLOG
             Scale = scale;
             LeafOffset = pLeafOffset;
             LeafNullBit = pLeafNullBit;
-            isNullable = pIsNullable;
-            isExists = (name.Length > 0 ? true : false);
-            isComputed = pIsComputed;
+            IsNullable = pIsNullable;
+            IsExists = (name.Length > 0 ? true : false);
+            IsComputed = pIsComputed;
 
             if (ptype == SqlDbType.VarChar
                 || ptype == SqlDbType.NVarChar
@@ -340,11 +340,11 @@ namespace DBLOG
                 || ptype == SqlDbType.Text
                 || ptype == SqlDbType.NText)
             {
-                isVarLenDataType = true;
+                IsVarLenDataType = true;
             }
             else
             {
-                isVarLenDataType = false;
+                IsVarLenDataType = false;
             }
 
             if (ptype == SqlDbType.VarChar

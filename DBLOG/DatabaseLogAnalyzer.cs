@@ -149,7 +149,7 @@ namespace DBLOG
                     + "output inserted.* "
                     + "select * "
                     + "  from sys.fn_dblog(null,null) t "
-                    + $" where [Current LSN]>'{_MinLSN}' "
+                    + $" where [Current LSN]>='{_MinLSN}' "
                     + "  and [Context] in('LCX_HEAP','LCX_CLUSTERED','LCX_MARK_AS_GHOST','LCX_TEXT_TREE','LCX_TEXT_MIX') "
                     + "  and [Operation] in('LOP_INSERT_ROWS','LOP_DELETE_ROWS','LOP_MODIFY_ROW','LOP_MODIFY_COLUMNS') "
                     + "  and [AllocUnitName]<>'Unknown Alloc Unit' "
@@ -184,7 +184,7 @@ namespace DBLOG
                 tablename = dr["TableName"].ToString();
                 schemaname = dr["SchemaName"].ToString();
                 tablelist[i] = new DBLOG_DML(databasename, schemaname, tablename, DB, LogFile);
-                tablelist[i].dtLogs = dtLoglist.Where(p => p.AllocUnitName == $"{schemaname}.{tablename}"
+                tablelist[i].DTLogs = dtLoglist.Where(p => p.AllocUnitName == $"{schemaname}.{tablename}"
                                                            || p.AllocUnitName.StartsWith($"{schemaname}.{tablename}.")).ToList();
 
 #if DEBUG
@@ -193,7 +193,7 @@ namespace DBLOG
 
                 tmplog = tablelist[i].AnalyzeLog();
                 dmllog.AddRange(tmplog);
-                ReadPercent = ReadPercent + Convert.ToInt32(Math.Floor((tablelist[i].dtLogs.Count * 1.0) / (dtLoglist.Count * 1.0) * 85.0));
+                ReadPercent = ReadPercent + Convert.ToInt32(Math.Floor((tablelist[i].DTLogs.Count * 1.0) / (dtLoglist.Count * 1.0) * 85.0));
 
 #if DEBUG
                 FCommon.WriteTextFile(LogFile, $"End Analysis Log for [{schemaname}].[{tablename}]. ");

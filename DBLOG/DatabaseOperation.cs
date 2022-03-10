@@ -22,6 +22,7 @@ namespace DBLOG
                       ApplicationName,
                       ErrorMessage,
                       ConnectString;
+        public int Vesion;
         private SqlConnection scn;
         private SqlCommand scm;
         private SqlDataAdapter sda;
@@ -41,11 +42,25 @@ namespace DBLOG
                                           LoginName,
                                           Password,
                                           ApplicationName);
+            GetDatabaseInfo();
         }
 
         public DatabaseOperation(string pconnectionstring)
         {
             ConnectString = pconnectionstring;
+            GetDatabaseInfo();
+        }
+
+        private void GetDatabaseInfo()
+        {
+            string tsql, runresult;
+
+            tsql = "select @@version; ";
+            runresult = Query11(tsql, false);
+            Vesion = Convert.ToInt32(runresult.Substring(21, 4));
+
+            tsql = "select db_name(); ";
+            DatabaseName = Query11(tsql, false);
         }
 
         public void RefreshConnect()
