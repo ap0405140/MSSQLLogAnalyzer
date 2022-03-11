@@ -793,12 +793,12 @@ namespace DBLOG
             return mr0_str;
         }
 
-        private void TranslateData(byte[] data, TableColumn[] columns)
+        private void TranslateData(byte[] rowdata, TableColumn[] columns)
         {
             int index, index2, index3,
                 BitValueStartIndex,
                 tempint;
-            string Data,
+            string rowdata_text,
                    NullStatus,  // 列null值状态列表
                    tempstr,
                    ValueHex,
@@ -826,10 +826,10 @@ namespace DBLOG
             List<FVarColumnInfo> VarlenColumns;  // 变长字段数据
             FVarColumnInfo tvc;
 
-            if (data == null || data.Length <= 4) { return; }
+            if (rowdata == null || rowdata.Length <= 4) { return; }
 
             index = 4;  // 行数据从第5字节开始
-            Data = data.ToText();
+            rowdata_text = rowdata.ToText();
             AllColumnCount = Convert.ToInt16(columns.Length);
 
             // 预处理Bit字段
@@ -869,8 +869,8 @@ namespace DBLOG
                 columns = columns2;
             }
 
-            index2 = Convert.ToInt32(data[3].ToString("X2") + data[2].ToString("X2"), 16);  // 指针暂先跳过所有定长字段的值
-            AllColumnCountLog = BitConverter.ToInt16(data, index2);
+            index2 = Convert.ToInt32(rowdata[3].ToString("X2") + rowdata[2].ToString("X2"), 16);  // 指针暂先跳过所有定长字段的值
+            AllColumnCountLog = BitConverter.ToInt16(rowdata, index2);
 
             index2 = index2 + 2;
 
@@ -974,7 +974,7 @@ namespace DBLOG
             NullStatus = "";
             for (i = 0; i <= NullStatusLength - 1; i++)
             {
-                NullStatus = data[index2].ToBinaryString() + NullStatus;
+                NullStatus = rowdata[index2].ToBinaryString() + NullStatus;
                 index2 = index2 + 1;
             }
             NullStatus = NullStatus.Reverse();  // 字符串反转
@@ -1030,71 +1030,71 @@ namespace DBLOG
                     switch (c.PhysicalStorageType)
                     {
                         case System.Data.SqlDbType.Char:
-                            c.Value = System.Text.Encoding.Default.GetString(data, index, c.Length).TrimEnd();
+                            c.Value = System.Text.Encoding.Default.GetString(rowdata, index, c.Length).TrimEnd();
                             index = index + c.Length;
                             break;
                         case System.Data.SqlDbType.NChar:
-                            c.Value = System.Text.Encoding.Unicode.GetString(data, index, c.Length).TrimEnd();
+                            c.Value = System.Text.Encoding.Unicode.GetString(rowdata, index, c.Length).TrimEnd();
                             index = index + c.Length;
                             break;
                         case System.Data.SqlDbType.DateTime:
-                            c.Value = TranslateData_DateTime(data, index);
+                            c.Value = TranslateData_DateTime(rowdata, index);
                             index = index + c.Length;
                             break;
                         case System.Data.SqlDbType.DateTime2:
-                            c.Value = TranslateData_DateTime2(data, index, c.Length, c.Scale);
+                            c.Value = TranslateData_DateTime2(rowdata, index, c.Length, c.Scale);
                             index = index + c.Length;
                             break;
                         case System.Data.SqlDbType.DateTimeOffset:
-                            c.Value = TranslateData_DateTimeOffset(data, index, c.Length, c.Scale);
+                            c.Value = TranslateData_DateTimeOffset(rowdata, index, c.Length, c.Scale);
                             index = index + c.Length;
                             break;
                         case System.Data.SqlDbType.SmallDateTime:
-                            c.Value = TranslateData_SmallDateTime(data, index);
+                            c.Value = TranslateData_SmallDateTime(rowdata, index);
                             index = index + c.Length;
                             break;
                         case System.Data.SqlDbType.Date:
-                            c.Value = TranslateData_Date(data, index);
+                            c.Value = TranslateData_Date(rowdata, index);
                             index = index + 3;
                             break;
                         case System.Data.SqlDbType.Time:
-                            c.Value = TranslateData_Time(data, index, c.Length, c.Scale);
+                            c.Value = TranslateData_Time(rowdata, index, c.Length, c.Scale);
                             index = index + c.Length;
                             break;
                         case System.Data.SqlDbType.Int:
-                            c.Value = BitConverter.ToInt32(data, index);
+                            c.Value = BitConverter.ToInt32(rowdata, index);
                             index = index + c.Length;
                             break;
                         case System.Data.SqlDbType.BigInt:
-                            c.Value = BitConverter.ToInt64(data, index);
+                            c.Value = BitConverter.ToInt64(rowdata, index);
                             index = index + c.Length;
                             break;
                         case System.Data.SqlDbType.SmallInt:
-                            c.Value = BitConverter.ToInt16(data, index);
+                            c.Value = BitConverter.ToInt16(rowdata, index);
                             index = index + c.Length;
                             break;
                         case System.Data.SqlDbType.TinyInt:
-                            c.Value = Convert.ToInt32(data[index]);
+                            c.Value = Convert.ToInt32(rowdata[index]);
                             index = index + c.Length;
                             break;
                         case System.Data.SqlDbType.Decimal:
-                            c.Value = TranslateData_Decimal(data, index, c.Length, c.Scale);
+                            c.Value = TranslateData_Decimal(rowdata, index, c.Length, c.Scale);
                             index = index + c.Length;
                             break;
                         case System.Data.SqlDbType.Real:
-                            c.Value = TranslateData_Real(data, index, c.Length);
+                            c.Value = TranslateData_Real(rowdata, index, c.Length);
                             index = index + c.Length;
                             break;
                         case System.Data.SqlDbType.Float:
-                            c.Value = TranslateData_Float(data, index, c.Length);
+                            c.Value = TranslateData_Float(rowdata, index, c.Length);
                             index = index + c.Length;
                             break;
                         case System.Data.SqlDbType.Money:
-                            c.Value = TranslateData_Money(data, index);
+                            c.Value = TranslateData_Money(rowdata, index);
                             index = index + c.Length;
                             break;
                         case System.Data.SqlDbType.SmallMoney:
-                            c.Value = TranslateData_SmallMoney(data, index);
+                            c.Value = TranslateData_SmallMoney(rowdata, index);
                             index = index + c.Length;
                             break;
                         case System.Data.SqlDbType.Bit:
@@ -1103,7 +1103,7 @@ namespace DBLOG
 
                             BitValueStartIndex = (BitColumnDataIndex == -1 ? index : BitValueStartIndex);
                             iJumpIndexLength = 0;
-                            bValueBit = TranslateData_Bit(data, columns, index, c.ColumnName, BitColumnCount, m_bBitColumnData, BitColumnDataIndex, ref iJumpIndexLength, ref m_bBitColumnData, ref BitColumnDataIndex);
+                            bValueBit = TranslateData_Bit(rowdata, columns, index, c.ColumnName, BitColumnCount, m_bBitColumnData, BitColumnDataIndex, ref iJumpIndexLength, ref m_bBitColumnData, ref BitColumnDataIndex);
 
                             BitValueStartIndex = (iJumpIndexLength > 0 ? index : BitValueStartIndex);
                             index = index + iJumpIndexLength;
@@ -1113,7 +1113,7 @@ namespace DBLOG
                             c.LogContentsEndIndex = BitValueStartIndex;
                             break;
                         case System.Data.SqlDbType.Binary:
-                            c.Value = TranslateData_Binary(data, index, c.Length);
+                            c.Value = TranslateData_Binary(rowdata, index, c.Length);
                             index = index + c.Length;
                             break;
                         case System.Data.SqlDbType.Timestamp:
@@ -1121,7 +1121,7 @@ namespace DBLOG
                             index = index + c.Length;
                             break;
                         case System.Data.SqlDbType.UniqueIdentifier:
-                            c.Value = TranslateData_UniqueIdentifier(data, index, c.Length);
+                            c.Value = TranslateData_UniqueIdentifier(rowdata, index, c.Length);
                             index = index + c.Length;
                             break;
                         default:
@@ -1130,17 +1130,17 @@ namespace DBLOG
                 }
 
                 c.LogContentsEndIndex = (c.PhysicalStorageType != SqlDbType.Bit ? index - 1 : c.LogContentsEndIndex);
-                c.LogContents = Data.Substring(c.LogContentsStartIndex * 2, (c.LogContentsEndIndex - c.LogContentsStartIndex + 1) * 2);
+                c.LogContents = rowdata_text.Substring(c.LogContentsStartIndex * 2, (c.LogContentsEndIndex - c.LogContentsStartIndex + 1) * 2);
                 index = index3;
             }
 
             index = index2;
 
             // 变长字段
-            if (index + 1 <= data.Length - 1)
+            if (index + 1 <= rowdata.Length - 1)
             {
                 // 变长字段数量(不一定等于字段类型=变长类型的字段数量)
-                tempstr = Data.Substring((index + 1) * 2, 2) + Data.Substring(index * 2, 2);
+                tempstr = rowdata_text.Substring((index + 1) * 2, 2) + rowdata_text.Substring(index * 2, 2);
                 tempint = Int32.Parse(tempstr, System.Globalization.NumberStyles.HexNumber);
                 if (tempint <= 32767 && tempint <= AllColumnCountLog)
                 {
@@ -1153,12 +1153,11 @@ namespace DBLOG
                 
                 index = index + 2;
                 VarlenColumns = new List<FVarColumnInfo>();
-                if (index < data.Length - 1)
+                if (index < rowdata.Length - 1)
                 {
-                    // 接下来每2个字节保存一个变长字段的结束位置,第一个变长字段的开始和结束位置可以算出来.
-                    tempstr = Data.Substring(index * 2, 2 * 2);
+                    tempstr = rowdata_text.Substring(index * 2, 2 * 2);
                     VarColumnStartIndex = (short)(index + VarColumnCount * 2);
-                    VarColumnEndIndex = BitConverter.ToInt16(data, index);
+                    VarColumnEndIndex = BitConverter.ToInt16(rowdata, index);
                     
                     for (i = 1, index2 = index; i <= VarColumnCount; i++)
                     {
@@ -1174,8 +1173,7 @@ namespace DBLOG
                         }
                         tvc.FEndIndex = VarColumnEndIndex;
 
-                        tvc.FLogContents = Data.Substring(VarColumnStartIndex * 2,
-                                                           (VarColumnEndIndex - VarColumnStartIndex) * 2);
+                        tvc.FLogContents = rowdata_text.Substring(VarColumnStartIndex * 2, (VarColumnEndIndex - VarColumnStartIndex) * 2);
 
                         VarlenColumns.Add(tvc);
 
@@ -1183,9 +1181,16 @@ namespace DBLOG
                         {
                             index2 = index2 + 2;
 
-                            tempstr = Data.Substring(index2 * 2, 2 * 2);
+                            tempstr = rowdata_text.Substring(index2 * 2, 2 * 2);
                             VarColumnStartIndex = VarColumnEndIndex;
-                            VarColumnEndIndex = BitConverter.ToInt16(data, index2);
+                            VarColumnEndIndex = BitConverter.ToInt16(rowdata, index2);
+                        }
+                        else
+                        {
+                            if (rowdata.Length  > VarColumnEndIndex)
+                            {
+                                throw new Exception();
+                            }
                         }
                     }
                 }
@@ -1228,12 +1233,12 @@ namespace DBLOG
                                 c.Value = System.Text.Encoding.Unicode.GetString(tvc.FLogContents.ToByteArray()).TrimEnd();
                                 break;
                             case System.Data.SqlDbType.VarBinary:
-                                (ValueHex, Value) = TranslateData_VarBinary(data, tvc);
+                                (ValueHex, Value) = TranslateData_VarBinary(rowdata, tvc);
                                 c.ValueHex = ValueHex;
                                 c.Value = Value;
                                 break;
                             case System.Data.SqlDbType.Variant:
-                                (ValueHex, Value, VariantBaseType, VariantLength, VariantScale, VariantCollation) = TranslateData_Variant(data, tvc);
+                                (ValueHex, Value, VariantBaseType, VariantLength, VariantScale, VariantCollation) = TranslateData_Variant(rowdata, tvc);
                                 c.ValueHex = ValueHex;
                                 c.Value = Value;
                                 c.VariantBaseType = VariantBaseType;
@@ -1242,24 +1247,24 @@ namespace DBLOG
                                 c.VariantCollation = VariantCollation;
                                 break;
                             case System.Data.SqlDbType.Xml:
-                                (ValueHex, Value) = TranslateData_XML(data, tvc);
+                                (ValueHex, Value) = TranslateData_XML(rowdata, tvc);
                                 c.ValueHex = ValueHex;
                                 c.Value = Value;
                                 break;
                             case System.Data.SqlDbType.Text:
-                                (ValueHex, Value) = TranslateData_Text(data, tvc, false, TableInfos.TextInRow);
+                                (ValueHex, Value) = TranslateData_Text(rowdata, tvc, false, TableInfos.TextInRow);
                                 c.ValueHex = ValueHex;
                                 c.Value = Value;
                                 c.IsNull = (ValueHex == null && Value == "nullvalue");
                                 break;
                             case System.Data.SqlDbType.NText:
-                                (ValueHex, Value) = TranslateData_Text(data, tvc, true, TableInfos.TextInRow);
+                                (ValueHex, Value) = TranslateData_Text(rowdata, tvc, true, TableInfos.TextInRow);
                                 c.ValueHex = ValueHex;
                                 c.Value = Value;
                                 c.IsNull = (ValueHex == null && Value == "nullvalue");
                                 break;
                             case System.Data.SqlDbType.Image:
-                                (ValueHex, Value) = TranslateData_Image(data, tvc);
+                                (ValueHex, Value) = TranslateData_Image(rowdata, tvc);
                                 c.ValueHex = ValueHex;
                                 c.Value = Value;
                                 break;
