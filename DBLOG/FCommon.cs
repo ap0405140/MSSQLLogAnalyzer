@@ -274,6 +274,8 @@ namespace DBLOG
         public string AllocUnitName;
         public int TextInRow; // sp_tableoption @TableName,'text in row',@OptionValue --> When specified and @OptionValue is ON (enabled) or an integer value from 24 through 7000, new text, ntext, or image strings are stored directly in the data row. 
         public bool IsColumnStore; // 是否列存储
+        public bool IsNodeTable;
+        public bool IsEdgeTable;
 
         public TableInformation()
         {
@@ -305,18 +307,20 @@ namespace DBLOG
         public bool IsNull = false;       // 字段值是否为Null
         public bool IsNullable = false;   // 是否允许Null
         public bool IsComputed = false;   // 是否是计算列
+        public bool IsHidden;
 
         public bool IsVarLenDataType;     // 是否是变长型
         public bool IsExists;             // 是否存在
         public short LeafOffset;
         public short LeafNullBit;
+        public int? GraphType;
 
         public SqlDbType? VariantBaseType;
         public short? VariantScale;
         public short? VariantLength;
         public string VariantCollation;
 
-        public TableColumn(short cid, string name, string ftype, SqlDbType ptype, short length, short precision, short scale, short pLeafOffset, short pLeafNullBit, bool pIsNullable, bool pIsComputed)
+        public TableColumn(short cid, string name, string ftype, SqlDbType ptype, short length, short precision, short scale, short pLeafOffset, short pLeafNullBit, bool pIsNullable, bool pIsComputed, bool pIsHidden, int? pGraphType)
         {
             ColumnID = cid;
             ColumnName = name;
@@ -330,6 +334,8 @@ namespace DBLOG
             IsNullable = pIsNullable;
             IsExists = (name.Length > 0 ? true : false);
             IsComputed = pIsComputed;
+            IsHidden = pIsHidden;
+            GraphType = pGraphType;
 
             if (ptype == SqlDbType.VarChar
                 || ptype == SqlDbType.NVarChar

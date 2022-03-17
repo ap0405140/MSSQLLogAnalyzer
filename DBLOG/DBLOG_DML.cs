@@ -7,6 +7,7 @@ using System.Numerics;
 using System.Text;
 using System.Threading.Tasks;
 using System.Xml;
+using Newtonsoft.Json;
 
 namespace DBLOG
 {
@@ -52,11 +53,13 @@ namespace DBLOG
             DataTable DTMRlist;  // 行数据前版本
             bool isfound;
             DataRow[] DRTemp;
+            SQLGraphNode tj;
 
             logs = new List<DatabaseLog>();
             ColumnList = string.Join(",", TableColumns
                                           .Where(p => p.PhysicalStorageType != SqlDbType.Timestamp 
-                                                      && p.IsComputed == false)
+                                                      && p.IsComputed == false
+                                                      && p.IsHidden == false)
                                           .Select(p => $"[{p.ColumnName}]"));
 
             DTMRlist = new DataTable();
@@ -207,9 +210,63 @@ namespace DBLOG
                                 if (MR0.Length < MinimumLength) { continue; }
                                 TranslateData(MR0, TableColumns);
                             }
+
                             for (j = 0; j <= TableColumns.Length - 1; j++)
                             {
-                                if (TableColumns[j].PhysicalStorageType == SqlDbType.Timestamp || TableColumns[j].IsComputed == true) { continue; }
+                                if (TableColumns[j].PhysicalStorageType == SqlDbType.Timestamp 
+                                    || TableColumns[j].IsComputed == true
+                                    || TableColumns[j].IsHidden == true) 
+                                { 
+                                    continue;
+                                }
+
+                                if ((TableInfos.IsNodeTable == true && j < 2)
+                                    || (TableInfos.IsEdgeTable == true && j < 8))
+
+                                {
+                                    tj = new SQLGraphNode { };
+
+                                    if (TableInfos.IsNodeTable == true)
+                                    {   // NodeTable
+                                        tj.type = "node";
+                                        tj.schema = SchemaName;
+                                        tj.table = TableName;
+                                        tj.id = Convert.ToInt32(TableColumns.FirstOrDefault(p => p.ColumnName.StartsWith("graph_id") == true).Value);
+                                    }
+                                    else
+                                    {   // EdgeTable
+                                        if (TableColumns[j].ColumnName.StartsWith("$edge_id") == true)
+                                        {
+                                            tj.type = "edge";
+                                            tj.schema = SchemaName;
+                                            tj.table = TableName;
+                                            tj.id = Convert.ToInt32(TableColumns.FirstOrDefault(p => p.ColumnName.StartsWith("graph_id") == true).Value);
+                                        }
+                                        if (TableColumns[j].ColumnName.StartsWith("$from_id") == true)
+                                        {
+                                            tj.type = "node";
+                                            stsql = "select schemaname=s.name,tablename=a.name "
+                                                    + " from sys.tables a "
+                                                    + " join sys.schemas s on a.schema_id=s.schema_id "
+                                                    + $" where a.object_id={TableColumns.FirstOrDefault(p => p.ColumnName.StartsWith("from_obj_id") == true).Value}; ";
+                                            (tj.schema, tj.table) = DB.Query<(string, string)>(stsql, false).FirstOrDefault();
+                                            tj.id = Convert.ToInt32(TableColumns.FirstOrDefault(p => p.ColumnName.StartsWith("from_id") == true).Value);
+                                        }
+                                        if (TableColumns[j].ColumnName.StartsWith("$to_id") == true)
+                                        {
+                                            tj.type = "node";
+                                            stsql = "select schemaname=s.name,tablename=a.name "
+                                                    + " from sys.tables a "
+                                                    + " join sys.schemas s on a.schema_id=s.schema_id "
+                                                    + $" where a.object_id={TableColumns.FirstOrDefault(p => p.ColumnName.StartsWith("to_obj_id") == true).Value}; ";
+                                            (tj.schema, tj.table) = DB.Query<(string, string)>(stsql, false).FirstOrDefault();
+                                            tj.id = Convert.ToInt32(TableColumns.FirstOrDefault(p => p.ColumnName.StartsWith("to_id") == true).Value);
+                                        }
+                                    }
+
+                                    TableColumns[j].IsNull = false;
+                                    TableColumns[j].Value = JsonConvert.SerializeObject(tj);
+                                }
 
                                 Value = ColumnValue2SQLValue(TableColumns[j]);
                                 ValueList1 = ValueList1 + (ValueList1.Length > 0 ? "," : "") + Value;
@@ -218,12 +275,13 @@ namespace DBLOG
                                     || TableInfos.PrimaryKeyColumns.Contains(TableColumns[j].ColumnName))
                                 {
                                     WhereList0 = WhereList0
-                                                  + (WhereList0.Length > 0 ? " and " : "")
-                                                  + ColumnName2SQLName(TableColumns[j])
-                                                  + (TableColumns[j].IsNull ? " is " : "=")
-                                                  + Value;
+                                                 + (WhereList0.Length > 0 ? " and " : "")
+                                                 + ColumnName2SQLName(TableColumns[j])
+                                                 + (TableColumns[j].IsNull ? " is " : "=")
+                                                 + Value;
                                 }
                             }
+                            
                             // 产生redo sql和undo sql -- Insert
                             if (log.Operation == "LOP_INSERT_ROWS")
                             {
@@ -520,8 +578,8 @@ namespace DBLOG
             i = 0;
             foreach (TableColumn c in TableColumns)
             {
-                columns0[i] = new TableColumn(c.ColumnID, c.ColumnName, c.DataType, c.PhysicalStorageType, c.Length, c.Precision, c.Scale, c.LeafOffset, c.LeafNullBit, c.IsNullable, c.IsComputed);
-                columns1[i] = new TableColumn(c.ColumnID, c.ColumnName, c.DataType, c.PhysicalStorageType, c.Length, c.Precision, c.Scale, c.LeafOffset, c.LeafNullBit, c.IsNullable, c.IsComputed);
+                columns0[i] = new TableColumn(c.ColumnID, c.ColumnName, c.DataType, c.PhysicalStorageType, c.Length, c.Precision, c.Scale, c.LeafOffset, c.LeafNullBit, c.IsNullable, c.IsComputed, c.IsHidden, c.GraphType);
+                columns1[i] = new TableColumn(c.ColumnID, c.ColumnName, c.DataType, c.PhysicalStorageType, c.Length, c.Precision, c.Scale, c.LeafOffset, c.LeafNullBit, c.IsNullable, c.IsComputed, c.IsHidden, c.GraphType);
                 i = i + 1;
             }
 
@@ -620,13 +678,20 @@ namespace DBLOG
         {
             string mr0_str;
 
-            if (mr1.Length >= 4)
+            try
             {
-                mr0_str = mr1.ToText().Stuff(Convert.ToInt32(log.Offset_in_Row) * 2,
-                                             log.RowLog_Contents_1.ToText().Length,
-                                             log.RowLog_Contents_0.ToText());
+                if (mr1.Length >= 4)
+                {
+                    mr0_str = mr1.ToText().Stuff(Convert.ToInt32(log.Offset_in_Row) * 2,
+                                                 log.RowLog_Contents_1.ToText().Length,
+                                                 log.RowLog_Contents_0.ToText());
+                }
+                else
+                {
+                    mr0_str = mr1.ToText();
+                }
             }
-            else
+            catch(Exception ex)
             {
                 mr0_str = mr1.ToText();
             }
@@ -669,19 +734,14 @@ namespace DBLOG
                     j = j + flength0f4;
                     
                     flength1 = flength0;
+                    if (i == (log.RowLog_Contents_0.Length / 4) && (j * 2) < (rowlogdata.Length - 1))
+                    {
+                        flength1 = rowlogdata.Length / 2 - j;
+                    }
                     flength1f4 = (flength1 % 4 == 0 ? flength1 : flength1 + (4 - flength1 % 4));
 
                     fvalue1 = rowlogdata.Substring(j * 2, flength1 * 2);
                     j = j + flength1f4;
-
-                    if (i == (log.RowLog_Contents_0.Length / 4) && (j * 2) < (rowlogdata.Length - 1))
-                    {
-                        flength1 = rowlogdata.Length / 2 - j;
-                        flength1f4 = (flength1 % 4 == 0 ? flength1 : flength1 + (4 - flength1 % 4));
-
-                        fvalue1 = rowlogdata.Substring(j * 2, flength1 * 2);
-                        j = j + flength1f4;
-                    }
 
                     mr0_str = mr0_str.Stuff(fstart0 * 2, flength1 * 2, fvalue0);
                 }
@@ -773,7 +833,6 @@ namespace DBLOG
                         }
 
                         mr0 = mr0_str.ToByteArray();
-
                         TranslateData(mr0, columns0);
                         bfinish = true;
                         break;
@@ -889,7 +948,7 @@ namespace DBLOG
                     TmpTableColumn = columns.Where(p => p.ColumnID == i + 1).FirstOrDefault();
                     if (TmpTableColumn == null)
                     {
-                        columns2[i] = new TableColumn(Convert.ToInt16(i + 1), string.Empty, "", SqlDbType.Int, 4, 0, 0, 0, 0, true, false);  // 虚拟字段 isExists = false
+                        columns2[i] = new TableColumn(Convert.ToInt16(i + 1), string.Empty, "", SqlDbType.Int, 4, 0, 0, 0, 0, true, false, false, null);  // 虚拟字段 isExists = false
                     }
                     else
                     {
@@ -1386,12 +1445,14 @@ namespace DBLOG
             tableinfo.AllocUnitName = DB.Query<string>(stsql, false).FirstOrDefault();
 
             // TextInRow
-            stsql = "select textinrow=a.text_in_row_limit "
+            stsql = "select textinrow=a.text_in_row_limit, "
+                    + $"    isnodetable={(DB.Vesion >= 2017 ? "a.is_node" : "0")}, "
+                    + $"    isedgetable={(DB.Vesion >= 2017 ? "a.is_edge" : "0")}"
                     + "  from sys.tables a "
                     + "  join sys.schemas s on a.schema_id=s.schema_id "
                     + $" where s.name=N'{pSchemaName}' "
                     + $" and a.name=N'{pTablename}'; ";
-            tableinfo.TextInRow = DB.Query<int>(stsql, false).FirstOrDefault();
+            (tableinfo.TextInRow, tableinfo.IsNodeTable, tableinfo.IsEdgeTable) = DB.Query<(int, bool, bool)>(stsql, false).FirstOrDefault();
 
             // IsColumnStore
             stsql = "select iscolumnstore=cast(case when exists(select 1 "
@@ -1405,7 +1466,7 @@ namespace DBLOG
             tableinfo.IsColumnStore = DB.Query<bool>(stsql, false).FirstOrDefault();
 
             stsql = "select cast(("
-                        + "select ColumnID,ColumnName,DataType,PhysicalStorageType,Length,Precision,IsNullable,Scale,IsComputed,LeafOffset,LeafNullBit "
+                        + "select ColumnID,ColumnName,DataType,PhysicalStorageType,Length,Precision,IsNullable,Scale,IsComputed,LeafOffset,LeafNullBit,IsHidden,GraphType "
                         + " from (select 'ColumnID'=b.column_id, "
                         + "              'ColumnName'=b.name, "
                         + "              'DataType'=c.name, "
@@ -1416,7 +1477,9 @@ namespace DBLOG
                         + "              'Scale'=b.scale, "
                         + "              'IsComputed'=b.is_computed, "
                         + "              'LeafOffset'=isnull(d2.leaf_offset,0), "
-                        + "              'LeafNullBit'=isnull(d2.leaf_null_bit,0) "
+                        + "              'LeafNullBit'=isnull(d2.leaf_null_bit,0), "
+                        + $"             'IsHidden'={(DB.Vesion >= 2017 ? "b.is_hidden" : "0")}, "
+                        + $"             'GraphType'={(DB.Vesion >= 2017 ? "b.graph_type" : "null")} "
                         + "       from sys.tables a "
                         + "       join sys.schemas s on a.schema_id=s.schema_id "
                         + "       join sys.columns b on a.object_id=b.object_id "
@@ -1449,7 +1512,8 @@ namespace DBLOG
             SqlDbType PhysicalStorageType;
             short Length, Precision, Scale, LeafOffset, LeafNullBit;
             int i, Columncount;
-            bool IsNullable, IsComputed;
+            int? GraphType;
+            bool IsNullable, IsComputed, IsHidden;
             XmlDocument xmlDoc;
             XmlNode xmlRootnode;
             XmlNodeList xmlNodelist;
@@ -1515,8 +1579,17 @@ namespace DBLOG
                 LeafOffset = Convert.ToInt16(xmlNode.Attributes["LeafOffset"].Value);
                 LeafNullBit = Convert.ToInt16(xmlNode.Attributes["LeafNullBit"].Value);
                 IsNullable = (Convert.ToInt16(xmlNode.Attributes["IsNullable"].Value) == 1 ? true : false);
+                IsHidden = (xmlNode.Attributes["IsHidden"].Value.ToString() == "0" ? false : true);
+                if (xmlNode.Attributes["GraphType"] is null)
+                {
+                    GraphType = null;
+                }
+                else
+                {
+                    GraphType = Convert.ToInt16(xmlNode.Attributes["GraphType"].Value);
+                }
 
-                TableColumns[i] = new TableColumn(ColumnID, ColumnName, DataType, PhysicalStorageType, Length, Precision, Scale, LeafOffset, LeafNullBit, IsNullable, IsComputed);
+                TableColumns[i] = new TableColumn(ColumnID, ColumnName, DataType, PhysicalStorageType, Length, Precision, Scale, LeafOffset, LeafNullBit, IsNullable, IsComputed, IsHidden, GraphType);
                 i = i + 1;
             }
 
@@ -2767,6 +2840,14 @@ namespace DBLOG
         
         public int SlotCnt { get; set; }
         public int[] SlotBeginIndex { get; set; }
+    }
+
+    public class SQLGraphNode
+    {
+        public string type { get; set; }
+        public string schema { get; set; }
+        public string table { get; set; }
+        public int id { get; set; }
     }
 
 }
