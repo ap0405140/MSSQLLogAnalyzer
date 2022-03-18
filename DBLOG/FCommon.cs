@@ -5,6 +5,7 @@ using System.ComponentModel.DataAnnotations.Schema;
 using System.Data;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -218,6 +219,42 @@ namespace DBLOG
             return y;
         }
 
+        public static object[] CopyToNew(this object[] x)
+        {
+            object[] y;
+
+            y = Array.ConvertAll<object, object>(x, new Converter<object, object>(FCopyToNew));
+
+            return y;
+        }
+
+        private static object FCopyToNew(object x)
+        {
+            object y;
+
+            if (x is ICloneable)
+            {
+                y = (x as ICloneable).Clone();
+            }
+            else
+            {
+                y = Activator.CreateInstance(x.GetType());
+                foreach (PropertyInfo p in x.GetType().GetProperties())
+                {
+                    if (p.CanRead && p.CanWrite)
+                    {
+                        p.SetValue(y, p.GetValue(x));
+                    }
+                }
+                foreach (FieldInfo f in x.GetType().GetFields())
+                {
+                    f.SetValue(y, f.GetValue(x));
+                }
+            }
+
+            return y;
+        }
+
         public static void WriteTextFile(string pFileName, string pContent, bool pAppend = true, bool pLogTime = true)
         {
             FileStream fs;
@@ -255,21 +292,8 @@ namespace DBLOG
     // 表信息定义
     public class TableInformation
     {
-        private string _IdentityColumn;
-
         public List<string> PrimaryKeyColumns;
         public List<string> ClusteredIndexColumns;
-        public string IdentityColumn
-        {
-            get
-            {
-                return _IdentityColumn;
-            }
-            set
-            {
-                _IdentityColumn = (value == null ? "" : value);
-            }
-        }
         public bool IsHeapTable;  // 是否堆表
         public string AllocUnitName;
         public int TextInRow; // sp_tableoption @TableName,'text in row',@OptionValue --> When specified and @OptionValue is ON (enabled) or an integer value from 24 through 7000, new text, ntext, or image strings are stored directly in the data row. 
@@ -284,13 +308,12 @@ namespace DBLOG
     }
 
     // 表字段定义
-    public class TableColumn
+    public class TableColumn : ICloneable
     {
         public short ColumnID;
         public string ColumnName;
         public string DataType;
         public System.Data.SqlDbType PhysicalStorageType;
-        public string CSDataType;
 
         public short Length = -1;
         public short Precision;
@@ -306,85 +329,109 @@ namespace DBLOG
 
         public bool IsNull = false;       // 字段值是否为Null
         public bool IsNullable = false;   // 是否允许Null
+        public bool IsIdentity;
         public bool IsComputed = false;   // 是否是计算列
         public bool IsHidden;
-
-        public bool IsVarLenDataType;     // 是否是变长型
-        public bool IsExists;             // 是否存在
+        
         public short LeafOffset;
         public short LeafNullBit;
-        public int? GraphType;
+        public int GraphType;
 
         public SqlDbType? VariantBaseType;
         public short? VariantScale;
         public short? VariantLength;
         public string VariantCollation;
 
-        public TableColumn(short cid, string name, string ftype, SqlDbType ptype, short length, short precision, short scale, short pLeafOffset, short pLeafNullBit, bool pIsNullable, bool pIsComputed, bool pIsHidden, int? pGraphType)
+        public TableColumn()
         {
-            ColumnID = cid;
-            ColumnName = name;
-            DataType = ftype;
-            PhysicalStorageType = ptype;
-            Length = length;
-            Precision = precision;
-            Scale = scale;
-            LeafOffset = pLeafOffset;
-            LeafNullBit = pLeafNullBit;
-            IsNullable = pIsNullable;
-            IsExists = (name.Length > 0 ? true : false);
-            IsComputed = pIsComputed;
-            IsHidden = pIsHidden;
-            GraphType = pGraphType;
-
-            if (ptype == SqlDbType.VarChar
-                || ptype == SqlDbType.NVarChar
-                || ptype == SqlDbType.VarBinary
-                || ptype == SqlDbType.Variant
-                || ptype == SqlDbType.Xml
-                || ptype == SqlDbType.Image
-                || ptype == SqlDbType.Text
-                || ptype == SqlDbType.NText)
-            {
-                IsVarLenDataType = true;
-            }
-            else
-            {
-                IsVarLenDataType = false;
-            }
-
-            if (ptype == SqlDbType.VarChar
-                || ptype == SqlDbType.NVarChar
-                || ptype == SqlDbType.Char
-                || ptype == SqlDbType.NChar
-                || ptype == SqlDbType.Text)
-            {
-                CSDataType = "System.String";
-            }
-
-            if (ptype == SqlDbType.Int
-                || ptype == SqlDbType.SmallInt
-                || ptype == SqlDbType.TinyInt
-                || ptype == SqlDbType.BigInt)
-            {
-                CSDataType = "System.Int32";
-            }
-
-            if (ptype == SqlDbType.DateTime
-                || ptype == SqlDbType.DateTime2
-                || ptype == SqlDbType.SmallDateTime
-                || ptype == SqlDbType.Date)
-            {
-                CSDataType = "System.DateTime";
-            }
-
-            if (ptype == SqlDbType.Binary
-                || ptype == SqlDbType.VarBinary)
-            {
-                CSDataType = "System.Object";
-            }
 
         }
+
+        public TableColumn(short columnid = -1, bool isexists = true)
+        {
+            if (isexists == false)
+            {
+                ColumnID = columnid;
+                ColumnName = "";
+            }
+        }
+
+        public bool IsExists
+        {
+            get
+            {
+                return (string.IsNullOrEmpty(ColumnName) == false ? true : false);
+            }
+        }
+
+        public bool IsVarLenDataType     // 是否是变长型
+        {
+            get
+            {
+                if (PhysicalStorageType == SqlDbType.VarChar
+                    || PhysicalStorageType == SqlDbType.NVarChar
+                    || PhysicalStorageType == SqlDbType.VarBinary
+                    || PhysicalStorageType == SqlDbType.Variant
+                    || PhysicalStorageType == SqlDbType.Xml
+                    || PhysicalStorageType == SqlDbType.Image
+                    || PhysicalStorageType == SqlDbType.Text
+                    || PhysicalStorageType == SqlDbType.NText)
+                {
+                    return true;
+                }
+                else
+                {
+                    return false;
+                }
+            }
+        }
+
+        public object Clone()
+        {
+            return MemberwiseClone();
+        }
+
+        //public string CSDataType
+        //{
+        //    get
+        //    {
+        //        string ctype = "";
+
+        //        if (PhysicalStorageType == SqlDbType.VarChar
+        //            || PhysicalStorageType == SqlDbType.NVarChar
+        //            || PhysicalStorageType == SqlDbType.Char
+        //            || PhysicalStorageType == SqlDbType.NChar
+        //            || PhysicalStorageType == SqlDbType.Text)
+        //        {
+        //            ctype = "System.String";
+        //        }
+
+        //        if (PhysicalStorageType == SqlDbType.Int
+        //            || PhysicalStorageType == SqlDbType.SmallInt
+        //            || PhysicalStorageType == SqlDbType.TinyInt
+        //            || PhysicalStorageType == SqlDbType.BigInt)
+        //        {
+        //            ctype = "System.Int32";
+        //        }
+
+        //        if (PhysicalStorageType == SqlDbType.DateTime
+        //            || PhysicalStorageType == SqlDbType.DateTime2
+        //            || PhysicalStorageType == SqlDbType.SmallDateTime
+        //            || PhysicalStorageType == SqlDbType.Date)
+        //        {
+        //            ctype = "System.DateTime";
+        //        }
+
+        //        if (PhysicalStorageType == SqlDbType.Binary
+        //            || PhysicalStorageType == SqlDbType.VarBinary)
+        //        {
+        //            ctype = "System.Object";
+        //        }
+
+        //        return ctype;
+        //    }
+        //}
+
     }
 
     public class FLOG

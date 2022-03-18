@@ -288,7 +288,7 @@ namespace DBLOG
                                 REDOSQL = $"insert into [{SchemaName}].[{TableName}]({ColumnList}) values({ValueList1}); ";
                                 UNDOSQL = $"delete top(1) from [{SchemaName}].[{TableName}] where {WhereList0}; ";
 
-                                if (TableInfos.IdentityColumn.Length > 0)
+                                if (TableColumns.Any(p => p.IsIdentity) == true)
                                 {
                                     REDOSQL = $"set identity_insert [{SchemaName}].[{TableName}] on; " + "\r\n"
                                               + REDOSQL + "\r\n"
@@ -301,7 +301,7 @@ namespace DBLOG
                                 REDOSQL = $"delete top(1) from [{SchemaName}].[{TableName}] where {WhereList0}; ";
                                 UNDOSQL = $"insert into [{SchemaName}].[{TableName}]({ColumnList}) values({ValueList1}); ";
 
-                                if (TableInfos.IdentityColumn.Length > 0)
+                                if (TableColumns.Any(p => p.IsIdentity) == true)
                                 {
                                     UNDOSQL = $"set identity_insert [{SchemaName}].[{TableName}] on; " + "\r\n"
                                               + UNDOSQL + "\r\n"
@@ -572,16 +572,9 @@ namespace DBLOG
             int i;
             string mr0_str;
             TableColumn[] columns0, columns1;
-            
-            columns0 = new TableColumn[TableColumns.Length];
-            columns1 = new TableColumn[TableColumns.Length];
-            i = 0;
-            foreach (TableColumn c in TableColumns)
-            {
-                columns0[i] = new TableColumn(c.ColumnID, c.ColumnName, c.DataType, c.PhysicalStorageType, c.Length, c.Precision, c.Scale, c.LeafOffset, c.LeafNullBit, c.IsNullable, c.IsComputed, c.IsHidden, c.GraphType);
-                columns1[i] = new TableColumn(c.ColumnID, c.ColumnName, c.DataType, c.PhysicalStorageType, c.Length, c.Precision, c.Scale, c.LeafOffset, c.LeafNullBit, c.IsNullable, c.IsComputed, c.IsHidden, c.GraphType);
-                i = i + 1;
-            }
+
+            columns0 = TableColumns.CopyToNew().Cast<TableColumn>().ToArray();
+            columns1 = TableColumns.CopyToNew().Cast<TableColumn>().ToArray();
 
             TranslateData(mr1, columns1);
             RestoreLobPage(curlog.Transaction_ID);
@@ -948,7 +941,7 @@ namespace DBLOG
                     TmpTableColumn = columns.Where(p => p.ColumnID == i + 1).FirstOrDefault();
                     if (TmpTableColumn == null)
                     {
-                        columns2[i] = new TableColumn(Convert.ToInt16(i + 1), string.Empty, "", SqlDbType.Int, 4, 0, 0, 0, 0, true, false, false, null);  // 虚拟字段 isExists = false
+                        columns2[i] = new TableColumn(Convert.ToInt16(i + 1), false); // 虚拟字段
                     }
                     else
                     {
@@ -1413,17 +1406,6 @@ namespace DBLOG
                     + "  order by b.key_ordinal; ";
             tableinfo.ClusteredIndexColumns = DB.Query<string>(stsql, false).ToList();
 
-            // IdentityColumn
-            stsql = "select identitycolumn=a.name "
-                    + "  from sys.columns a "
-                    + "  join sys.objects b on a.object_id=b.object_id "
-                    + "  join sys.schemas s on b.schema_id=s.schema_id "
-                    + "  where a.is_identity=1 "
-                    + $" and s.name=N'{pSchemaName}' "
-                    + "  and b.type='U' "
-                    + $" and b.name=N'{pTablename}'; ";
-            tableinfo.IdentityColumn = DB.Query<string>(stsql, false).FirstOrDefault();
-
             // IsHeapTable
             stsql = "select isheaptable=cast(case when exists(select 1 "
                       + "                                     from sys.tables t "
@@ -1466,7 +1448,7 @@ namespace DBLOG
             tableinfo.IsColumnStore = DB.Query<bool>(stsql, false).FirstOrDefault();
 
             stsql = "select cast(("
-                        + "select ColumnID,ColumnName,DataType,PhysicalStorageType,Length,Precision,IsNullable,Scale,IsComputed,LeafOffset,LeafNullBit,IsHidden,GraphType "
+                        + "select ColumnID,ColumnName,DataType,PhysicalStorageType,Length,Precision,IsNullable,Scale,IsIdentity,IsComputed,LeafOffset,LeafNullBit,IsHidden,GraphType "
                         + " from (select 'ColumnID'=b.column_id, "
                         + "              'ColumnName'=b.name, "
                         + "              'DataType'=c.name, "
@@ -1475,11 +1457,12 @@ namespace DBLOG
                         + "              'Precision'=b.precision, "
                         + "              'IsNullable'=b.is_nullable, "
                         + "              'Scale'=b.scale, "
+                        + "              'IsIdentity'=b.is_identity, "
                         + "              'IsComputed'=b.is_computed, "
                         + "              'LeafOffset'=isnull(d2.leaf_offset,0), "
                         + "              'LeafNullBit'=isnull(d2.leaf_null_bit,0), "
                         + $"             'IsHidden'={(DB.Vesion >= 2017 ? "b.is_hidden" : "0")}, "
-                        + $"             'GraphType'={(DB.Vesion >= 2017 ? "b.graph_type" : "null")} "
+                        + $"             'GraphType'=isnull({(DB.Vesion >= 2017 ? "b.graph_type" : "null")},-1) "
                         + "       from sys.tables a "
                         + "       join sys.schemas s on a.schema_id=s.schema_id "
                         + "       join sys.columns b on a.object_id=b.object_id "
@@ -1507,89 +1490,76 @@ namespace DBLOG
         // 解析表结构定义(XML).
         public TableColumn[] AnalyzeTablelayout(string TableLayout)
         {
-            short ColumnID;
-            string ColumnName, DataType;
-            SqlDbType PhysicalStorageType;
-            short Length, Precision, Scale, LeafOffset, LeafNullBit;
-            int i, Columncount;
-            int? GraphType;
-            bool IsNullable, IsComputed, IsHidden;
+            int i;
             XmlDocument xmlDoc;
             XmlNode xmlRootnode;
             XmlNodeList xmlNodelist;
             TableColumn[] TableColumns;
+            TableColumn fcol;
 
             xmlDoc = new XmlDocument();
             xmlDoc.LoadXml(TableLayout);
             xmlRootnode = xmlDoc.SelectSingleNode("ColumnList");
             xmlNodelist = xmlRootnode.ChildNodes;
-            Columncount = xmlNodelist.Count;
 
-            TableColumns = new TableColumn[Columncount];
+            TableColumns = new TableColumn[xmlNodelist.Count];
             i = 0;
-            PhysicalStorageType = SqlDbType.Int;
-
             foreach (XmlNode xmlNode in xmlNodelist)
             {
-                ColumnID = Convert.ToInt16(xmlNode.Attributes["ColumnID"].Value.ToString());
-                ColumnName = xmlNode.Attributes["ColumnName"].Value;
-                DataType = xmlNode.Attributes["DataType"].Value;
+                fcol = new TableColumn();
+                fcol.ColumnID = Convert.ToInt16(xmlNode.Attributes["ColumnID"].Value.ToString());
+                fcol.ColumnName = xmlNode.Attributes["ColumnName"].Value;
+                fcol.DataType = xmlNode.Attributes["DataType"].Value;
                 switch (xmlNode.Attributes["PhysicalStorageType"].Value)
                 {
-                    case "bigint": PhysicalStorageType = System.Data.SqlDbType.BigInt; break;
-                    case "binary": PhysicalStorageType = System.Data.SqlDbType.Binary; break;
-                    case "bit": PhysicalStorageType = System.Data.SqlDbType.Bit; break;
-                    case "char": PhysicalStorageType = System.Data.SqlDbType.Char; break;
-                    case "date": PhysicalStorageType = System.Data.SqlDbType.Date; break;
-                    case "datetime": PhysicalStorageType = System.Data.SqlDbType.DateTime; break;
-                    case "datetime2": PhysicalStorageType = System.Data.SqlDbType.DateTime2; break;
-                    case "datetimeoffset": PhysicalStorageType = System.Data.SqlDbType.DateTimeOffset; break;
-                    case "decimal": PhysicalStorageType = System.Data.SqlDbType.Decimal; break;
-                    case "float": PhysicalStorageType = System.Data.SqlDbType.Float; break;
-                    case "geography": PhysicalStorageType = System.Data.SqlDbType.VarBinary; break;
-                    case "geometry": PhysicalStorageType = System.Data.SqlDbType.VarBinary; break;
-                    case "hierarchyid": PhysicalStorageType = System.Data.SqlDbType.VarBinary; break;
-                    case "image": PhysicalStorageType = System.Data.SqlDbType.Image; break;
-                    case "int": PhysicalStorageType = System.Data.SqlDbType.Int; break;
-                    case "money": PhysicalStorageType = System.Data.SqlDbType.Money; break;
-                    case "nchar": PhysicalStorageType = System.Data.SqlDbType.NChar; break;
-                    case "ntext": PhysicalStorageType = System.Data.SqlDbType.NText; break;
-                    case "numeric": PhysicalStorageType = System.Data.SqlDbType.Decimal; break;    // numeric=decimal
-                    case "nvarchar": PhysicalStorageType = System.Data.SqlDbType.NVarChar; break;
-                    case "real": PhysicalStorageType = System.Data.SqlDbType.Real; break;
-                    case "smalldatetime": PhysicalStorageType = System.Data.SqlDbType.SmallDateTime; break;
-                    case "smallint": PhysicalStorageType = System.Data.SqlDbType.SmallInt; break;
-                    case "smallmoney": PhysicalStorageType = System.Data.SqlDbType.SmallMoney; break;
-                    case "sql_variant": PhysicalStorageType = System.Data.SqlDbType.Variant; break;
-                    case "sysname": PhysicalStorageType = System.Data.SqlDbType.NVarChar; break;
-                    case "text": PhysicalStorageType = System.Data.SqlDbType.Text; break;
-                    case "time": PhysicalStorageType = System.Data.SqlDbType.Time; break;
-                    case "timestamp": PhysicalStorageType = System.Data.SqlDbType.Timestamp; break;
-                    case "tinyint": PhysicalStorageType = System.Data.SqlDbType.TinyInt; break;
-                    case "uniqueidentifier": PhysicalStorageType = System.Data.SqlDbType.UniqueIdentifier; break;
-                    case "varbinary": PhysicalStorageType = System.Data.SqlDbType.VarBinary; break;
-                    case "varchar": PhysicalStorageType = System.Data.SqlDbType.VarChar; break;
-                    case "xml": PhysicalStorageType = System.Data.SqlDbType.Xml; break;
+                    case "bigint": fcol.PhysicalStorageType = System.Data.SqlDbType.BigInt; break;
+                    case "binary": fcol.PhysicalStorageType = System.Data.SqlDbType.Binary; break;
+                    case "bit": fcol.PhysicalStorageType = System.Data.SqlDbType.Bit; break;
+                    case "char": fcol.PhysicalStorageType = System.Data.SqlDbType.Char; break;
+                    case "date": fcol.PhysicalStorageType = System.Data.SqlDbType.Date; break;
+                    case "datetime": fcol.PhysicalStorageType = System.Data.SqlDbType.DateTime; break;
+                    case "datetime2": fcol.PhysicalStorageType = System.Data.SqlDbType.DateTime2; break;
+                    case "datetimeoffset": fcol.PhysicalStorageType = System.Data.SqlDbType.DateTimeOffset; break;
+                    case "decimal": fcol.PhysicalStorageType = System.Data.SqlDbType.Decimal; break;
+                    case "float": fcol.PhysicalStorageType = System.Data.SqlDbType.Float; break;
+                    case "geography": fcol.PhysicalStorageType = System.Data.SqlDbType.VarBinary; break;
+                    case "geometry": fcol.PhysicalStorageType = System.Data.SqlDbType.VarBinary; break;
+                    case "hierarchyid": fcol.PhysicalStorageType = System.Data.SqlDbType.VarBinary; break;
+                    case "image": fcol.PhysicalStorageType = System.Data.SqlDbType.Image; break;
+                    case "int": fcol.PhysicalStorageType = System.Data.SqlDbType.Int; break;
+                    case "money": fcol.PhysicalStorageType = System.Data.SqlDbType.Money; break;
+                    case "nchar": fcol.PhysicalStorageType = System.Data.SqlDbType.NChar; break;
+                    case "ntext": fcol.PhysicalStorageType = System.Data.SqlDbType.NText; break;
+                    case "numeric": fcol.PhysicalStorageType = System.Data.SqlDbType.Decimal; break; // numeric=decimal
+                    case "nvarchar": fcol.PhysicalStorageType = System.Data.SqlDbType.NVarChar; break;
+                    case "real": fcol.PhysicalStorageType = System.Data.SqlDbType.Real; break;
+                    case "smalldatetime": fcol.PhysicalStorageType = System.Data.SqlDbType.SmallDateTime; break;
+                    case "smallint": fcol.PhysicalStorageType = System.Data.SqlDbType.SmallInt; break;
+                    case "smallmoney": fcol.PhysicalStorageType = System.Data.SqlDbType.SmallMoney; break;
+                    case "sql_variant": fcol.PhysicalStorageType = System.Data.SqlDbType.Variant; break;
+                    case "sysname": fcol.PhysicalStorageType = System.Data.SqlDbType.NVarChar; break;
+                    case "text": fcol.PhysicalStorageType = System.Data.SqlDbType.Text; break;
+                    case "time": fcol.PhysicalStorageType = System.Data.SqlDbType.Time; break;
+                    case "timestamp": fcol.PhysicalStorageType = System.Data.SqlDbType.Timestamp; break;
+                    case "tinyint": fcol.PhysicalStorageType = System.Data.SqlDbType.TinyInt; break;
+                    case "uniqueidentifier": fcol.PhysicalStorageType = System.Data.SqlDbType.UniqueIdentifier; break;
+                    case "varbinary": fcol.PhysicalStorageType = System.Data.SqlDbType.VarBinary; break;
+                    case "varchar": fcol.PhysicalStorageType = System.Data.SqlDbType.VarChar; break;
+                    case "xml": fcol.PhysicalStorageType = System.Data.SqlDbType.Xml; break;
                     default: break;
                 }
-                Length = Convert.ToInt16(xmlNode.Attributes["Length"].Value);
-                Precision = Convert.ToInt16(xmlNode.Attributes["Precision"].Value);
-                Scale = Convert.ToInt16(xmlNode.Attributes["Scale"].Value);
-                IsComputed = (xmlNode.Attributes["IsComputed"].Value.ToString() == "0" ? false : true);
-                LeafOffset = Convert.ToInt16(xmlNode.Attributes["LeafOffset"].Value);
-                LeafNullBit = Convert.ToInt16(xmlNode.Attributes["LeafNullBit"].Value);
-                IsNullable = (Convert.ToInt16(xmlNode.Attributes["IsNullable"].Value) == 1 ? true : false);
-                IsHidden = (xmlNode.Attributes["IsHidden"].Value.ToString() == "0" ? false : true);
-                if (xmlNode.Attributes["GraphType"] is null)
-                {
-                    GraphType = null;
-                }
-                else
-                {
-                    GraphType = Convert.ToInt16(xmlNode.Attributes["GraphType"].Value);
-                }
+                fcol.Length = Convert.ToInt16(xmlNode.Attributes["Length"].Value);
+                fcol.Precision = Convert.ToInt16(xmlNode.Attributes["Precision"].Value);
+                fcol.Scale = Convert.ToInt16(xmlNode.Attributes["Scale"].Value);
+                fcol.IsIdentity = (xmlNode.Attributes["IsIdentity"].Value.ToString() == "0" ? false : true);
+                fcol.IsComputed = (xmlNode.Attributes["IsComputed"].Value.ToString() == "0" ? false : true);
+                fcol.LeafOffset = Convert.ToInt16(xmlNode.Attributes["LeafOffset"].Value);
+                fcol.LeafNullBit = Convert.ToInt16(xmlNode.Attributes["LeafNullBit"].Value);
+                fcol.IsNullable = (Convert.ToInt16(xmlNode.Attributes["IsNullable"].Value) == 1 ? true : false);
+                fcol.IsHidden = (xmlNode.Attributes["IsHidden"].Value.ToString() == "0" ? false : true);
+                fcol.GraphType = Convert.ToInt16(xmlNode.Attributes["GraphType"].Value);
 
-                TableColumns[i] = new TableColumn(ColumnID, ColumnName, DataType, PhysicalStorageType, Length, Precision, Scale, LeafOffset, LeafNullBit, IsNullable, IsComputed, IsHidden, GraphType);
+                TableColumns[i] = fcol;
                 i = i + 1;
             }
 
