@@ -114,7 +114,7 @@ namespace DBLOG
                             && (
                                 (log.Operation == "LOP_MODIFY_COLUMNS")
                                 ||
-                                (log.Operation == "LOP_MODIFY_ROW" 
+                                (log.Operation == "LOP_MODIFY_ROW"
                                  && DRTemp[0]["MR1TEXT"].ToString().Contains(log.RowLog_Contents_1.ToText()) == true
                                 )
                                )
@@ -198,11 +198,30 @@ namespace DBLOG
                         case "LOP_DELETE_ROWS":
                             SlotID = log.Slot_ID.ToString();
                             MinimumLength = 2 + TableColumns.Where(p => p.IsVarLenDataType == false).Sum(p => p.Length) + 2;
+
                             if (log.RowLog_Contents_0.Length >= MinimumLength)
                             {
-                                TranslateData(log.RowLog_Contents_0, TableColumns);
-                                MR0 = new byte[log.RowLog_Contents_0.Length];
-                                MR0 = log.RowLog_Contents_0;
+                                try
+                                {
+                                    TranslateData(log.RowLog_Contents_0, TableColumns);
+                                    MR0 = new byte[log.RowLog_Contents_0.Length];
+                                    MR0 = log.RowLog_Contents_0;
+                                }
+                                catch (Exception ex)
+                                {
+                                    DRTemp = DTMRlist.Select("PAGEID='" + log.Page_ID + "' and SlotID='" + log.Slot_ID.ToString() + "' and AllocUnitId='" + log.AllocUnitId.ToString() + "' ");
+                                    if (DRTemp.Length > 0)
+                                    {
+                                        MR0 = (byte[])DRTemp[0]["MR1"];
+                                    }
+                                    else
+                                    {
+                                        MR0 = GetMR1(log.Operation, log.Page_ID, log.AllocUnitId.ToString(), log.Current_LSN, log.RowLog_Contents_0.ToText(), log.RowLog_Contents_1.ToText(), "");
+                                    }
+
+                                    if (MR0.Length < MinimumLength) { continue; }
+                                    TranslateData(MR0, TableColumns);
+                                }
                             }
                             else
                             {
@@ -213,10 +232,10 @@ namespace DBLOG
 
                             for (j = 0; j <= TableColumns.Length - 1; j++)
                             {
-                                if (TableColumns[j].PhysicalStorageType == SqlDbType.Timestamp 
+                                if (TableColumns[j].PhysicalStorageType == SqlDbType.Timestamp
                                     || TableColumns[j].IsComputed == true
-                                    || TableColumns[j].IsHidden == true) 
-                                { 
+                                    || TableColumns[j].IsHidden == true)
+                                {
                                     continue;
                                 }
 
@@ -281,7 +300,7 @@ namespace DBLOG
                                                  + Value;
                                 }
                             }
-                            
+
                             // 产生redo sql和undo sql -- Insert
                             if (log.Operation == "LOP_INSERT_ROWS")
                             {
@@ -337,9 +356,9 @@ namespace DBLOG
                     if (log.Operation == "LOP_MODIFY_ROW" || log.Operation == "LOP_MODIFY_COLUMNS" || log.Operation == "LOP_DELETE_ROWS")
                     {
                         DRTemp = DTMRlist.Select("PAGEID='" + log.Page_ID + "' and SlotID='" + SlotID + "' and AllocUnitId='" + log.AllocUnitId + "' ");
-                        if (DRTemp.Length > 0) 
-                        { 
-                            DTMRlist.Rows.Remove(DRTemp[0]); 
+                        if (DRTemp.Length > 0)
+                        {
+                            DTMRlist.Rows.Remove(DRTemp[0]);
                         }
 
                         Mrtemp = DTMRlist.NewRow();
@@ -372,26 +391,27 @@ namespace DBLOG
                         logs.Add(tmplog);
                     }
                 }
-                catch(Exception ex)
+                catch (Exception ex)
                 {
 #if DEBUG
                     stemp = $"Message:{(ex.Message ?? "")}  StackTrace:{(ex.StackTrace ?? "")} ";
                     throw new Exception(stemp);
 #else
-                    tmplog = new DatabaseLog();
-                    tmplog.LSN = log.Current_LSN;
-                    tmplog.Type = "DML";
-                    tmplog.TransactionID = log.Transaction_ID;
-                    tmplog.BeginTime = BeginTime;
-                    tmplog.EndTime = EndTime;
-                    tmplog.ObjectName = $"[{SchemaName}].[{TableName}]";
-                    tmplog.Operation = log.Operation;
-                    tmplog.RedoSQL = "";
-                    tmplog.UndoSQL = "";
-                    tmplog.Message = "";
-                    logs.Add(tmplog);
+                        tmplog = new DatabaseLog();
+                        tmplog.LSN = log.Current_LSN;
+                        tmplog.Type = "DML";
+                        tmplog.TransactionID = log.Transaction_ID;
+                        tmplog.BeginTime = BeginTime;
+                        tmplog.EndTime = EndTime;
+                        tmplog.ObjectName = $"[{SchemaName}].[{TableName}]";
+                        tmplog.Operation = log.Operation;
+                        tmplog.RedoSQL = "";
+                        tmplog.UndoSQL = "";
+                        tmplog.Message = "";
+                        logs.Add(tmplog);
 #endif
                 }
+
             }
 
             return logs;
@@ -669,7 +689,9 @@ namespace DBLOG
 
         private string RESTORE_LOP_MODIFY_ROW(FLOG log, byte[] mr1)
         {
-            string mr0_str;
+            string mr0_str, bq;
+            FPageInfo tpageinfo;
+            int slotid;
 
             try
             {
@@ -678,6 +700,15 @@ namespace DBLOG
                     mr0_str = mr1.ToText().Stuff(Convert.ToInt32(log.Offset_in_Row) * 2,
                                                  log.RowLog_Contents_1.ToText().Length,
                                                  log.RowLog_Contents_0.ToText());
+
+                    if (log.RowLog_Contents_0.Length < log.Modify_Size)
+                    {
+                        tpageinfo = GetPageInfo(log.Page_ID);
+                        slotid = (Convert.ToInt32(log.Slot_ID) <= tpageinfo.SlotBeginIndex.Length - 1 ? Convert.ToInt32(log.Slot_ID) : tpageinfo.SlotBeginIndex.Length - 1);
+                        bq = tpageinfo.PageData.Substring((tpageinfo.SlotBeginIndex[slotid] + log.RowLog_Contents_0.Length) * 2,
+                                                          Convert.ToInt32(log.Modify_Size - log.RowLog_Contents_0.Length) * 2);
+                        mr0_str = mr0_str + bq;
+                    }
                 }
                 else
                 {
@@ -1277,8 +1308,11 @@ namespace DBLOG
                         switch (c.PhysicalStorageType)
                         {
                             case System.Data.SqlDbType.VarChar:
-                                c.ValueHex = tvc.FLogContents;
-                                c.Value = System.Text.Encoding.Default.GetString(tvc.FLogContents.ToByteArray()).TrimEnd();
+                                (ValueHex, Value) = TranslateData_VarChar(rowdata, tvc);
+                                c.ValueHex = ValueHex;
+                                c.Value = Value;
+                                //c.ValueHex = tvc.FLogContents;
+                                //c.Value = System.Text.Encoding.Default.GetString(tvc.FLogContents.ToByteArray()).TrimEnd();
                                 break;
                             case System.Data.SqlDbType.NVarChar:
                                 c.ValueHex = tvc.FLogContents;
@@ -2316,6 +2350,115 @@ namespace DBLOG
             }
 
             return (fvaluehex, fvalue);
+        }
+
+        private (string, string) TranslateData_VarChar(byte[] data, FVarColumnInfo pvc)
+        {
+            string fvaluehex, fvalue, pointer, pagedata, tmpstr;
+            int i, cutlen;
+            FPageInfo firstpage, temppage;
+            List<FPageInfo> pagelist;
+
+            if (pvc.InRow == true)
+            {
+                fvaluehex = pvc.FLogContents;
+            }
+            else
+            {
+                try
+                {
+                    pointer = pvc.FLogContents;
+                    pointer = pointer.Stuff(0, 12 * 2, ""); // 跳过12个字节
+
+                    i = 0;
+                    tmpstr = pointer.Substring(i * 2, 12 * 2);
+                    firstpage = new FPageInfo(tmpstr);
+                    i = i + 12;
+
+                    temppage = GetPageInfo(firstpage.FileNumPageNum_Hex);
+                    firstpage.PageData = temppage.PageData;
+                    firstpage.PageType = temppage.PageType;
+
+                    pagelist = new List<FPageInfo>();
+
+                    if (firstpage.PageType == "4")  // TEXT_TREE_PAGE
+                    {
+                        pagelist = GetTEXTTREEPAGESubPages(firstpage);
+                    }
+
+                    if (firstpage.PageType == "3")  // TEXT_MIX_PAGE
+                    {
+                        pagelist.Add(firstpage);
+
+                        while (i + 12 <= (pointer.Length / 2))
+                        {
+                            tmpstr = pointer.Substring(i * 2, 12 * 2);
+                            temppage = new FPageInfo(tmpstr);
+                            pagelist.Add(temppage);
+                            i = i + 12;
+                        }
+                    }
+
+                    fvaluehex = "";
+                    i = 0;
+                    foreach (FPageInfo tp in pagelist)
+                    {
+                        cutlen = Convert.ToInt32(tp.Offset - (i == 0 ? 0 : pagelist[i - 1].Offset));
+                        temppage = GetPageInfo(tp.FileNumPageNum_Hex);
+
+                        pagedata = temppage.PageData;
+                        pagedata = pagedata.Stuff(0, (96 + 14) * 2, "");
+                        pagedata = pagedata.Stuff(pagedata.Length - 42 * 2, 42 * 2, "");
+                        pagedata = (cutlen > 0 ? pagedata.Substring(0, cutlen * 2) : pagedata);
+
+                        fvaluehex = fvaluehex + pagedata;
+                        i = i + 1;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    fvaluehex = "";
+                }
+            }
+
+            fvalue = System.Text.Encoding.Default.GetString(fvaluehex.ToByteArray()).TrimEnd();
+
+            return (fvaluehex, fvalue);
+        }
+
+        private List<FPageInfo> GetTEXTTREEPAGESubPages(FPageInfo fpage)
+        {
+            string pagedata, tmpstr, tmpstr2;
+            int i, pageqty;
+            FPageInfo textmixpage, temppage;
+            List<FPageInfo> pagelist;
+
+            pagelist = new List<FPageInfo>();
+            pagedata = fpage.PageData;
+            pagedata = pagedata.Stuff(0, (96 + 16) * 2, "");
+            tmpstr = pagedata.Substring(0, 4 * 2);
+            pageqty = Convert.ToInt32(tmpstr.Substring(2, 2) + tmpstr.Substring(0, 2), 16);
+
+            for (i = 0; i <= pageqty - 1; i++)
+            {
+                tmpstr = pagedata.Substring(8 + i * 16 * 2, 16 * 2);
+                temppage = new FPageInfo(tmpstr, "TEXT_TREE_PAGE");
+                tmpstr2 = temppage.FileNumPageNum_Hex;
+                temppage = GetPageInfo(tmpstr2);
+
+                switch(temppage.PageType)
+                {
+                    case "3": // TEXT_MIX_PAGE
+                        textmixpage = new FPageInfo(tmpstr, "TEXT_TREE_PAGE");
+                        pagelist.Add(textmixpage);
+                        break;
+                    case "4": // TEXT_TREE_PAGE
+                        pagelist.AddRange(GetTEXTTREEPAGESubPages(temppage));
+                        break;
+                }
+            }
+
+            return pagelist;
         }
 
         private (string, string) TranslateData_Image(byte[] data, FVarColumnInfo pvc)
