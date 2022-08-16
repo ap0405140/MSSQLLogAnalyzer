@@ -182,6 +182,7 @@ namespace DBLOG
 
             tablelist = new DBLOG_DML[tables.Count];
             dmllog = new List<DatabaseLog>();
+            DBLOG_DML.PrevPages = null;
             i = 0;
             foreach (var dr in tables)
             {

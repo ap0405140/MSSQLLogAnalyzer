@@ -23,7 +23,7 @@ namespace DBLOG
         private TableColumn[] TableColumns;  // 表结构定义
         private TableInformation TableInfos;   // 表信息
         private Dictionary<string, FPageInfo> lobpagedata; // key:fileid+pageid value:FPageInfo
-        public static List<(string pageid, string lsn)> prevpage; // fileid+pageid 
+        public static List<(string pageid, string lsn)> PrevPages; // fileid+pageid 
         public List<FLOG> DTLogs;     // 原始日志信息
 
         public DBLOG_DML(string pDatabasename, string pSchemaName, string pTableName, DatabaseOperation poDB, string pLogFile)
@@ -407,18 +407,18 @@ namespace DBLOG
                         if (log.Operation == "LOP_FORMAT_PAGE")
                         {
                             lobpagedata.Remove(log.Page_ID);
-                            if (prevpage == null)
+                            if (PrevPages == null)
                             {
-                                prevpage = new List<(string, string)>();
+                                PrevPages = new List<(string, string)>();
                             }
                             else
                             {
-                                if (prevpage.Any(p => p.pageid == log.Page_ID) == true)
+                                if (PrevPages.Any(p => p.pageid == log.Page_ID) == true)
                                 {
-                                    prevpage.RemoveAll(p => p.pageid == log.Page_ID);
+                                    PrevPages.RemoveAll(p => p.pageid == log.Page_ID);
                                 }
                             }
-                            prevpage.Add((log.Page_ID, log.Current_LSN));
+                            PrevPages.Add((log.Page_ID, log.Current_LSN));
                         }
                         else
                         {
@@ -597,7 +597,7 @@ namespace DBLOG
             (string pageid, string lsn) pp;
             List<FLOG> prevtran;
 
-            pp = (prevpage == null ? (null,null) : prevpage.FirstOrDefault(p => p.pageid == pPageID));
+            pp = (PrevPages == null ? (null,null) : PrevPages.FirstOrDefault(p => p.pageid == pPageID));
             if (pp.pageid != null)
             {
                 tsql = "set transaction isolation level read uncommitted; " 
