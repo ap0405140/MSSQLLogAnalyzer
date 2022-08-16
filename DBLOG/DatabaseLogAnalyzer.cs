@@ -88,9 +88,10 @@ namespace DBLOG
             List<DatabaseLog> dmllog, tmplog;
             int i;
             string databasename, schemaname, tablename;
-            DataTable dtTables, dtTemp;
+            DataTable dtTemp;
             DBLOG_DML[] tablelist;
-            List<FLOG> dtLoglist;
+            List<FLOG> Loglist;
+            List<(string tablename, string schemaname)> tables;
 
             databasename = DB.DatabaseName;
             schemaname = "";
@@ -151,7 +152,7 @@ namespace DBLOG
                     + "  from sys.fn_dblog(null,null) t "
                     + $" where [Current LSN]>='{_MinLSN}' "
                     + "  and [Context] in('LCX_HEAP','LCX_CLUSTERED','LCX_MARK_AS_GHOST','LCX_TEXT_TREE','LCX_TEXT_MIX') "
-                    + "  and [Operation] in('LOP_INSERT_ROWS','LOP_DELETE_ROWS','LOP_MODIFY_ROW','LOP_MODIFY_COLUMNS') "
+                    + "  and [Operation] in('LOP_INSERT_ROWS','LOP_DELETE_ROWS','LOP_MODIFY_ROW','LOP_MODIFY_COLUMNS','LOP_FORMAT_PAGE') "
                     + "  and [AllocUnitName]<>'Unknown Alloc Unit' "
                     + "  and [AllocUnitName] not like 'sys.%' "
                     + "  and [AllocUnitName] is not null ";
@@ -162,30 +163,33 @@ namespace DBLOG
                         + " and case when parsename([AllocUnitName],3) is not null then parsename([AllocUnitName],2) else parsename([AllocUnitName],1) end='" + tablename + "' "
                         + " and case when parsename([AllocUnitName],3) is not null then parsename([AllocUnitName],3) else parsename([AllocUnitName],2) end='" + schemaname + "' ";
             }
-            dtLoglist = DB.Query<FLOG>(_tsql, false);
+            Loglist = DB.Query<FLOG>(_tsql, false);
 
             _tsql = $"alter table #LogList add constraint pk#LogList{Guid.NewGuid().ToString().Replace("-", "")} primary key clustered ([Current LSN]); ";
             DB.ExecuteSQL(_tsql, false);
 
             // get table list
-            _tsql = "select distinct 'TableName'=case when parsename([AllocUnitName],3) is not null then parsename([AllocUnitName],2) else parsename([AllocUnitName],1) end, "
-                    + "              'SchemaName'=case when parsename([AllocUnitName],3) is not null then parsename([AllocUnitName],3) else parsename([AllocUnitName],2) end "
+            _tsql = "select 'TableName'=case when parsename([AllocUnitName],3) is not null then parsename([AllocUnitName],2) else parsename([AllocUnitName],1) end, "
+                    + "     'SchemaName'=case when parsename([AllocUnitName],3) is not null then parsename([AllocUnitName],3) else parsename([AllocUnitName],2) end "
                     + " from #LogList "
-                    + " where [Transaction ID] in(select TransactionID from #TransactionList); ";
-            dtTables = DB.Query(_tsql, false);
+                    + " where [Transaction ID] in(select TransactionID from #TransactionList) "
+                    + " group by case when parsename([AllocUnitName],3) is not null then parsename([AllocUnitName],2) else parsename([AllocUnitName],1) end, "
+                    + "          case when parsename([AllocUnitName],3) is not null then parsename([AllocUnitName],3) else parsename([AllocUnitName],2) end "
+                    + " order by max([Current LSN]) desc; ";
+            tables = DB.Query<(string tablename,string schemaname)>(_tsql, false).ToList();
 
             ReadPercent = ReadPercent + 5;
 
-            tablelist = new DBLOG_DML[dtTables.Rows.Count];
+            tablelist = new DBLOG_DML[tables.Count];
             dmllog = new List<DatabaseLog>();
             i = 0;
-            foreach (DataRow dr in dtTables.Rows)
+            foreach (var dr in tables)
             {
-                tablename = dr["TableName"].ToString();
-                schemaname = dr["SchemaName"].ToString();
+                tablename = dr.tablename;
+                schemaname = dr.schemaname;
                 tablelist[i] = new DBLOG_DML(databasename, schemaname, tablename, DB, LogFile);
-                tablelist[i].DTLogs = dtLoglist.Where(p => p.AllocUnitName == $"{schemaname}.{tablename}"
-                                                           || p.AllocUnitName.StartsWith($"{schemaname}.{tablename}.")).ToList();
+                tablelist[i].DTLogs = Loglist.Where(p => p.AllocUnitName == $"{schemaname}.{tablename}"
+                                                         || p.AllocUnitName.StartsWith($"{schemaname}.{tablename}.")).ToList();
 
 #if DEBUG
                 FCommon.WriteTextFile(LogFile, $"Start Analysis Log for [{schemaname}].[{tablename}]. ");
@@ -193,7 +197,7 @@ namespace DBLOG
 
                 tmplog = tablelist[i].AnalyzeLog();
                 dmllog.AddRange(tmplog);
-                ReadPercent = ReadPercent + Convert.ToInt32(Math.Floor((tablelist[i].DTLogs.Count * 1.0) / (dtLoglist.Count * 1.0) * 85.0));
+                ReadPercent = ReadPercent + Convert.ToInt32(Math.Floor((tablelist[i].DTLogs.Count * 1.0) / (Loglist.Count * 1.0) * 85.0));
 
 #if DEBUG
                 FCommon.WriteTextFile(LogFile, $"End Analysis Log for [{schemaname}].[{tablename}]. ");
