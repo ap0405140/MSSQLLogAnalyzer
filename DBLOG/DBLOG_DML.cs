@@ -1350,10 +1350,10 @@ namespace DBLOG
                         }
                         else
                         {
-                            if (rowdata.Length  > VarColumnEndIndex)
-                            {
-                                throw new Exception();
-                            }
+                            //if (rowdata.Length > VarColumnEndIndex)
+                            //{
+                            //    throw new Exception();
+                            //}
                         }
                     }
                 }
