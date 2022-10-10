@@ -39,6 +39,11 @@ namespace DBLOG
             return returnStr;
         }
 
+        public static string Replicate(this string pstr, int t)
+        {
+            return new StringBuilder(pstr.Length * t).Insert(0, pstr, t).ToString();
+        }
+
         public static byte[] ToByteArray(this string ss)
         {
             int i;
@@ -80,6 +85,20 @@ namespace DBLOG
                             );
 
             return bs;
+        }
+
+        public static string ToHexString(this string binary)
+        {
+            StringBuilder result;
+
+            result = new StringBuilder(binary.Length / 8);
+            for (int i = 0; i < binary.Length; i += 8)
+            {
+                string eightBits = binary.Substring(i, 8);
+                result.AppendFormat("{0:X2}", Convert.ToByte(eightBits, 2));
+            }
+
+            return result.ToString();
         }
 
         public static byte[] ToFileByteArray(this string ptext)
@@ -154,66 +173,75 @@ namespace DBLOG
             }
             else
             {
-                if (TargetType.IsGenericType == true && TargetType.GetGenericTypeDefinition() == typeof(Nullable<>))
+                if (TargetType.IsEnum == false)
                 {
-                    typecode = Type.GetTypeCode(TargetType.GetGenericArguments()[0]);
+                    if (TargetType.IsGenericType == true
+                        && TargetType.GetGenericTypeDefinition() == typeof(Nullable<>))
+                    {
+                        typecode = Type.GetTypeCode(TargetType.GetGenericArguments()[0]);
+                    }
+                    else
+                    {
+                        typecode = Type.GetTypeCode(TargetType);
+                    }
+
+                    switch (typecode)
+                    {
+                        case TypeCode.Boolean:
+                            y = Convert.ToBoolean(x);
+                            break;
+                        case TypeCode.Char:
+                            y = Convert.ToChar(x);
+                            break;
+                        case TypeCode.SByte:
+                            y = Convert.ToSByte(x);
+                            break;
+                        case TypeCode.Byte:
+                            y = Convert.ToByte(x);
+                            break;
+                        case TypeCode.Int16:
+                            y = Convert.ToInt16(x);
+                            break;
+                        case TypeCode.UInt16:
+                            y = Convert.ToUInt16(x);
+                            break;
+                        case TypeCode.Int32:
+                            y = Convert.ToInt32(x);
+                            break;
+                        case TypeCode.UInt32:
+                            y = Convert.ToUInt32(x);
+                            break;
+                        case TypeCode.Int64:
+                            y = Convert.ToInt64(x);
+                            break;
+                        case TypeCode.UInt64:
+                            y = Convert.ToUInt64(x);
+                            break;
+                        case TypeCode.Single:
+                            y = Convert.ToSingle(x);
+                            break;
+                        case TypeCode.Double:
+                            y = Convert.ToDouble(x);
+                            break;
+                        case TypeCode.Decimal:
+                            y = Convert.ToDecimal(x);
+                            break;
+                        case TypeCode.DateTime:
+                            y = Convert.ToDateTime(x);
+                            break;
+                        case TypeCode.String:
+                            y = Convert.ToString(x);
+                            break;
+                        default:
+                            y = x;
+                            break;
+                    }
                 }
                 else
                 {
-                    typecode = Type.GetTypeCode(TargetType);
+                    y = Enum.Parse(TargetType, x.ToString());
                 }
-
-                switch (typecode)
-                {
-                    case TypeCode.Boolean:
-                        y = Convert.ToBoolean(x);
-                        break;
-                    case TypeCode.Char:
-                        y = Convert.ToChar(x);
-                        break;
-                    case TypeCode.SByte:
-                        y = Convert.ToSByte(x);
-                        break;
-                    case TypeCode.Byte:
-                        y = Convert.ToByte(x);
-                        break;
-                    case TypeCode.Int16:
-                        y = Convert.ToInt16(x);
-                        break;
-                    case TypeCode.UInt16:
-                        y = Convert.ToUInt16(x);
-                        break;
-                    case TypeCode.Int32:
-                        y = Convert.ToInt32(x);
-                        break;
-                    case TypeCode.UInt32:
-                        y = Convert.ToUInt32(x);
-                        break;
-                    case TypeCode.Int64:
-                        y = Convert.ToInt64(x);
-                        break;
-                    case TypeCode.UInt64:
-                        y = Convert.ToUInt64(x);
-                        break;
-                    case TypeCode.Single:
-                        y = Convert.ToSingle(x);
-                        break;
-                    case TypeCode.Double:
-                        y = Convert.ToDouble(x);
-                        break;
-                    case TypeCode.Decimal:
-                        y = Convert.ToDecimal(x);
-                        break;
-                    case TypeCode.DateTime:
-                        y = Convert.ToDateTime(x);
-                        break;
-                    case TypeCode.String:
-                        y = Convert.ToString(x);
-                        break;
-                    default:
-                        y = x;
-                        break;
-                }
+                
             }
 
             return y;
@@ -300,11 +328,29 @@ namespace DBLOG
         public bool IsColumnStore; // 是否列存储
         public bool IsNodeTable;
         public bool IsEdgeTable;
+        public Dictionary<long, CompressionType> DataCompressionType; // PartitionId, CompressionType
 
         public TableInformation()
         {
 
         }
+
+        public CompressionType GetCompressionType(long? partitionid)
+        {
+            CompressionType r;
+
+            if (IsColumnStore == true)
+            {
+                r = CompressionType.COLUMNSTORE;
+            }
+            else
+            {
+                r = DataCompressionType[Convert.ToInt64(partitionid)];
+            }
+
+            return r;
+        }
+
     }
 
     // 表字段定义
@@ -321,6 +367,7 @@ namespace DBLOG
 
         public object Value = null;
         public string ValueHex = "";
+        public string ValueHexCompression = "";
         public string LogContents = "";
         public int LogContentsStartIndex;           // LogContents的开始位置
         public int LogContentsEndIndex;             // LogContents的结束位置
@@ -344,7 +391,7 @@ namespace DBLOG
 
         public TableColumn()
         {
-
+            
         }
 
         public TableColumn(short columnid = -1, bool isexists = true)
@@ -391,47 +438,11 @@ namespace DBLOG
             return MemberwiseClone();
         }
 
-        //public string CSDataType
-        //{
-        //    get
-        //    {
-        //        string ctype = "";
+    }
 
-        //        if (PhysicalStorageType == SqlDbType.VarChar
-        //            || PhysicalStorageType == SqlDbType.NVarChar
-        //            || PhysicalStorageType == SqlDbType.Char
-        //            || PhysicalStorageType == SqlDbType.NChar
-        //            || PhysicalStorageType == SqlDbType.Text)
-        //        {
-        //            ctype = "System.String";
-        //        }
-
-        //        if (PhysicalStorageType == SqlDbType.Int
-        //            || PhysicalStorageType == SqlDbType.SmallInt
-        //            || PhysicalStorageType == SqlDbType.TinyInt
-        //            || PhysicalStorageType == SqlDbType.BigInt)
-        //        {
-        //            ctype = "System.Int32";
-        //        }
-
-        //        if (PhysicalStorageType == SqlDbType.DateTime
-        //            || PhysicalStorageType == SqlDbType.DateTime2
-        //            || PhysicalStorageType == SqlDbType.SmallDateTime
-        //            || PhysicalStorageType == SqlDbType.Date)
-        //        {
-        //            ctype = "System.DateTime";
-        //        }
-
-        //        if (PhysicalStorageType == SqlDbType.Binary
-        //            || PhysicalStorageType == SqlDbType.VarBinary)
-        //        {
-        //            ctype = "System.Object";
-        //        }
-
-        //        return ctype;
-        //    }
-        //}
-
+    public enum CompressionType
+    {
+        NONE, ROW, PAGE, COLUMNSTORE, COLUMNSTORE_ARCHIVE
     }
 
     public class FLOG

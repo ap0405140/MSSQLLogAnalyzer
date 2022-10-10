@@ -139,7 +139,9 @@ namespace DBLOG
 
                 targettype = "";
                 if (typeof(T).IsValueType 
-                    || typeof(T).Name.ToLower().Contains("string"))
+                    || typeof(T).Name.ToLower().Contains("string")
+                    || typeof(T).Name.ToLower() == "byte[]"
+                   )
                 {
                     targettype = "ValueType";
                 }

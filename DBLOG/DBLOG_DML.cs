@@ -2,6 +2,8 @@
 using System.Collections.Generic;
 using System.Data;
 using System.Diagnostics;
+using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using System.Numerics;
 using System.Text;
@@ -23,6 +25,7 @@ namespace DBLOG
         private TableColumn[] TableColumns;  // 表结构定义
         private TableInformation TableInfos;   // 表信息
         private Dictionary<string, FPageInfo> lobpagedata; // key:fileid+pageid value:FPageInfo
+        private List<string> RowCompressionAffectsStorage;
         public static List<(string pageid, string lsn)> PrevPages; // fileid+pageid 
         public List<FLOG> DTLogs;     // 原始日志信息
 
@@ -35,6 +38,26 @@ namespace DBLOG
             LogFile = pLogFile;
 
             (TableInfos, TableColumns) = GetTableInfo(SchemaName, TableName);
+
+            RowCompressionAffectsStorage = new List<string>();
+            RowCompressionAffectsStorage.Add("smallint"); // If the value fits in 1 byte, only 1 byte will be used.
+            RowCompressionAffectsStorage.Add("int"); // Uses only the bytes that are needed. For example, if a value can be stored in 1 byte, storage will take only 1 byte.
+            RowCompressionAffectsStorage.Add("bigint"); // Uses only the bytes that are needed. For example, if a value can be stored in 1 byte, storage will take only 1 byte.
+            RowCompressionAffectsStorage.Add("decimal"); // Uses only the bytes that are needed, regardless of the precision specified. For example, if a value can be stored in 3 bytes, storage will take only 3 bytes. The storage footprint is exactly the same as the vardecimal storage format.
+            RowCompressionAffectsStorage.Add("numeric"); // Uses only the bytes that are needed, regardless of the precision specified. For example, if a value can be stored in 3 bytes, storage will take only 3 bytes. The storage footprint is exactly the same as the vardecimal storage format.
+            RowCompressionAffectsStorage.Add("bit"); // The metadata overhead brings this to 4 bits.
+            RowCompressionAffectsStorage.Add("smallmoney"); // Uses the integer data representation by using a 4-byte integer. Currency value is multiplied by 10000 and the resulting integer value is stored by removing any digits after the decimal point. This type has a storage optimization similar to that for integer types.
+            RowCompressionAffectsStorage.Add("money"); // Uses the integer data representation by using an 8-byte integer. Currency value is multiplied by 10000 and the resulting integer value is stored by removing any digits after the decimal point. This type has a larger range than smallmoney. This type has a storage optimization similar to that for integer types.
+            RowCompressionAffectsStorage.Add("float"); // Least significant bytes with zeros are not stored. float compression is applicable mostly for nonfractional values in mantissa.
+            RowCompressionAffectsStorage.Add("real"); // Least significant bytes with zeros are not stored. real compression is applicable mostly for nonfractional values in mantissa.
+            RowCompressionAffectsStorage.Add("datetime"); // Uses the integer data representation by using two 4-byte integers. The integer value represents the number of days with base date of 1/1/1900. The first 2 bytes can represent up to the year 2079. Compression can always save 2 bytes here until that point. Each integer value represents 3.33 milliseconds. Compression exhausts the first 2 bytes in first five minutes and needs the fourth byte after 4PM. Therefore, compression can save only 1 byte after 4PM. When datetime is compressed like any other integer, compression saves 2 bytes in the date.
+            RowCompressionAffectsStorage.Add("datetime2"); // Uses the integer data representation by using 6 to 9 bytes. The first 4 bytes represent the date. The bytes taken by the time will depend on the precision of the time that is specified. The integer value represents the number of days since 1 / 1 / 0001 with an upper bound of 12 / 31 / 9999.To represent a date in year 2005, compression takes 3 bytes. There are no savings on time because it allows for 2 to 4 bytes for various time precisions.Therefore, for one - second time precision, compression uses 2 bytes for time, which takes the second byte after 255 seconds.
+            RowCompressionAffectsStorage.Add("datetimeoffset"); // Resembles datetime2, except that there are 2 bytes of time zone of the format (HH:MM). Like datetime2, compression can save 2 bytes. For time zone values, MM value might be 0 for most cases. Therefore, compression can possibly save 1 byte. There are no changes in storage for row compression.
+            RowCompressionAffectsStorage.Add("char"); // Trailing padding characters are removed. Note that the Database Engine inserts the same padding character regardless of the collation that is used.
+            RowCompressionAffectsStorage.Add("nchar"); // Trailing padding characters are removed. Note that the Database Engine inserts the same padding character regardless of the collation that is used.
+            RowCompressionAffectsStorage.Add("binary"); // Trailing zeros are removed.
+            RowCompressionAffectsStorage.Add("timestamp"); // Uses the integer data representation by using 8 bytes. There is a timestamp counter that is maintained for each database, and its value starts from 0. This can be compressed like any other integer value.
+
         }
 
         // 解析日志
@@ -56,6 +79,7 @@ namespace DBLOG
             DataRow[] DRTemp;
             SQLGraphNode tj;
             FPageInfo tpageinfo;
+            CompressionType compressiontype;
 
             logs = new List<DatabaseLog>();
             ColumnList = string.Join(",", TableColumns
@@ -111,6 +135,8 @@ namespace DBLOG
                         stsql = $"select top 1 BeginTime=substring(BeginTime,1,19),EndTime=substring(EndTime,1,19) from #TransactionList where TransactionID='{log.Transaction_ID}'; ";
                         (BeginTime, EndTime) = DB.Query<(string BeginTime, string EndTime)>(stsql, false).FirstOrDefault();
 
+                        compressiontype = TableInfos.GetCompressionType(log.PartitionId);
+
                         if (log.Operation == "LOP_MODIFY_ROW" || log.Operation == "LOP_MODIFY_COLUMNS")
                         {
                             isfound = false;
@@ -121,9 +147,12 @@ namespace DBLOG
                                 && (
                                     (log.Operation == "LOP_MODIFY_COLUMNS")
                                     ||
-                                    (log.Operation == "LOP_MODIFY_ROW"
+                                    (
+                                     log.Operation == "LOP_MODIFY_ROW"
                                      && DRTemp[0]["MR1TEXT"].ToString().Contains(log.RowLog_Contents_1.ToText()) == true
                                     )
+                                    //||
+                                    //(compressiontype != CompressionType.NONE)
                                    )
                                )
                             {
@@ -154,15 +183,12 @@ namespace DBLOG
                                 }
 
                                 DRTemp = DTMRlist.Select("PAGEID='" + log.Page_ID + "' and MR1TEXT like '%" + log.RowLog_Contents_1.ToText() + "%' and MR1TEXT like '%" + PrimaryKeyValue + "%' ");
-                                if (DRTemp.Length > 0)
-                                {
-                                    isfound = true;
-                                }
+                                isfound = (DRTemp.Length > 0 ? true : false);
                             }
 
                             if (isfound == false)
                             {
-                                MR1 = GetMR1(log.Operation, log.Page_ID, log.AllocUnitId.ToString(), log.Current_LSN, log.RowLog_Contents_0.ToText(), log.RowLog_Contents_1.ToText(), PrimaryKeyValue);
+                                MR1 = GetMR1(log, PrimaryKeyValue);
                                 SlotID = log.Slot_ID.ToString();
 
                                 if (MR1 != null)
@@ -197,44 +223,57 @@ namespace DBLOG
                         WhereList1 = string.Empty;
                         WhereList0 = string.Empty;
                         MR0 = new byte[1];
-
+                        
                         switch (log.Operation)
                         {
                             // Insert / Delete
                             case "LOP_INSERT_ROWS":
                             case "LOP_DELETE_ROWS":
-                                SlotID = log.Slot_ID.ToString();
-                                MinimumLength = 2 + TableColumns.Where(p => p.IsVarLenDataType == false).Sum(p => p.Length) + 2;
-
-                                if (log.RowLog_Contents_0.Length >= MinimumLength)
+                                switch (compressiontype)
                                 {
-                                    try
-                                    {
-                                        TranslateData(log.RowLog_Contents_0, TableColumns);
-                                        MR0 = new byte[log.RowLog_Contents_0.Length];
-                                        MR0 = log.RowLog_Contents_0;
-                                    }
-                                    catch (Exception ex)
-                                    {
-                                        DRTemp = DTMRlist.Select("PAGEID='" + log.Page_ID + "' and SlotID='" + log.Slot_ID.ToString() + "' and AllocUnitId='" + log.AllocUnitId.ToString() + "' ");
-                                        if (DRTemp.Length > 0)
+                                    case CompressionType.NONE:
+                                    case CompressionType.COLUMNSTORE:
+                                        SlotID = log.Slot_ID.ToString();
+                                        MinimumLength = 2 + TableColumns.Where(p => p.IsVarLenDataType == false).Sum(p => p.Length) + 2;
+
+                                        if (log.RowLog_Contents_0.Length >= MinimumLength)
                                         {
-                                            MR0 = (byte[])DRTemp[0]["MR1"];
+                                            try
+                                            {
+                                                TranslateData(log.RowLog_Contents_0, TableColumns);
+                                                MR0 = new byte[log.RowLog_Contents_0.Length];
+                                                MR0 = log.RowLog_Contents_0;
+                                            }
+                                            catch (Exception ex)
+                                            {
+                                                DRTemp = DTMRlist.Select("PAGEID='" + log.Page_ID + "' and SlotID='" + log.Slot_ID.ToString() + "' and AllocUnitId='" + log.AllocUnitId.ToString() + "' ");
+                                                if (DRTemp.Length > 0)
+                                                {
+                                                    MR0 = (byte[])DRTemp[0]["MR1"];
+                                                }
+                                                else
+                                                {
+                                                    MR0 = GetMR1(log, "");
+                                                }
+
+                                                if (MR0.Length < MinimumLength) { continue; }
+                                                TranslateData(MR0, TableColumns);
+                                            }
                                         }
                                         else
                                         {
-                                            MR0 = GetMR1(log.Operation, log.Page_ID, log.AllocUnitId.ToString(), log.Current_LSN, log.RowLog_Contents_0.ToText(), log.RowLog_Contents_1.ToText(), "");
+                                            MR0 = GetMR1(log, "");
+                                            if (MR0.Length < MinimumLength) { continue; }
+                                            TranslateData(MR0, TableColumns);
                                         }
-
-                                        if (MR0.Length < MinimumLength) { continue; }
-                                        TranslateData(MR0, TableColumns);
-                                    }
-                                }
-                                else
-                                {
-                                    MR0 = GetMR1(log.Operation, log.Page_ID, log.AllocUnitId.ToString(), log.Current_LSN, log.RowLog_Contents_0.ToText(), log.RowLog_Contents_1.ToText(), "");
-                                    if (MR0.Length < MinimumLength) { continue; }
-                                    TranslateData(MR0, TableColumns);
+                                        break;
+                                    case CompressionType.ROW:
+                                        MR0 = log.RowLog_Contents_0;
+                                        TranslateData_CompressionROW(MR0, TableColumns, log);
+                                        break;
+                                    case CompressionType.PAGE:
+                                        
+                                        break;
                                 }
 
                                 for (j = 0; j <= TableColumns.Length - 1; j++)
@@ -480,28 +519,26 @@ namespace DBLOG
               );
         }
 
-        private byte[] GetMR1(string pOperation, string pPageID, string pAllocUnitId, string pCurrentLSN, string pR0, string pR1, string pPrimaryKeyValue)
+        private byte[] GetMR1(FLOG pLog, string pPrimaryKeyValue)
         {
             byte[] mr1;
             string fileid_dec, pageid_dec, checkvalue1, checkvalue2;
-            DataTable dtTemp;
             bool isfound;
-
-            fileid_dec = Convert.ToInt16(pPageID.Split(':')[0], 16).ToString();
-            pageid_dec = Convert.ToInt32(pPageID.Split(':')[1], 16).ToString();
+            
+            fileid_dec = Convert.ToInt16(pLog.Page_ID.Split(':')[0], 16).ToString();
+            pageid_dec = Convert.ToInt32(pLog.Page_ID.Split(':')[1], 16).ToString();
             stsql = $"DBCC PAGE([{DatabaseName}],{fileid_dec},{pageid_dec},3) with tableresults,no_infomsgs; ";
             stsql = "set transaction isolation level read uncommitted; "
                     + $"insert into #temppagedata(ParentObject,Object,Field,Value) exec('{stsql}'); ";
             DB.ExecuteSQL(stsql, false);
 
-            stsql = $"update #temppagedata set LSN=N'{pCurrentLSN}' where LSN is null; ";
+            stsql = $"update #temppagedata set LSN=N'{pLog.Current_LSN}' where LSN is null; ";
             DB.ExecuteSQL(stsql, false);
 
-            mr1 = null;
-            switch (pOperation)
+            switch (pLog.Operation)
             {
                 case "LOP_MODIFY_ROW":
-                    checkvalue1 = pR1;
+                    checkvalue1 = pLog.RowLog_Contents_1.ToText();
                     checkvalue2 = pPrimaryKeyValue;
                     break;
                 case "LOP_MODIFY_COLUMNS":
@@ -509,7 +546,7 @@ namespace DBLOG
                     checkvalue2 = "";
                     break;
                 case "LOP_INSERT_ROWS":
-                    checkvalue1 = pR0.Substring(8, 4 * 2);
+                    checkvalue1 = pLog.RowLog_Contents_0.ToText().Substring(8, 4 * 2);
                     checkvalue2 = "";
                     break;
                 default:
@@ -526,51 +563,55 @@ namespace DBLOG
             stsql = " insert into #ModifiedRawData([RowLog Contents 0_var]) "
                     + " select [RowLog Contents 0_var]=upper(replace(stuff((select replace(substring(C.[Value],charindex(N':',[Value],1)+1,48),N'†',N'') "
                     + "                                                     from #temppagedata C "
-                    + "                                                     where C.[LSN]=N'" + pCurrentLSN + "' "
-                    + "                                                     and C.[ParentObject] like 'Slot '+ltrim(rtrim(A.[Slot ID]))+' Offset%' "
+                    + $"                                                    where C.[LSN]=N'{pLog.Current_LSN}' "
+                    + $"                                                    and C.[ParentObject] like 'Slot {pLog.Slot_ID.ToString()} Offset%' "
                     + "                                                     and C.[Object] like N'%Memory Dump%' "
-                    + "                                                     group by C.[Value] "
-                    + "                                                     for xml path('')),1,1,N''),N' ',N'')) "
-                    + " from #LogList A "
-                    + " where A.[Current LSN]='" + pCurrentLSN + "'; ";
+                    + "                                                     for xml path('')),1,1,N''),N' ',N'')); ";
             DB.ExecuteSQL(stsql, false);
 
-            stsql = "select count(1) from #ModifiedRawData where [RowLog Contents 0_var] like N'%" + (checkvalue1.Length <= 3998 ? checkvalue1 : checkvalue1.Substring(0, 3998)) + "%'; ";
-            if (Convert.ToInt32(DB.Query11(stsql, false)) > 0)
+            if (TableInfos.GetCompressionType(pLog.PartitionId) != CompressionType.NONE)
             {
                 isfound = true;
             }
-
-            if (isfound == false && pOperation == "LOP_MODIFY_ROW")
+            else
             {
-                stsql = "truncate table #ModifiedRawData; ";
-                DB.ExecuteSQL(stsql, false);
-
-                stsql = "with t as("
-                        + "select *,SlotID=replace(substring(ParentObject,5,charindex(N'Offset',ParentObject)-5),N' ',N'') "
-                        + " from #temppagedata "
-                        + " where LSN=N'" + pCurrentLSN + "' "
-                        + " and Object like N'%Memory Dump%'), "
-                        + "u as("
-                        + "select [SlotID]=a.SlotID, "
-                        + "       [RowLog Contents 0_var]=upper(replace(stuff((select replace(substring(b.Value,charindex(N':',b.Value,1)+1,48),N'†',N'') "
-                        + "                                                    from t b "
-                        + "                                                    where b.SlotID=a.SlotID "
-                        + "                                                    group by b.Value "
-                        + "                                                    for xml path('')),1,1,N''),N' ',N'')) "
-                        + " from t a "
-                        + " group by a.SlotID) "
-                        + "insert into #ModifiedRawData([SlotID],[RowLog Contents 0_var]) "
-                        + "select [SlotID],[RowLog Contents 0_var] "
-                        + " from u "
-                        + " where [RowLog Contents 0_var] like N'%" + (checkvalue1.Length <= 3998 ? checkvalue1 : checkvalue1.Substring(0, 3998)) + "%' "
-                        + " and substring([RowLog Contents 0_var],9,len([RowLog Contents 0_var])-8) like N'%" + (checkvalue2.Length <= 3998 ? checkvalue2 : checkvalue2.Substring(0, 3998)) + "%'; ";
-                DB.ExecuteSQL(stsql, false);
-
                 stsql = "select count(1) from #ModifiedRawData where [RowLog Contents 0_var] like N'%" + (checkvalue1.Length <= 3998 ? checkvalue1 : checkvalue1.Substring(0, 3998)) + "%'; ";
                 if (Convert.ToInt32(DB.Query11(stsql, false)) > 0)
                 {
                     isfound = true;
+                }
+
+                if (isfound == false && pLog.Operation == "LOP_MODIFY_ROW")
+                {
+                    stsql = "truncate table #ModifiedRawData; ";
+                    DB.ExecuteSQL(stsql, false);
+
+                    stsql = "with t as("
+                            + "select *,SlotID=replace(substring(ParentObject,5,charindex(N'Offset',ParentObject)-5),N' ',N'') "
+                            + " from #temppagedata "
+                            + " where LSN=N'" + pLog.Current_LSN + "' "
+                            + " and Object like N'%Memory Dump%'), "
+                            + "u as("
+                            + "select [SlotID]=a.SlotID, "
+                            + "       [RowLog Contents 0_var]=upper(replace(stuff((select replace(substring(b.Value,charindex(N':',b.Value,1)+1,48),N'†',N'') "
+                            + "                                                    from t b "
+                            + "                                                    where b.SlotID=a.SlotID "
+                            + "                                                    group by b.Value "
+                            + "                                                    for xml path('')),1,1,N''),N' ',N'')) "
+                            + " from t a "
+                            + " group by a.SlotID) "
+                            + "insert into #ModifiedRawData([SlotID],[RowLog Contents 0_var]) "
+                            + "select [SlotID],[RowLog Contents 0_var] "
+                            + " from u "
+                            + " where [RowLog Contents 0_var] like N'%" + (checkvalue1.Length <= 3998 ? checkvalue1 : checkvalue1.Substring(0, 3998)) + "%' "
+                            + " and substring([RowLog Contents 0_var],9,len([RowLog Contents 0_var])-8) like N'%" + (checkvalue2.Length <= 3998 ? checkvalue2 : checkvalue2.Substring(0, 3998)) + "%'; ";
+                    DB.ExecuteSQL(stsql, false);
+
+                    stsql = "select count(1) from #ModifiedRawData where [RowLog Contents 0_var] like N'%" + (checkvalue1.Length <= 3998 ? checkvalue1 : checkvalue1.Substring(0, 3998)) + "%'; ";
+                    if (Convert.ToInt32(DB.Query11(stsql, false)) > 0)
+                    {
+                        isfound = true;
+                    }
                 }
             }
 
@@ -580,9 +621,11 @@ namespace DBLOG
                 DB.ExecuteSQL(stsql, false);
 
                 stsql = "select top 1 'MR1'=[RowLog Contents 0] from #ModifiedRawData; ";
-                dtTemp = DB.Query(stsql, false);
-
-                mr1 = (byte[])dtTemp.Rows[0]["MR1"];
+                mr1 = DB.Query<byte[]>(stsql, false).FirstOrDefault();
+            }
+            else
+            {
+                mr1 = null;
             }
 
             return mr1;
@@ -706,11 +749,25 @@ namespace DBLOG
             int i;
             string mr0_str;
             TableColumn[] columns0, columns1;
+            CompressionType compressiontype;
 
             columns0 = TableColumns.CopyToNew().Cast<TableColumn>().ToArray();
             columns1 = TableColumns.CopyToNew().Cast<TableColumn>().ToArray();
 
-            TranslateData(mr1, columns1);
+            compressiontype = TableInfos.GetCompressionType(curlog.PartitionId);
+            switch (compressiontype)
+            {
+                case CompressionType.NONE:
+                case CompressionType.COLUMNSTORE:
+                    TranslateData(mr1, columns1);
+                    break;
+                case CompressionType.ROW:
+                    TranslateData_CompressionROW(mr1, columns1, curlog);
+                    break;
+                case CompressionType.PAGE:
+
+                    break;
+            }
             
             switch (curlog.Operation)
             {
@@ -726,7 +783,20 @@ namespace DBLOG
             }
 
             mr0 = mr0_str.ToByteArray();
-            TranslateData(mr0, columns0);
+
+            switch (compressiontype)
+            {
+                case CompressionType.NONE:
+                case CompressionType.COLUMNSTORE:
+                    TranslateData(mr0, columns0);
+                    break;
+                case CompressionType.ROW:
+                    TranslateData_CompressionROW(mr0, columns0, curlog);
+                    break;
+                case CompressionType.PAGE:
+
+                    break;
+            }
 
             ValueList1 = "";
             ValueList0 = "";
@@ -1412,7 +1482,7 @@ namespace DBLOG
                                 c.VariantCollation = VariantCollation;
                                 break;
                             case System.Data.SqlDbType.Xml:
-                                (ValueHex, Value) = TranslateData_XML(rowdata, tvc);
+                                (ValueHex, Value) = TranslateData_XML(tvc);
                                 c.ValueHex = ValueHex;
                                 c.Value = Value;
                                 break;
@@ -1480,6 +1550,474 @@ namespace DBLOG
                     x.LogContentsEndIndex = -1;
                 }
             }
+        }
+
+        private void TranslateData_CompressionROW(byte[] rowdata, TableColumn[] columns, FLOG pLog)
+        {
+            int i, j, k, offset, length, physicallength;
+            string rowdatahex, colconts, colconts2, valuehex, temp;
+            List<(int offset, int length, int physicallength)> cols;
+            List<int> intail;
+            FVarColumnInfo vc;
+
+            rowdatahex = rowdata.ToText();
+            cols = new List<(int offset, int length, int physicallength)>();
+
+            //if (bypageinfo == true && 1==2)
+            //{
+            //    stsql = $"select distinct Object=case when Object like N'Slot%' then Object else substring(Object,charindex(N'Slot',Object),256) end "
+            //            + $" from #temppagedata "
+            //            + $" where LSN=N'{pLog.Current_LSN}' "
+            //            + $" and ParentObject like '%Slot {pLog.Slot_ID.ToString()} Offset%' "
+            //            + $" and Object like '%(physical)%'; ";
+            //    pl = DB.Query<string>(stsql, false).ToList();
+
+            //    for (i = 1; i <= columns.Length; i = i + 1)
+            //    {
+            //        plitem = pl.FirstOrDefault(p => p.Contains($"Column {i.ToString()} ") == true);
+
+            //        cols.Add((
+            //                  Int32.Parse(plitem.Split(' ')[5].Replace("0x", ""), System.Globalization.NumberStyles.HexNumber), // offset
+            //                  Convert.ToInt32(plitem.Split(' ')[7]), // length
+            //                  Convert.ToInt32(plitem.Split(' ')[10]) // physicallength
+            //                ));
+            //    }
+            //}
+            //else
+            //{
+
+            //}
+            i = (columns.Length % 2 == 0 ? columns.Length : columns.Length + 1);
+            colconts = rowdatahex.Substring(4, i);
+
+            for (j = 1, temp = ""; j <= colconts.Length - 1; j = j + 2)
+            {
+                temp = temp + colconts.Substring(j - 1, 2).Reverse();
+            }
+            colconts = temp;
+
+            k = 2 + i / 2;
+            intail = new List<int>();
+            for (i = 0; i <= columns.Length - 1; i = i + 1)
+            {
+                temp = colconts.Substring(i, 1);
+                switch (temp)
+                {
+                    case "0": // null
+                        length = 0;
+                        physicallength = 0;
+                        offset = 0;
+                        break;
+                    case "1": // 0
+                        length = columns[i].Length;
+                        physicallength = 0;
+                        offset = k + physicallength;
+                        break;
+                    case "2":
+                    case "3":
+                    case "4":
+                    case "5":
+                    case "6":
+                    case "7":
+                    case "8":
+                    case "9":
+                        length = (RowCompressionAffectsStorage.Contains(columns[i].DataType) == false ?
+                                    Convert.ToInt32(temp, 16) - 1
+                                    :
+                                    columns[i].Length);
+                        physicallength = Convert.ToInt32(temp, 16) - 1;
+                        offset = k;
+                        break;
+                    case "A":
+                        length = 0;
+                        physicallength = 0;
+                        offset = 0;
+                        intail.Add(i);
+                        break;
+                    case "B":
+                        length = 0;
+                        physicallength = 0;
+                        offset = 0;
+                        break;
+                    default:
+                        length = 0;
+                        physicallength = 0;
+                        offset = 0;
+                        break;
+                }
+
+                if (columns[i].DataType == "bit")
+                {
+                    if (temp == "0")
+                    {
+                        columns[i].IsNull = true;
+                        columns[i].Value = null;
+                    }
+                    else
+                    {
+                        columns[i].IsNull = false;
+                        columns[i].Value = (temp == "B" ? 1 : 0);
+                    }
+                }
+
+                cols.Add((offset, length, physicallength));
+                k = k + physicallength;
+            }
+
+            if (intail.Count > 0)
+            {
+                colconts2 = rowdatahex.Substring(k * 2, (2 + intail.Count * 2 + 1) * 2);
+
+                offset = k + (2 + intail.Count * 2 + 1);
+                for (i = 0, j = 0; i <= intail.Count - 1; i = i + 1)
+                {
+                    temp = colconts2.Substring((2 + i * 2) * 2, 2 * 2);
+                    length = physicallength = Convert.ToInt32(temp, 16) - j;
+
+                    cols[intail[i]] = (offset, length, physicallength);
+                    j = j + length;
+                    offset = offset + length;
+                }
+            }
+
+            for (i = 0; i <= columns.Length - 1; i = i + 1)
+            {
+                if (columns[i].DataType == "bit") { continue; }
+
+                valuehex = rowdatahex.Substring(cols[i].offset * 2, cols[i].physicallength * 2);
+                columns[i].ValueHexCompression = valuehex;
+                columns[i].IsNull = (cols[i].offset == 0 && cols[i].length == 0 ? true : false);
+
+                if (columns[i].IsNull == false)
+                {
+                    if (RowCompressionAffectsStorage.Contains(columns[i].DataType) == false)
+                    {
+                        columns[i].ValueHex = valuehex;
+                        switch (columns[i].DataType)
+                        {
+                            case "tinyint":
+                                columns[i].Value = Convert.ToInt32(valuehex.ToByteArray()[0]);
+                                break;
+                            case "smalldatetime":
+                                columns[i].Value = TranslateData_SmallDateTime(valuehex.ToByteArray(), 0);
+                                break;
+                            case "date":
+                                columns[i].Value = TranslateData_Date(valuehex.ToByteArray(), 0);
+                                break;
+                            case "time":
+                                columns[i].Value = TranslateData_Time(valuehex.ToByteArray(), 0, columns[i].Length, columns[i].Scale);
+                                break;
+                            case "varchar":
+                                vc = new FVarColumnInfo() { InRow = true, FLogContents = valuehex };
+                                (columns[i].ValueHex, columns[i].Value) = TranslateData_VarChar(valuehex.ToByteArray(), vc, false);
+                                break;
+                            case "nvarchar":
+                                vc = new FVarColumnInfo() { InRow = true, FLogContents = valuehex };
+                                (columns[i].ValueHex, columns[i].Value) = TranslateData_VarChar(valuehex.ToByteArray(), vc, true);
+                                break;
+                            case "xml":
+                                vc = new FVarColumnInfo() { FLogContents = valuehex };
+                                (_, columns[i].Value) = TranslateData_XML(vc);
+                                break;
+                        }
+                    }
+                    else
+                    {
+                        switch (columns[i].DataType)
+                        {
+                            case "smallint":
+                                columns[i].ValueHex = UnCompression_SMALLINT(valuehex);
+                                columns[i].Value = BitConverter.ToInt16(columns[i].ValueHex.ToByteArray(), 0);
+                                break;
+                            case "int":
+                                columns[i].ValueHex = UnCompression_INT(valuehex);
+                                columns[i].Value = BitConverter.ToInt32(columns[i].ValueHex.ToByteArray(), 0);
+                                break;
+                            case "bigint":
+                                columns[i].ValueHex = UnCompression_BIGINT(valuehex);
+                                columns[i].Value = BitConverter.ToInt64(columns[i].ValueHex.ToByteArray(), 0);
+                                break;
+                            case "decimal":
+                                columns[i].ValueHex = valuehex;
+                                columns[i].Value = TranslateData_VarDecimal(valuehex);
+                                break;
+                            case "bit":
+                                break;
+                            case "smallmoney":
+                                columns[i].ValueHex = UnCompression_SMALLMONEY(valuehex);
+                                columns[i].Value = TranslateData_SmallMoney(columns[i].ValueHex.ToByteArray(), 0);
+                                break;
+                            case "money":
+                                columns[i].ValueHex = UnCompression_MONEY(valuehex);
+                                columns[i].Value = TranslateData_Money(columns[i].ValueHex.ToByteArray(), 0);
+                                break;
+                            case "float":
+                                columns[i].ValueHex = UnCompression_FLOAT(valuehex, columns[i].Length);
+                                columns[i].Value = TranslateData_Float(columns[i].ValueHex.ToByteArray(), 0, columns[i].Length);
+                                break;
+                            case "real":
+                                columns[i].ValueHex = UnCompression_REAL(valuehex, columns[i].Length);
+                                columns[i].Value = TranslateData_Real(columns[i].ValueHex.ToByteArray(), 0, columns[i].Length);
+                                break;
+                            case "datetime":
+                                columns[i].ValueHex = UnCompression_DATETIME(valuehex);
+                                columns[i].Value = TranslateData_DateTime(columns[i].ValueHex.ToByteArray(), 0);
+                                break;
+                            case "datetime2":
+                                columns[i].ValueHex = valuehex;
+                                columns[i].Value = TranslateData_DateTime2(columns[i].ValueHex.ToByteArray(), 0, columns[i].Length, columns[i].Scale);
+                                break;
+                            case "datetimeoffset":
+                                columns[i].ValueHex = valuehex;
+                                columns[i].Value = TranslateData_DateTimeOffset(columns[i].ValueHex.ToByteArray(), 0, columns[i].Length, columns[i].Scale);
+                                break;
+                            case "char":
+                                columns[i].ValueHex = valuehex;
+                                columns[i].Value = System.Text.Encoding.Default.GetString(columns[i].ValueHex.ToByteArray(), 0, valuehex.Length / 2).TrimEnd();
+                                break;
+                            case "nchar":
+                                columns[i].ValueHex = UnCompression_NCHAR(valuehex);
+                                columns[i].Value = System.Text.Encoding.Unicode.GetString(columns[i].ValueHex.ToByteArray(), 0, columns[i].ValueHex.Length / 2).TrimEnd();
+                                break;
+                            case "binary":
+                                columns[i].ValueHex = UnCompression_BINARY(valuehex, columns[i].Length);
+                                columns[i].Value = TranslateData_Binary(columns[i].ValueHex.ToByteArray(), 0, columns[i].Length);
+                                break;
+                            case "timestamp":
+                                columns[i].ValueHex = valuehex;
+                                columns[i].Value = "null";
+                                break;
+                            default:
+                                columns[i].ValueHex = valuehex;
+                                break;
+                        }
+                    }
+                }
+            }
+
+        }
+
+        private string UnCompression_SMALLINT(string pcvalue)
+        {
+            string rvalue, sg;
+
+            if (pcvalue == "")
+            {
+                rvalue = "00".Replicate(2); // Note: NULL and 0 values across all data types are optimized and take no bytes.
+            }
+            else
+            {
+                sg = (pcvalue.ToBinaryString().StartsWith("1") ? "0" : "1");
+                rvalue = pcvalue.ToBinaryString().Stuff(0, 1, sg).ToHexString();
+                rvalue = rvalue.ToByteArray().Reverse().ToArray().ToText();
+                rvalue = rvalue + (pcvalue.ToBinaryString().StartsWith("1") ? "00" : "FF").Replicate(2 - pcvalue.Length / 2);
+            }
+
+            return rvalue;
+        }
+
+        private string UnCompression_INT(string pcvalue)
+        {
+            string rvalue, sg;
+
+            if (pcvalue == "")
+            {
+                rvalue = "00".Replicate(4); // Note: NULL and 0 values across all data types are optimized and take no bytes.
+            }
+            else
+            {
+                sg = (pcvalue.ToBinaryString().StartsWith("1") ? "0" : "1");
+                rvalue = pcvalue.ToBinaryString().Stuff(0, 1, sg).ToHexString();
+                rvalue = rvalue.ToByteArray().Reverse().ToArray().ToText();
+                rvalue = rvalue + (pcvalue.ToBinaryString().StartsWith("1") ? "00" : "FF").Replicate(4 - pcvalue.Length / 2);
+            }
+
+            return rvalue;
+        }
+
+        private string UnCompression_BIGINT(string pcvalue)
+        {
+            string rvalue, sg;
+
+            if (pcvalue == "")
+            {
+                rvalue = "00".Replicate(8); // Note: NULL and 0 values across all data types are optimized and take no bytes.
+            }
+            else
+            {
+                sg = (pcvalue.ToBinaryString().StartsWith("1") ? "0" : "1");
+                rvalue = pcvalue.ToBinaryString().Stuff(0, 1, sg).ToHexString();
+                rvalue = rvalue.ToByteArray().Reverse().ToArray().ToText();
+                rvalue = rvalue + (pcvalue.ToBinaryString().StartsWith("1") ? "00" : "FF").Replicate(8 - pcvalue.Length / 2);
+            }
+
+            return rvalue;
+        }
+
+        private string UnCompression_SMALLMONEY(string pcvalue)
+        {
+            string rvalue, sg;
+
+            if (pcvalue == "")
+            {
+                rvalue = "00".Replicate(4); // Note: NULL and 0 values across all data types are optimized and take no bytes.
+            }
+            else
+            {
+                sg = (pcvalue.ToBinaryString().StartsWith("1") ? "0" : "1");
+                rvalue = pcvalue.ToBinaryString().Stuff(0, 1, sg).ToHexString();
+                rvalue = rvalue.ToByteArray().Reverse().ToArray().ToText();
+                rvalue = rvalue + (pcvalue.ToBinaryString().StartsWith("1") ? "00" : "FF").Replicate(4 - pcvalue.Length / 2);
+            }
+
+            return rvalue;
+        }
+
+        private string UnCompression_MONEY(string pcvalue)
+        {
+            string rvalue, sg;
+
+            if (pcvalue == "")
+            {
+                rvalue = "00".Replicate(8); // Note: NULL and 0 values across all data types are optimized and take no bytes.
+            }
+            else
+            {
+                sg = (pcvalue.ToBinaryString().StartsWith("1") ? "0" : "1");
+                rvalue = pcvalue.ToBinaryString().Stuff(0, 1, sg).ToHexString();
+                rvalue = rvalue.ToByteArray().Reverse().ToArray().ToText();
+                rvalue = rvalue + (pcvalue.ToBinaryString().StartsWith("1") ? "00" : "FF").Replicate(8 - pcvalue.Length / 2);
+            }
+
+            return rvalue;
+        }
+
+        private string UnCompression_FLOAT(string pcvalue, short len)
+        {
+            string rvalue;
+
+            if (pcvalue == "")
+            {
+                rvalue = "00".Replicate(len); // Note: NULL and 0 values across all data types are optimized and take no bytes.
+            }
+            else
+            {
+                rvalue = "00".Replicate(len - pcvalue.Length / 2) + pcvalue;
+            }
+
+            return rvalue;
+        }
+
+        private string UnCompression_REAL(string pcvalue, short len)
+        {
+            string rvalue;
+
+            if (pcvalue == "")
+            {
+                rvalue = "00".Replicate(len); // Note: NULL and 0 values across all data types are optimized and take no bytes.
+            }
+            else
+            {
+                rvalue = "00".Replicate(len - pcvalue.Length / 2) + pcvalue;
+            }
+
+            return rvalue;
+        }
+
+        private string UnCompression_DATETIME(string pcvalue)
+        {
+            string rvalue, sg;
+
+            if (pcvalue == "")
+            {
+                rvalue = "00".Replicate(8); // Note: NULL and 0 values across all data types are optimized and take no bytes.
+            }
+            else
+            {
+                sg = (pcvalue.ToBinaryString().StartsWith("1") ? "0" : "1");
+                rvalue = pcvalue.ToBinaryString().Stuff(0, 1, sg).ToHexString();
+                rvalue = rvalue.ToByteArray().Reverse().ToArray().ToText();
+                rvalue = rvalue + (pcvalue.ToBinaryString().StartsWith("1") ? "00" : "FF").Replicate(8 - pcvalue.Length / 2);
+            }
+
+            return rvalue;
+        }
+
+        private string UnCompression_NCHAR(string pcvalue)
+        {
+            string rvalue, t, n;
+            int i;
+
+            if ((pcvalue.Length / 2) % 2 == 0)
+            {
+                rvalue = pcvalue;
+            }
+            else
+            {
+                rvalue = "";
+                for (i = 0; i <= pcvalue.Length - 2; i = i + 2)
+                {
+                    t = pcvalue.Substring(i, 2);
+                    n = (pcvalue.Length - 1 > i + 2 ? pcvalue.Substring(i + 2, 2) : "");
+
+                    if (t == "10" && i == pcvalue.Length - 2)
+                    {
+                        break;
+                    }
+
+                    if (t != "00" && n == "00")
+                    {
+                        rvalue = rvalue + t + n;
+                        i = i + 2;
+                        continue;
+                    }
+
+                    if (t == "0E")
+                    {
+                        i = i + 2;
+                        t = pcvalue.Substring(i, 2);
+                        n = pcvalue.Substring(i + 2, 2);
+
+                        rvalue = rvalue + n + t;
+                        i = i + 2;
+
+                        continue;
+                    }
+
+                    rvalue = rvalue + t + "00";
+                }
+            }
+
+            return rvalue;
+        }
+
+        private string UnCompression_BINARY(string pcvalue, short len)
+        {
+            string rvalue;
+
+            rvalue = pcvalue + "00".Replicate(len - pcvalue.Length / 2);
+
+            return rvalue;
+        }
+
+        private string TranslateData_VarDecimal(string pcvalue)
+        {
+            string rvalue, pcvalue2, sg, zs, ws;
+            int zsv, wsv;
+            double bv;
+
+            pcvalue2 = pcvalue.ToBinaryString();
+            sg = (pcvalue2.StartsWith("1") ? "" : "-");
+            zs = pcvalue2.Substring(1, 7);
+            ws = pcvalue2.Substring(8, pcvalue2.Length - 8);
+
+            zsv = Convert.ToInt32(zs, 2) - 64;
+            ws = ws + new string('0', 10 * Convert.ToInt32(Math.Ceiling(ws.Length / 10.0)) - ws.Length);
+            wsv = Convert.ToInt32(ws, 2);
+            bv = Convert.ToDouble(wsv.ToString().Insert(1, ".")) * Math.Pow(10, zsv);
+            rvalue = $"{sg}{bv.ToString()}";
+
+            return rvalue;
         }
 
         private (TableInformation, TableColumn[]) GetTableInfo(string pSchemaName, string pTablename)
@@ -1560,6 +2098,17 @@ namespace DBLOG
                       + "                                       and i.type=5) then 1 else 0 end as bit); ";
             tableinfo.IsColumnStore = DB.Query<bool>(stsql, false).FirstOrDefault();
 
+            // DataCompressionType
+            stsql = "select PartitionId=p.partition_id, "
+                    + "     CompressionType=case p.data_compression when 0 then N'NONE' when 1 then N'ROW' when 2 then N'PAGE' when 3 then N'COLUMNSTORE' when 4 then N'COLUMNSTORE_ARCHIVE' else N'' end "
+                    + "  from sys.tables t "
+                    + "  join sys.schemas s on t.schema_id=s.schema_id "
+                    + "  join sys.partitions p on t.object_id=p.object_id "
+                    + $" where s.name=N'{pSchemaName}' "
+                    + $" and t.name=N'{pTablename}' "
+                    + "  and p.index_id<=1; ";
+            tableinfo.DataCompressionType = DB.Query<(long PartitionId, CompressionType CompressionType)>(stsql, false).ToDictionary(p => p.PartitionId, p => p.CompressionType);
+
             stsql = "select cast(("
                         + "select ColumnID,ColumnName,DataType,PhysicalStorageType,Length,Precision,IsNullable,Scale,IsIdentity,IsComputed,LeafOffset,LeafNullBit,IsHidden,GraphType "
                         + " from (select 'ColumnID'=b.column_id, "
@@ -1600,7 +2149,6 @@ namespace DBLOG
             return (tableinfo, tablecolumns);
         }
 
-        // 解析表结构定义(XML).
         public TableColumn[] AnalyzeTablelayout(string TableLayout)
         {
             int i;
@@ -1805,13 +2353,11 @@ namespace DBLOG
         #region 翻译字段值
         private string TranslateData_Bit(byte[] data, TableColumn[] columns, int iCurrentIndex, string sColumnName, short sBitColumnCount, byte[] m_bBitColumnData0, short sBitColumnDataIndex0, ref int iJumpIndexLength, ref byte[] m_bBitColumnData1, ref short sBitColumnDataIndex1)
         {
-            string rBit;
+            string rBit, sBitColumnData2;
+            short i, sCurrentColumnIDinBit;  // 当前字段为第几个Bit类型字段
+
             m_bBitColumnData1 = m_bBitColumnData0;
             sBitColumnDataIndex1 = sBitColumnDataIndex0;
-
-            short i;
-            short sCurrentColumnIDinBit;  // 当前字段为第几个Bit类型字段
-
             sCurrentColumnIDinBit = 0;
             for (i = 0; i <= columns.Length - 1; i++)
             {
@@ -1830,7 +2376,6 @@ namespace DBLOG
                 iJumpIndexLength = iJumpIndexLength + 1;
             }
 
-            string sBitColumnData2;
             sBitColumnData2 = string.Empty;
             for (i = sBitColumnDataIndex1; i >= 0; i--)
             {
@@ -1838,30 +2383,29 @@ namespace DBLOG
             }
 
             sBitColumnData2 = sBitColumnData2.Reverse();   // 字符串反转
-
             rBit = sBitColumnData2.Substring(sCurrentColumnIDinBit - 1, 1);
+
             return rBit;
         }
 
         private string TranslateData_Date(byte[] data, int iCurrentIndex)
         {
-            string returnDate;
+            string returnDate, hDate;
+            DateTime date1;
+            byte[] bDate;
+            int days_date;
 
-            System.DateTime date1 = new DateTime(1900, 1, 1, 0, 0, 0);
-
-            byte[] bDate = new byte[3];
+            date1 = new DateTime(1900, 1, 1, 0, 0, 0);
+            bDate = new byte[3];
             Array.Copy(data, iCurrentIndex, bDate, 0, 3);
 
-            string hDate;
             hDate = "";
             foreach (byte b in bDate)
             {
                 hDate = b.ToString("X2") + hDate;
             }
 
-            int days_date = Convert.ToInt32(hDate, 16);
-            days_date = days_date - 693595;
-
+            days_date = Convert.ToInt32(hDate, 16) - 693595;
             date1 = date1.AddDays(days_date);
             returnDate = date1.ToString("yyyy-MM-dd");
 
@@ -1871,15 +2415,18 @@ namespace DBLOG
         private string TranslateData_DateTime(byte[] data, int iCurrentIndex)
         {
             string sReturnDatetime;
-            System.DateTime date0 = new DateTime(1900, 1, 1, 0, 0, 0);
+            DateTime date0;
+            int second, days;
+
+            date0 = new DateTime(1900, 1, 1, 0, 0, 0);
 
             // 前四个字节  以1/300秒保存
-            int second = BitConverter.ToInt32(data, iCurrentIndex);
+            second = BitConverter.ToInt32(data, iCurrentIndex);
             date0 = date0.AddMilliseconds(second * 3.3333333333);
             iCurrentIndex = iCurrentIndex + 4;
 
             // 后四个字节  为1900-1-1后的天数
-            int days = BitConverter.ToInt32(data, iCurrentIndex);
+            days = BitConverter.ToInt32(data, iCurrentIndex);
             date0 = date0.AddDays(days);
 
             sReturnDatetime = date0.ToString("yyyy-MM-dd HH:mm:ss.fff");
@@ -1932,7 +2479,7 @@ namespace DBLOG
             Array.Copy(data, iCurrentIndex, bDatetime2, 0, sLength);
             sTime = TranslateData_Time(bDatetime2, 0, (short)(sLength - 3), sScale);
             sDate = TranslateData_Date(bDatetime2, sLength - 3);
-            sReturnDatetime2 = sDate + " " + sTime;
+            sReturnDatetime2 = $"{sDate} {sTime}";
 
             return sReturnDatetime2;
         }
@@ -1941,8 +2488,10 @@ namespace DBLOG
         {
             string sReturnDateTimeOffset, sDate, sTime, sOffset;
             short sSignOffset, iOffset;
+            byte[] bDateTimeOffset;
+            DateTime d0;
 
-            byte[] bDateTimeOffset = new byte[sLength];
+            bDateTimeOffset = new byte[sLength];
             Array.Copy(data, iCurrentIndex, bDateTimeOffset, 0, sLength);
 
             // offset
@@ -1954,9 +2503,8 @@ namespace DBLOG
                 iOffset = (short)(Convert.ToInt16("FFF", 16) + 1 - iOffset);
             }
 
-            DateTime d0 = new DateTime(1900, 1, 1, 0, 0, 0);
+            d0 = new DateTime(1900, 1, 1, 0, 0, 0);
             d0 = d0.AddMinutes(iOffset);
-
             sOffset = (sSignOffset == 1 ? "+" : "-") + d0.ToString("HH:mm");
 
             // date
@@ -2058,20 +2606,15 @@ namespace DBLOG
 
         private string TranslateData_SmallMoney(byte[] data, int iCurrentIndex)
         {
-            string sReturnSmallMoney;
+            string sReturnSmallMoney, sSign, sSmallMoneyHex, sSmallMoney;
+            byte[] bSmallMoney;
+            short iSmallMoney;
+            BigInteger bigintSmallMoney;
 
-            byte[] bSmallMoney = new byte[4];
+            bSmallMoney = new byte[4];
             Array.Copy(data, iCurrentIndex, bSmallMoney, 0, 4);
 
-            string sSign;
-            if (bSmallMoney[3].ToBinaryString().Substring(7, 1) == "0")
-            { sSign = ""; }
-            else
-            { sSign = "-"; }
-
-            string sSmallMoneyHex, sSmallMoney, sTemp;
-            short iSmallMoney;
-
+            sSign = (bSmallMoney[3].ToBinaryString().Substring(7, 1) == "0" ? "" : "-");
             sSmallMoneyHex = "";
             for (iSmallMoney = 3; iSmallMoney >= 0; iSmallMoney--)
             {
@@ -2080,21 +2623,14 @@ namespace DBLOG
 
             sSmallMoney = BigInteger.Parse(sSmallMoneyHex, System.Globalization.NumberStyles.HexNumber).ToString();
 
-            if (sSign == "")
-            { // 正数
-
-            }
-            else
-            { // 负数
-                BigInteger bigintSmallMoney;
+            if (sSign != "")
+            {   // 负数
                 bigintSmallMoney = BigInteger.Parse("FFFFFFFF", System.Globalization.NumberStyles.HexNumber) + 1
                                    - BigInteger.Parse(sSmallMoneyHex, System.Globalization.NumberStyles.HexNumber);
-
                 sSmallMoney = bigintSmallMoney.ToString();
             }
 
-            sTemp = new string('0', (sSmallMoney.Length < 5 ? 5 - sSmallMoney.Length : 0));
-            sSmallMoney = sTemp + sSmallMoney;
+            sSmallMoney = "0".Replicate((sSmallMoney.Length < 5 ? 5 - sSmallMoney.Length : 0)) + sSmallMoney;
             sSmallMoney = sSmallMoney.Insert(sSmallMoney.Length - 4, ".");
 
             if (sSign == "-" && sSmallMoney.StartsWith("-"))
@@ -2102,7 +2638,6 @@ namespace DBLOG
                 sSign = "";
                 sSmallMoney = sSmallMoney.Stuff(0, 1, "");
             }
-
             sReturnSmallMoney = sSign + sSmallMoney;
 
             return sReturnSmallMoney;
@@ -2118,11 +2653,7 @@ namespace DBLOG
             bDecimal = new byte[sLength];
             Array.Copy(data, iCurrentIndex, bDecimal, 0, sLength);
 
-            sSignDecimal = 1;
-            if (bDecimal[0].ToString("X2") == "00")
-            {
-                sSignDecimal = -1;
-            }
+            sSignDecimal = Convert.ToInt16(bDecimal[0].ToString("X2") == "00" ? -1 : 1);
 
             sDecimalHex = "";
             for (iDecimal = 1; iDecimal <= bDecimal.Length - 1; iDecimal++)
@@ -2141,29 +2672,23 @@ namespace DBLOG
 
         private string TranslateData_Real(byte[] data, int iCurrentIndex, short sLenth)
         {
-            string sReturnReal;
-
-            byte[] bReal = new byte[sLenth];
-            Array.Copy(data, iCurrentIndex, bReal, 0, sLenth);
-
+            string sReturnReal, sExpReal, sFractionReal;
+            byte[] bReal;
             short sSignReal;
-            sSignReal = 1;
-            if (bReal[3].ToBinaryString().Substring(0, 1) == "1")
-            {
-                sSignReal = -1;
-            }
+            int iExpReal, iReal;
+            double dFractionReal;
+
+            bReal = new byte[sLenth];
+            Array.Copy(data, iCurrentIndex, bReal, 0, sLenth);
+            
+            sSignReal = Convert.ToInt16(bReal[3].ToBinaryString().Substring(0, 1) == "1" ? -1 : 1);
 
             // 指数
-            string sExpReal;
-            int iExpReal;
             sExpReal = bReal[3].ToBinaryString().Substring(1, 7)
                        + bReal[2].ToBinaryString().Substring(0, 1);
             iExpReal = Convert.ToInt32(sExpReal, 2);
 
             // 尾数
-            string sFractionReal;
-            int iReal;
-            double dFractionReal;
             sFractionReal = bReal[2].ToBinaryString().Substring(1, 7)
                             + bReal[1].ToBinaryString()
                             + bReal[0].ToBinaryString();
@@ -2201,16 +2726,11 @@ namespace DBLOG
             bFloat = new byte[sLenth];
             Array.Copy(data, iCurrentIndex, bFloat, 0, sLenth);
 
-            sSignFloat = 1;
-            if (bFloat[7].ToBinaryString().Substring(0, 1) == "1")
-            {
-                sSignFloat = -1;
-            }
+            sSignFloat = Convert.ToInt16(bFloat[7].ToBinaryString().Substring(0, 1) == "1" ? -1 : 1);
 
             // 指数
             sExpFloat = bFloat[sLenth - 1].ToBinaryString().Substring(1, 7)
                         + bFloat[sLenth - 2].ToBinaryString().Substring(0, 4);
-
             iExpFloat = Convert.ToInt32(sExpFloat, 2);
 
             // 尾数
@@ -2574,7 +3094,7 @@ namespace DBLOG
             return (fvaluehex, fvalue);
         }
 
-        private (string, string) TranslateData_XML(byte[] data, FVarColumnInfo pvc)
+        private (string, string) TranslateData_XML(FVarColumnInfo pvc)
         {
             int i, length;
             string fvaluehex, fvalue, logcont, nlen1, nlen2, ncont, nvalue, f0type, lastnode;
@@ -3057,5 +3577,6 @@ namespace DBLOG
         public string table { get; set; }
         public int id { get; set; }
     }
+
 
 }
