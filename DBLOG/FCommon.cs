@@ -345,7 +345,14 @@ namespace DBLOG
             }
             else
             {
-                r = DataCompressionType[Convert.ToInt64(partitionid)];
+                if (DataCompressionType.ContainsKey(Convert.ToInt64(partitionid)) == true)
+                {
+                    r = DataCompressionType[Convert.ToInt64(partitionid)];
+                }
+                else
+                {
+                    r = CompressionType.NONE;
+                }
             }
 
             return r;

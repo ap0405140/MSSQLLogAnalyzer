@@ -151,8 +151,6 @@ namespace DBLOG
                                      log.Operation == "LOP_MODIFY_ROW"
                                      && DRTemp[0]["MR1TEXT"].ToString().Contains(log.RowLog_Contents_1.ToText()) == true
                                     )
-                                    //||
-                                    //(compressiontype != CompressionType.NONE)
                                    )
                                )
                             {
@@ -1126,8 +1124,9 @@ namespace DBLOG
             }
 
             index2 = Convert.ToInt32(rowdata[3].ToString("X2") + rowdata[2].ToString("X2"), 16);  // 指针暂先跳过所有定长字段的值
-            AllColumnCountLog = BitConverter.ToInt16(rowdata, index2);
+            if (index2 > rowdata.Length - 2) { return; }
 
+            AllColumnCountLog = BitConverter.ToInt16(rowdata, index2);
             index2 = index2 + 2;
 
             if (AllColumnCount == AllColumnCountLog)
