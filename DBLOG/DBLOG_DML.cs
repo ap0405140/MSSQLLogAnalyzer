@@ -78,8 +78,9 @@ namespace DBLOG
             bool isfound;
             DataRow[] DRTemp;
             SQLGraphNode tj;
-            FPageInfo tpageinfo;
             CompressionType compressiontype;
+            List<FLOG> wslog;
+            FLOG llog;
 
             logs = new List<DatabaseLog>();
             ColumnList = string.Join(",", TableColumns
@@ -118,16 +119,42 @@ namespace DBLOG
                                                     ||
                                                     (TableInfos.IsColumnStore == true && p.AllocUnitName.StartsWith(stemp) == true)
                                                    )
+                                                   && 
+                                                   (
+                                                    p.Operation == "LOP_INSERT_ROWS"
+                                                    || p.Operation == "LOP_DELETE_ROWS"
+                                                    || ((p.Operation == "LOP_MODIFY_ROW" || p.Operation == "LOP_MODIFY_COLUMNS") && IsLCXTEXT(p) == false)
+                                                   )
                                              )
-                                       .OrderByDescending(p => p.Transaction_ID)
-                                       .OrderBy(p => (IsLCXTEXT(p) ? 1 : 2))
-                                       .OrderByDescending(p => p.Current_LSN)
+                                       .OrderByDescending(p => p.Transaction_ID + p.Current_LSN)
                     )
             {
                 try
                 {
+                    if (log.Operation == "LOP_MODIFY_ROW" || log.Operation == "LOP_MODIFY_COLUMNS")
+                    {
+                        llog = DTLogs
+                               .Where(p => p.Transaction_ID == log.Transaction_ID
+                                           && string.Compare(p.Current_LSN, log.Current_LSN) == -1
+                                           && IsLCXTEXT(p) == false)
+                               .OrderByDescending(p => p.Current_LSN)
+                               .FirstOrDefault();
+                        stemp = (llog != null ? llog.Current_LSN : "");
+                        wslog = DTLogs
+                                .Where(p => p.Transaction_ID == log.Transaction_ID
+                                            && IsLCXTEXT(p) == true
+                                            && string.Compare(p.Current_LSN, log.Current_LSN) == -1
+                                            && string.Compare(p.Current_LSN, stemp) == 1
+                                      )
+                                .ToList();
+                    }
+                    else
+                    {
+                        wslog = new List<FLOG>();
+                    }
+
 #if DEBUG
-                    FCommon.WriteTextFile(LogFile, $"TRANID={log.Transaction_ID} LSN={log.Current_LSN},Operation={log.Operation} ");
+                    FCommon.WriteTextFile(LogFile, $"TRANID={log.Transaction_ID} LSN={log.Current_LSN},LSN2={string.Join(",", wslog.Select(x => x.Current_LSN))},Operation={log.Operation} ");
 #endif
 
                     if (IsLCXTEXT(log) == false)
@@ -221,7 +248,7 @@ namespace DBLOG
                         WhereList1 = string.Empty;
                         WhereList0 = string.Empty;
                         MR0 = new byte[1];
-                        
+
                         switch (log.Operation)
                         {
                             // Insert / Delete
@@ -376,7 +403,7 @@ namespace DBLOG
                             case "LOP_MODIFY_COLUMNS":
                                 if (MR1 != null)
                                 {
-                                    AnalyzeUpdate(log, MR1, ref ValueList1, ref ValueList0, ref WhereList1, ref WhereList0, ref MR0);
+                                    AnalyzeUpdate(log, MR1, wslog, ref ValueList1, ref ValueList0, ref WhereList1, ref WhereList0, ref MR0);
                                     if (ValueList1.Length > 0)
                                     {
                                         REDOSQL = $"update top(1) [{SchemaName}].[{TableName}] set {ValueList1} where {WhereList1}; ";
@@ -436,54 +463,14 @@ namespace DBLOG
                     }
                     else
                     {
-                        tpageinfo = GetPageInfo(log.Page_ID);
-                        stemp = tpageinfo.PageData;
-
-                        if (log.Operation == "LOP_FORMAT_PAGE")
-                        {
-                            lobpagedata.Remove(log.Page_ID);
-                            if (PrevPages == null)
-                            {
-                                PrevPages = new List<(string, string)>();
-                            }
-                            else
-                            {
-                                if (PrevPages.Any(p => p.pageid == log.Page_ID) == true)
-                                {
-                                    PrevPages.RemoveAll(p => p.pageid == log.Page_ID);
-                                }
-                            }
-                            PrevPages.Add((log.Page_ID, log.Current_LSN));
-                        }
-                        else
-                        {
-                            if (log.Operation == "LOP_INSERT_ROWS")
-                            {
-                                stemp = stemp.Stuff(tpageinfo.SlotBeginIndex[Convert.ToInt32(log.Slot_ID)] * 2 + (log.Offset_in_Row ?? 0),
-                                                    log.RowLog_Contents_0.Length * 2,
-                                                    log.RowLog_Contents_0.ToText());
-                            }
-
-                            if (log.Operation == "LOP_MODIFY_ROW")
-                            {
-                                if (tpageinfo.SlotBeginIndex.Length - 1 >= log.Slot_ID)
-                                {
-                                    stemp = stemp.Stuff(tpageinfo.SlotBeginIndex[Convert.ToInt32(log.Slot_ID)] * 2 + (log.Offset_in_Row ?? 0), //Convert.ToInt32((96 + OffsetinRow) * 2),
-                                                        log.RowLog_Contents_1.Length * 2, // (ModifySize ?? 0)
-                                                        log.RowLog_Contents_0.ToText());
-                                }
-                            }
-
-                            lobpagedata[log.Page_ID].PageData = stemp;
-                        }
+                        FRestoreLCXTEXT(log);
                     }
-
-                }
+            }
                 catch (Exception ex)
                 {
 #if DEBUG
-                    stemp = $"Message:{(ex.Message ?? "")}  StackTrace:{(ex.StackTrace ?? "")} ";
-                    throw new Exception(stemp);
+                stemp = $"Message:{(ex.Message ?? "")}  StackTrace:{(ex.StackTrace ?? "")} ";
+                throw new Exception(stemp);
 #else
                         tmplog = new DatabaseLog();
                         tmplog.LSN = log.Current_LSN;
@@ -498,11 +485,74 @@ namespace DBLOG
                         tmplog.Message = "";
                         logs.Add(tmplog);
 #endif
-                }
-
             }
 
+        }
+
             return logs;
+        }
+
+        private void FRestoreLCXTEXT(FLOG log)
+        {
+            FPageInfo tpageinfo;
+            string stemp;
+
+            tpageinfo = GetPageInfo(log.Page_ID);
+            stemp = tpageinfo.PageData;
+
+            if (log.Operation == "LOP_FORMAT_PAGE")
+            {
+                lobpagedata.Remove(log.Page_ID);
+                if (PrevPages == null)
+                {
+                    PrevPages = new List<(string, string)>();
+                }
+                else
+                {
+                    if (PrevPages.Any(p => p.pageid == log.Page_ID) == true)
+                    {
+                        PrevPages.RemoveAll(p => p.pageid == log.Page_ID);
+                    }
+                }
+                PrevPages.Add((log.Page_ID, log.Current_LSN));
+            }
+            else
+            {
+                if (tpageinfo.SlotBeginIndex == null)
+                {
+                    tpageinfo.SlotBeginIndex = new int[tpageinfo.SlotCnt];
+                }
+
+                if (log.Operation == "LOP_INSERT_ROWS")
+                {
+                    if (log.Slot_ID <= tpageinfo.SlotBeginIndex.Length - 1)
+                    {
+                        stemp = stemp.Stuff(tpageinfo.SlotBeginIndex[Convert.ToInt32(log.Slot_ID)] * 2 + (log.Offset_in_Row ?? 0),
+                                            log.RowLog_Contents_0.Length * 2,
+                                            log.RowLog_Contents_0.ToText());
+                    }
+                }
+
+                if (log.Operation == "LOP_MODIFY_ROW")
+                {
+                    if (tpageinfo.SlotBeginIndex.Length - 1 >= log.Slot_ID)
+                    {
+                        stemp = stemp.Stuff(tpageinfo.SlotBeginIndex[Convert.ToInt32(log.Slot_ID)] * 2 + (log.Offset_in_Row ?? 0), //Convert.ToInt32((96 + OffsetinRow) * 2),
+                                            log.RowLog_Contents_1.Length * 2, // (ModifySize ?? 0)
+                                            log.RowLog_Contents_0.ToText());
+                    }
+                }
+
+                if (log.Operation == "LOP_DELETE_ROWS")
+                {
+                    tpageinfo.SlotBeginIndex[Convert.ToInt32(log.Slot_ID)] = 96 + 84 * Convert.ToInt32(log.Slot_ID);
+                    stemp = stemp.Stuff(tpageinfo.SlotBeginIndex[Convert.ToInt32(log.Slot_ID)] * 2 + (log.Offset_in_Row ?? 0),
+                                        log.RowLog_Contents_0.Length * 2,
+                                        log.RowLog_Contents_0.ToText());
+                }
+
+                lobpagedata[log.Page_ID].PageData = stemp;
+            }
         }
 
         private bool IsLCXTEXT(FLOG log)
@@ -627,7 +677,7 @@ namespace DBLOG
             return mr1;
         }
 
-        private FPageInfo GetPageInfo(string pPageID)
+        private FPageInfo GetPageInfo(string pageid)
         {
             FPageInfo r;
             List<string> ds;
@@ -636,7 +686,8 @@ namespace DBLOG
             (string pageid, string lsn) pp;
             List<FLOG> prevtran;
 
-            pp = (PrevPages == null ? (null,null) : PrevPages.FirstOrDefault(p => p.pageid == pPageID));
+            pageid = pageid.ToLower();
+            pp = (PrevPages == null ? (null,null) : PrevPages.FirstOrDefault(p => p.pageid == pageid));
             if (pp.pageid != null)
             {
                 tsql = "set transaction isolation level read uncommitted; " 
@@ -672,24 +723,24 @@ namespace DBLOG
                 tmpstr = tmpstr + new string(' ', 42 * 2);
                 r.PageData = tmpstr;
 
-                if (lobpagedata.ContainsKey(pPageID) == true)
+                if (lobpagedata.ContainsKey(pageid) == true)
                 {
-                    lobpagedata.Remove(pPageID);
+                    lobpagedata.Remove(pageid);
                 }
-                lobpagedata.Add(pPageID, r);
+                lobpagedata.Add(pageid, r);
             }
             else
             {
-                if (lobpagedata.ContainsKey(pPageID) == true)
+                if (lobpagedata.ContainsKey(pageid) == true)
                 {
-                    r = lobpagedata[pPageID];
+                    r = lobpagedata[pageid];
                 }
                 else
                 {
                     r = new FPageInfo();
-                    r.FileNum = Convert.ToInt16(pPageID.Split(':')[0], 16);
-                    r.PageNum = Convert.ToInt32(pPageID.Split(':')[1], 16);
-                    r.FileNumPageNum_Hex = pPageID;
+                    r.FileNum = Convert.ToInt16(pageid.Split(':')[0], 16);
+                    r.PageNum = Convert.ToInt32(pageid.Split(':')[1], 16);
+                    r.FileNumPageNum_Hex = pageid;
 
                     stsql = "truncate table #temppagedatalob; ";
                     DB.ExecuteSQL(stsql, false);
@@ -719,9 +770,10 @@ namespace DBLOG
 
                     // SlotBeginIndex
                     r.SlotBeginIndex = new int[m_slotCnt];
-                    slotarray = r.PageData.Replace("†", "").Substring(r.PageData.Replace("†", "").Length - m_slotCnt * 2 * 2,
-                                                                      m_slotCnt * 2 * 2);
-
+                    slotarray = r
+                                .PageData
+                                .Replace("†", "")
+                                .Substring(r.PageData.Replace("†", "").Length - m_slotCnt * 2 * 2, m_slotCnt * 2 * 2);
                     for (i = 0, j = slotarray.Length - 2;
                          i <= m_slotCnt - 1;
                          i = i + 1, j = j - 4)
@@ -730,14 +782,14 @@ namespace DBLOG
                         r.SlotBeginIndex[i] = Convert.ToInt32(tmpstr, 16);
                     }
 
-                    lobpagedata.Add(pPageID, r);
+                    lobpagedata.Add(pageid, r);
                 }
             }
 
             return r;
         }
 
-        public void AnalyzeUpdate(FLOG curlog, byte[] mr1,
+        public void AnalyzeUpdate(FLOG curlog, byte[] mr1, List<FLOG> wslog,
                                   ref string ValueList1, ref string ValueList0, 
                                   ref string WhereList1, ref string WhereList0, 
                                   ref byte[] mr0)
@@ -774,6 +826,11 @@ namespace DBLOG
                 default:
                     mr0_str = mr1.ToText();
                     break;
+            }
+
+            foreach (FLOG lg in wslog.OrderByDescending(p => p.Current_LSN))
+            {
+                FRestoreLCXTEXT(lg);
             }
 
             mr0 = mr0_str.ToByteArray();
@@ -1795,6 +1852,7 @@ namespace DBLOG
 
         }
 
+        #region UnCompression
         private string UnCompression_SMALLINT(string pcvalue)
         {
             string rvalue, sg;
@@ -1997,38 +2055,7 @@ namespace DBLOG
 
             return rvalue;
         }
-
-        private string TranslateData_VarDecimal(string pcvalue)
-        {
-            string rvalue, pcvalue2, sg, zs, ws, wsvs;
-            int zsv, wsv, i;
-            double bv;
-
-            if (pcvalue.Length == 0)
-            {
-                rvalue = "0";
-            }
-            else
-            {
-                pcvalue2 = pcvalue.ToBinaryString();
-                sg = (pcvalue2.StartsWith("1") ? "" : "-");
-                zs = pcvalue2.Substring(1, 7);
-                ws = pcvalue2.Substring(8, pcvalue2.Length - 8);
-
-                zsv = Convert.ToInt32(zs, 2) - 64;
-                ws = ws + new string('0', 10 * Convert.ToInt32(Math.Ceiling(ws.Length / 10.0)) - ws.Length);
-                wsvs = "";
-                for (i = 0; i <= ws.Length / 10 - 1; i = i + 1)
-                {
-                    wsv = Convert.ToInt32(ws.Substring(i * 10, 10), 2);
-                    wsvs = wsvs + wsv.ToString().PadLeft(3, '0');
-                }
-                bv = Convert.ToDouble(wsvs.Insert(1, ".")) * Math.Pow(10, zsv);
-                rvalue = $"{sg}{bv.ToString()}";
-            }
-
-            return rvalue;
-        }
+        #endregion UnCompression
 
         private (TableInformation, TableColumn[]) GetTableInfo(string pSchemaName, string pTablename)
         {
@@ -2361,6 +2388,38 @@ namespace DBLOG
         }
 
         #region 翻译字段值
+        private string TranslateData_VarDecimal(string pcvalue)
+        {
+            string rvalue, pcvalue2, sg, zs, ws, wsvs;
+            int zsv, wsv, i;
+            double bv;
+
+            if (pcvalue.Length == 0)
+            {
+                rvalue = "0";
+            }
+            else
+            {
+                pcvalue2 = pcvalue.ToBinaryString();
+                sg = (pcvalue2.StartsWith("1") ? "" : "-");
+                zs = pcvalue2.Substring(1, 7);
+                ws = pcvalue2.Substring(8, pcvalue2.Length - 8);
+
+                zsv = Convert.ToInt32(zs, 2) - 64;
+                ws = ws + new string('0', 10 * Convert.ToInt32(Math.Ceiling(ws.Length / 10.0)) - ws.Length);
+                wsvs = "";
+                for (i = 0; i <= ws.Length / 10 - 1; i = i + 1)
+                {
+                    wsv = Convert.ToInt32(ws.Substring(i * 10, 10), 2);
+                    wsvs = wsvs + wsv.ToString().PadLeft(3, '0');
+                }
+                bv = Convert.ToDouble(wsvs.Insert(1, ".")) * Math.Pow(10, zsv);
+                rvalue = $"{sg}{bv.ToString()}";
+            }
+
+            return rvalue;
+        }
+
         private string TranslateData_Bit(byte[] data, TableColumn[] columns, int iCurrentIndex, string sColumnName, short sBitColumnCount, byte[] m_bBitColumnData0, short sBitColumnDataIndex0, ref int iJumpIndexLength, ref byte[] m_bBitColumnData1, ref short sBitColumnDataIndex1)
         {
             string rBit, sBitColumnData2;
