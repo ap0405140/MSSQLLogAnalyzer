@@ -119,12 +119,8 @@ namespace DBLOG
                                                     ||
                                                     (TableInfos.IsColumnStore == true && p.AllocUnitName.StartsWith(stemp) == true)
                                                    )
-                                                   && 
-                                                   (
-                                                    p.Operation == "LOP_INSERT_ROWS"
-                                                    || p.Operation == "LOP_DELETE_ROWS"
-                                                    || ((p.Operation == "LOP_MODIFY_ROW" || p.Operation == "LOP_MODIFY_COLUMNS") && IsLCXTEXT(p) == false)
-                                                   )
+                                                   &&
+                                                   IsLCXTEXT(p) == false
                                              )
                                        .OrderByDescending(p => p.Transaction_ID + p.Current_LSN)
                     )
@@ -150,327 +146,343 @@ namespace DBLOG
                     }
                     else
                     {
-                        wslog = new List<FLOG>();
+                        wslog = DTLogs
+                                .Where(p => p.Transaction_ID == log.Transaction_ID
+                                            && IsLCXTEXT(p) == true
+                                      )
+                                .ToList();
                     }
 
 #if DEBUG
                     FCommon.WriteTextFile(LogFile, $"TRANID={log.Transaction_ID} LSN={log.Current_LSN},LSN2={string.Join(",", wslog.Select(x => x.Current_LSN))},Operation={log.Operation} ");
 #endif
 
-                    if (IsLCXTEXT(log) == false)
+                    stsql = $"select top 1 BeginTime=substring(BeginTime,1,19),EndTime=substring(EndTime,1,19) from #TransactionList where TransactionID='{log.Transaction_ID}'; ";
+                    (BeginTime, EndTime) = DB.Query<(string BeginTime, string EndTime)>(stsql, false).FirstOrDefault();
+
+                    compressiontype = TableInfos.GetCompressionType(log.PartitionId);
+
+                    if (log.Operation == "LOP_MODIFY_ROW" || log.Operation == "LOP_MODIFY_COLUMNS")
                     {
-                        stsql = $"select top 1 BeginTime=substring(BeginTime,1,19),EndTime=substring(EndTime,1,19) from #TransactionList where TransactionID='{log.Transaction_ID}'; ";
-                        (BeginTime, EndTime) = DB.Query<(string BeginTime, string EndTime)>(stsql, false).FirstOrDefault();
+                        isfound = false;
+                        PrimaryKeyValue = "";
 
-                        compressiontype = TableInfos.GetCompressionType(log.PartitionId);
-
-                        if (log.Operation == "LOP_MODIFY_ROW" || log.Operation == "LOP_MODIFY_COLUMNS")
-                        {
-                            isfound = false;
-                            PrimaryKeyValue = "";
-
-                            DRTemp = DTMRlist.Select("PAGEID='" + log.Page_ID + "' and SlotID='" + log.Slot_ID.ToString() + "' and AllocUnitId='" + log.AllocUnitId.ToString() + "' ");
-                            if (DRTemp.Length > 0
-                                && (
-                                    (log.Operation == "LOP_MODIFY_COLUMNS")
-                                    ||
-                                    (
-                                     log.Operation == "LOP_MODIFY_ROW"
-                                     && DRTemp[0]["MR1TEXT"].ToString().Contains(log.RowLog_Contents_1.ToText()) == true
-                                    )
-                                   )
+                        DRTemp = DTMRlist.Select("PAGEID='" + log.Page_ID + "' and SlotID='" + log.Slot_ID.ToString() + "' and AllocUnitId='" + log.AllocUnitId.ToString() + "' ");
+                        if (DRTemp.Length > 0
+                            && (
+                                (log.Operation == "LOP_MODIFY_COLUMNS")
+                                ||
+                                (
+                                 log.Operation == "LOP_MODIFY_ROW"
+                                 && DRTemp[0]["MR1TEXT"].ToString().Contains(log.RowLog_Contents_1.ToText()) == true
+                                )
                                )
+                           )
+                        {
+                            isfound = true;
+                        }
+
+                        if (isfound == false && log.Operation == "LOP_MODIFY_ROW")
+                        {
+                            stemp = log.RowLog_Contents_2.ToText();
+                            if (stemp.Length >= 2)
                             {
-                                isfound = true;
-                            }
-
-                            if (isfound == false && log.Operation == "LOP_MODIFY_ROW")
-                            {
-                                stemp = log.RowLog_Contents_2.ToText();
-                                if (stemp.Length >= 2)
+                                switch (stemp.Substring(0, 2))
                                 {
-                                    switch (stemp.Substring(0, 2))
-                                    {
-                                        case "16":
-                                            PrimaryKeyValue = stemp.Substring(2, stemp.Length - 4 * 2);
-                                            break;
-                                        case "36":
-                                            PrimaryKeyValue = stemp.Substring(16);
-                                            break;
-                                        default:
-                                            PrimaryKeyValue = "";
-                                            break;
-                                    }
-                                }
-                                else
-                                {
-                                    PrimaryKeyValue = "";
-                                }
-
-                                DRTemp = DTMRlist.Select("PAGEID='" + log.Page_ID + "' and MR1TEXT like '%" + log.RowLog_Contents_1.ToText() + "%' and MR1TEXT like '%" + PrimaryKeyValue + "%' ");
-                                isfound = (DRTemp.Length > 0 ? true : false);
-                            }
-
-                            if (isfound == false)
-                            {
-                                MR1 = GetMR1(log, PrimaryKeyValue);
-                                SlotID = log.Slot_ID.ToString();
-
-                                if (MR1 != null)
-                                {
-                                    if (DRTemp.Length > 0)
-                                    {
-                                        DTMRlist.Rows.Remove(DRTemp[0]);
-                                    }
-
-                                    Mrtemp = DTMRlist.NewRow();
-                                    Mrtemp["PAGEID"] = log.Page_ID;
-                                    Mrtemp["SlotID"] = log.Slot_ID;
-                                    Mrtemp["AllocUnitId"] = log.AllocUnitId;
-                                    Mrtemp["MR1"] = MR1;
-                                    Mrtemp["MR1TEXT"] = MR1.ToText();
-
-                                    DTMRlist.Rows.Add(Mrtemp);
+                                    case "16":
+                                        PrimaryKeyValue = stemp.Substring(2, stemp.Length - 4 * 2);
+                                        break;
+                                    case "36":
+                                        PrimaryKeyValue = stemp.Substring(16);
+                                        break;
+                                    default:
+                                        PrimaryKeyValue = "";
+                                        break;
                                 }
                             }
                             else
                             {
-                                MR1 = (byte[])DRTemp[0]["MR1"];
-                                SlotID = DRTemp[0]["SlotID"].ToString();
+                                PrimaryKeyValue = "";
                             }
+
+                            DRTemp = DTMRlist.Select("PAGEID='" + log.Page_ID + "' and MR1TEXT like '%" + log.RowLog_Contents_1.ToText() + "%' and MR1TEXT like '%" + PrimaryKeyValue + "%' ");
+                            isfound = (DRTemp.Length > 0 ? true : false);
                         }
 
-                        stemp = string.Empty;
-                        REDOSQL = string.Empty;
-                        UNDOSQL = string.Empty;
-                        ValueList1 = string.Empty;
-                        ValueList0 = string.Empty;
-                        WhereList1 = string.Empty;
-                        WhereList0 = string.Empty;
-                        MR0 = new byte[1];
-
-                        switch (log.Operation)
+                        if (isfound == false)
                         {
-                            // Insert / Delete
-                            case "LOP_INSERT_ROWS":
-                            case "LOP_DELETE_ROWS":
-                                switch (compressiontype)
+                            MR1 = GetMR1(log, PrimaryKeyValue);
+                            SlotID = log.Slot_ID.ToString();
+
+                            if (MR1 != null)
+                            {
+                                if (DRTemp.Length > 0)
                                 {
-                                    case CompressionType.NONE:
-                                    case CompressionType.COLUMNSTORE:
-                                        SlotID = log.Slot_ID.ToString();
-                                        MinimumLength = 2 + TableColumns.Where(p => p.IsVarLenDataType == false).Sum(p => p.Length) + 2;
+                                    DTMRlist.Rows.Remove(DRTemp[0]);
+                                }
 
-                                        if (log.RowLog_Contents_0.Length >= MinimumLength)
+                                Mrtemp = DTMRlist.NewRow();
+                                Mrtemp["PAGEID"] = log.Page_ID;
+                                Mrtemp["SlotID"] = log.Slot_ID;
+                                Mrtemp["AllocUnitId"] = log.AllocUnitId;
+                                Mrtemp["MR1"] = MR1;
+                                Mrtemp["MR1TEXT"] = MR1.ToText();
+
+                                DTMRlist.Rows.Add(Mrtemp);
+                            }
+                        }
+                        else
+                        {
+                            MR1 = (byte[])DRTemp[0]["MR1"];
+                            SlotID = DRTemp[0]["SlotID"].ToString();
+                        }
+                    }
+
+                    stemp = string.Empty;
+                    REDOSQL = string.Empty;
+                    UNDOSQL = string.Empty;
+                    ValueList1 = string.Empty;
+                    ValueList0 = string.Empty;
+                    WhereList1 = string.Empty;
+                    WhereList0 = string.Empty;
+                    MR0 = new byte[1];
+
+                    switch (log.Operation)
+                    {
+                        // Insert / Delete
+                        case "LOP_INSERT_ROWS":
+                        case "LOP_DELETE_ROWS":
+                            switch (compressiontype)
+                            {
+                                case CompressionType.NONE:
+                                case CompressionType.COLUMNSTORE:
+                                    SlotID = log.Slot_ID.ToString();
+                                    MinimumLength = 2 + TableColumns.Where(p => p.IsVarLenDataType == false).Sum(p => p.Length) + 2;
+
+                                    if (log.RowLog_Contents_0.Length >= MinimumLength)
+                                    {
+                                        try
                                         {
-                                            try
-                                            {
-                                                TranslateData(log.RowLog_Contents_0, TableColumns);
-                                                MR0 = new byte[log.RowLog_Contents_0.Length];
-                                                MR0 = log.RowLog_Contents_0;
-                                            }
-                                            catch (Exception ex)
-                                            {
-                                                DRTemp = DTMRlist.Select("PAGEID='" + log.Page_ID + "' and SlotID='" + log.Slot_ID.ToString() + "' and AllocUnitId='" + log.AllocUnitId.ToString() + "' ");
-                                                if (DRTemp.Length > 0)
-                                                {
-                                                    MR0 = (byte[])DRTemp[0]["MR1"];
-                                                }
-                                                else
-                                                {
-                                                    MR0 = GetMR1(log, "");
-                                                }
-
-                                                if (MR0.Length < MinimumLength) { continue; }
-                                                TranslateData(MR0, TableColumns);
-                                            }
+                                            TranslateData(log.RowLog_Contents_0, TableColumns);
+                                            MR0 = new byte[log.RowLog_Contents_0.Length];
+                                            MR0 = log.RowLog_Contents_0;
                                         }
-                                        else
+                                        catch (Exception ex)
                                         {
-                                            MR0 = GetMR1(log, "");
+                                            DRTemp = DTMRlist.Select("PAGEID='" + log.Page_ID + "' and SlotID='" + log.Slot_ID.ToString() + "' and AllocUnitId='" + log.AllocUnitId.ToString() + "' ");
+                                            if (DRTemp.Length > 0)
+                                            {
+                                                MR0 = (byte[])DRTemp[0]["MR1"];
+                                            }
+                                            else
+                                            {
+                                                MR0 = GetMR1(log, "");
+                                            }
+
                                             if (MR0.Length < MinimumLength) { continue; }
                                             TranslateData(MR0, TableColumns);
                                         }
-                                        break;
-                                    case CompressionType.ROW:
-                                    case CompressionType.PAGE:
-                                        MR0 = log.RowLog_Contents_0;
-                                        TranslateData_Compression(MR0, TableColumns);
-                                        break;
+                                    }
+                                    else
+                                    {
+                                        MR0 = GetMR1(log, "");
+                                        if (MR0.Length < MinimumLength) { continue; }
+                                        TranslateData(MR0, TableColumns);
+                                    }
+                                    break;
+                                case CompressionType.ROW:
+                                case CompressionType.PAGE:
+                                    MR0 = log.RowLog_Contents_0;
+                                    TranslateData_Compression(MR0, TableColumns);
+                                    break;
+                            }
+
+                            for (j = 0; j <= TableColumns.Length - 1; j++)
+                            {
+                                if (TableColumns[j].PhysicalStorageType == SqlDbType.Timestamp
+                                    || TableColumns[j].IsComputed == true
+                                    || TableColumns[j].IsHidden == true)
+                                {
+                                    continue;
                                 }
 
-                                for (j = 0; j <= TableColumns.Length - 1; j++)
+                                if ((TableInfos.IsNodeTable == true && j < 2)
+                                    || (TableInfos.IsEdgeTable == true && j < 8))
+
                                 {
-                                    if (TableColumns[j].PhysicalStorageType == SqlDbType.Timestamp
-                                        || TableColumns[j].IsComputed == true
-                                        || TableColumns[j].IsHidden == true)
-                                    {
-                                        continue;
+                                    tj = new SQLGraphNode { };
+
+                                    if (TableInfos.IsNodeTable == true)
+                                    {   // NodeTable
+                                        tj.type = "node";
+                                        tj.schema = SchemaName;
+                                        tj.table = TableName;
+                                        tj.id = Convert.ToInt32(TableColumns.FirstOrDefault(p => p.ColumnName.StartsWith("graph_id") == true).Value);
                                     }
-
-                                    if ((TableInfos.IsNodeTable == true && j < 2)
-                                        || (TableInfos.IsEdgeTable == true && j < 8))
-
-                                    {
-                                        tj = new SQLGraphNode { };
-
-                                        if (TableInfos.IsNodeTable == true)
-                                        {   // NodeTable
-                                            tj.type = "node";
+                                    else
+                                    {   // EdgeTable
+                                        if (TableColumns[j].ColumnName.StartsWith("$edge_id") == true)
+                                        {
+                                            tj.type = "edge";
                                             tj.schema = SchemaName;
                                             tj.table = TableName;
                                             tj.id = Convert.ToInt32(TableColumns.FirstOrDefault(p => p.ColumnName.StartsWith("graph_id") == true).Value);
                                         }
-                                        else
-                                        {   // EdgeTable
-                                            if (TableColumns[j].ColumnName.StartsWith("$edge_id") == true)
-                                            {
-                                                tj.type = "edge";
-                                                tj.schema = SchemaName;
-                                                tj.table = TableName;
-                                                tj.id = Convert.ToInt32(TableColumns.FirstOrDefault(p => p.ColumnName.StartsWith("graph_id") == true).Value);
-                                            }
-                                            if (TableColumns[j].ColumnName.StartsWith("$from_id") == true)
-                                            {
-                                                tj.type = "node";
-                                                stsql = "select schemaname=s.name,tablename=a.name "
-                                                        + " from sys.tables a "
-                                                        + " join sys.schemas s on a.schema_id=s.schema_id "
-                                                        + $" where a.object_id={TableColumns.FirstOrDefault(p => p.ColumnName.StartsWith("from_obj_id") == true).Value}; ";
-                                                (tj.schema, tj.table) = DB.Query<(string, string)>(stsql, false).FirstOrDefault();
-                                                tj.id = Convert.ToInt32(TableColumns.FirstOrDefault(p => p.ColumnName.StartsWith("from_id") == true).Value);
-                                            }
-                                            if (TableColumns[j].ColumnName.StartsWith("$to_id") == true)
-                                            {
-                                                tj.type = "node";
-                                                stsql = "select schemaname=s.name,tablename=a.name "
-                                                        + " from sys.tables a "
-                                                        + " join sys.schemas s on a.schema_id=s.schema_id "
-                                                        + $" where a.object_id={TableColumns.FirstOrDefault(p => p.ColumnName.StartsWith("to_obj_id") == true).Value}; ";
-                                                (tj.schema, tj.table) = DB.Query<(string, string)>(stsql, false).FirstOrDefault();
-                                                tj.id = Convert.ToInt32(TableColumns.FirstOrDefault(p => p.ColumnName.StartsWith("to_id") == true).Value);
-                                            }
+                                        if (TableColumns[j].ColumnName.StartsWith("$from_id") == true)
+                                        {
+                                            tj.type = "node";
+                                            stsql = "select schemaname=s.name,tablename=a.name "
+                                                    + " from sys.tables a "
+                                                    + " join sys.schemas s on a.schema_id=s.schema_id "
+                                                    + $" where a.object_id={TableColumns.FirstOrDefault(p => p.ColumnName.StartsWith("from_obj_id") == true).Value}; ";
+                                            (tj.schema, tj.table) = DB.Query<(string, string)>(stsql, false).FirstOrDefault();
+                                            tj.id = Convert.ToInt32(TableColumns.FirstOrDefault(p => p.ColumnName.StartsWith("from_id") == true).Value);
                                         }
-
-                                        TableColumns[j].IsNull = false;
-                                        TableColumns[j].Value = JsonConvert.SerializeObject(tj);
+                                        if (TableColumns[j].ColumnName.StartsWith("$to_id") == true)
+                                        {
+                                            tj.type = "node";
+                                            stsql = "select schemaname=s.name,tablename=a.name "
+                                                    + " from sys.tables a "
+                                                    + " join sys.schemas s on a.schema_id=s.schema_id "
+                                                    + $" where a.object_id={TableColumns.FirstOrDefault(p => p.ColumnName.StartsWith("to_obj_id") == true).Value}; ";
+                                            (tj.schema, tj.table) = DB.Query<(string, string)>(stsql, false).FirstOrDefault();
+                                            tj.id = Convert.ToInt32(TableColumns.FirstOrDefault(p => p.ColumnName.StartsWith("to_id") == true).Value);
+                                        }
                                     }
 
-                                    Value = ColumnValue2SQLValue(TableColumns[j]);
-                                    ValueList1 = ValueList1 + (ValueList1.Length > 0 ? "," : "") + Value;
-
-                                    if (TableInfos.PrimaryKeyColumns.Count == 0
-                                        || TableInfos.PrimaryKeyColumns.Contains(TableColumns[j].ColumnName))
-                                    {
-                                        WhereList0 = WhereList0
-                                                     + (WhereList0.Length > 0 ? " and " : "")
-                                                     + ColumnName2SQLName(TableColumns[j])
-                                                     + (TableColumns[j].IsNull ? " is " : "=")
-                                                     + Value;
-                                    }
+                                    TableColumns[j].IsNull = false;
+                                    TableColumns[j].Value = JsonConvert.SerializeObject(tj);
                                 }
 
-                                // 产生redo sql和undo sql -- Insert
-                                if (log.Operation == "LOP_INSERT_ROWS")
+                                Value = ColumnValue2SQLValue(TableColumns[j]);
+                                ValueList1 = ValueList1 + (ValueList1.Length > 0 ? "," : "") + Value;
+
+                                if (TableInfos.PrimaryKeyColumns.Count == 0
+                                    || TableInfos.PrimaryKeyColumns.Contains(TableColumns[j].ColumnName))
                                 {
-                                    REDOSQL = $"insert into [{SchemaName}].[{TableName}]({ColumnList}) values({ValueList1}); ";
-                                    UNDOSQL = $"delete top(1) from [{SchemaName}].[{TableName}] where {WhereList0}; ";
-
-                                    if (TableColumns.Any(p => p.IsIdentity) == true)
-                                    {
-                                        REDOSQL = $"set identity_insert [{SchemaName}].[{TableName}] on; " + "\r\n"
-                                                  + REDOSQL + "\r\n"
-                                                  + $"set identity_insert [{SchemaName}].[{TableName}] off; " + "\r\n";
-                                    }
+                                    WhereList0 = WhereList0
+                                                 + (WhereList0.Length > 0 ? " and " : "")
+                                                 + ColumnName2SQLName(TableColumns[j])
+                                                 + (TableColumns[j].IsNull ? " is " : "=")
+                                                 + Value;
                                 }
-                                // 产生redo sql和undo sql -- Delete
-                                if (log.Operation == "LOP_DELETE_ROWS")
-                                {
-                                    REDOSQL = $"delete top(1) from [{SchemaName}].[{TableName}] where {WhereList0}; ";
-                                    UNDOSQL = $"insert into [{SchemaName}].[{TableName}]({ColumnList}) values({ValueList1}); ";
-
-                                    if (TableColumns.Any(p => p.IsIdentity) == true)
-                                    {
-                                        UNDOSQL = $"set identity_insert [{SchemaName}].[{TableName}] on; " + "\r\n"
-                                                  + UNDOSQL + "\r\n"
-                                                  + $"set identity_insert [{SchemaName}].[{TableName}] off; " + "\r\n";
-                                    }
-                                }
-
-                                break;
-                            // Update
-                            case "LOP_MODIFY_ROW":
-                            case "LOP_MODIFY_COLUMNS":
-                                if (MR1 != null)
-                                {
-                                    AnalyzeUpdate(log, MR1, wslog, ref ValueList1, ref ValueList0, ref WhereList1, ref WhereList0, ref MR0);
-                                    if (ValueList1.Length > 0)
-                                    {
-                                        REDOSQL = $"update top(1) [{SchemaName}].[{TableName}] set {ValueList1} where {WhereList1}; ";
-                                        UNDOSQL = $"update top(1) [{SchemaName}].[{TableName}] set {ValueList0} where {WhereList0}; ";
-                                    }
-                                    stemp = "debug info: "
-                                                + " sValueList1=" + ValueList1
-                                                + " MR1=" + MR1.ToText() + ", "
-                                                + " MR0=" + MR0.ToText() + ", "
-                                                + " R1=" + log.RowLog_Contents_1.ToText() + ", "
-                                                + " R0=" + log.RowLog_Contents_0.ToText() + ". ";
-                                }
-                                else
-                                {
-                                    stemp = "MR1=null";
-                                }
-                                break;
-                        }
-
-                        if (log.Operation == "LOP_MODIFY_ROW" || log.Operation == "LOP_MODIFY_COLUMNS" || log.Operation == "LOP_DELETE_ROWS")
-                        {
-                            DRTemp = DTMRlist.Select("PAGEID='" + log.Page_ID + "' and SlotID='" + SlotID + "' and AllocUnitId='" + log.AllocUnitId + "' ");
-                            if (DRTemp.Length > 0)
-                            {
-                                DTMRlist.Rows.Remove(DRTemp[0]);
                             }
 
-                            Mrtemp = DTMRlist.NewRow();
-                            Mrtemp["PAGEID"] = log.Page_ID;
-                            Mrtemp["SlotID"] = log.Slot_ID;
-                            Mrtemp["AllocUnitId"] = log.AllocUnitId;
-                            Mrtemp["MR1"] = MR0;
-                            Mrtemp["MR1TEXT"] = MR0.ToText();
+                            // 产生redo sql和undo sql -- Insert
+                            if (log.Operation == "LOP_INSERT_ROWS")
+                            {
+                                REDOSQL = $"insert into [{SchemaName}].[{TableName}]({ColumnList}) values({ValueList1}); ";
+                                UNDOSQL = $"delete top(1) from [{SchemaName}].[{TableName}] where {WhereList0}; ";
 
-                            DTMRlist.Rows.Add(Mrtemp);
+                                if (TableColumns.Any(p => p.IsIdentity) == true)
+                                {
+                                    REDOSQL = $"set identity_insert [{SchemaName}].[{TableName}] on; " + "\r\n"
+                                              + REDOSQL + "\r\n"
+                                              + $"set identity_insert [{SchemaName}].[{TableName}] off; " + "\r\n";
+                                }
+                            }
+                            // 产生redo sql和undo sql -- Delete
+                            if (log.Operation == "LOP_DELETE_ROWS")
+                            {
+                                REDOSQL = $"delete top(1) from [{SchemaName}].[{TableName}] where {WhereList0}; ";
+                                UNDOSQL = $"insert into [{SchemaName}].[{TableName}]({ColumnList}) values({ValueList1}); ";
+
+                                if (TableColumns.Any(p => p.IsIdentity) == true)
+                                {
+                                    UNDOSQL = $"set identity_insert [{SchemaName}].[{TableName}] on; " + "\r\n"
+                                              + UNDOSQL + "\r\n"
+                                              + $"set identity_insert [{SchemaName}].[{TableName}] off; " + "\r\n";
+                                }
+                            }
+
+                            break;
+                        // Update
+                        case "LOP_MODIFY_ROW":
+                        case "LOP_MODIFY_COLUMNS":
+                            if (MR1 != null)
+                            {
+                                AnalyzeUpdate(log, MR1, wslog, ref ValueList1, ref ValueList0, ref WhereList1, ref WhereList0, ref MR0);
+                                if (ValueList1.Length > 0)
+                                {
+                                    REDOSQL = $"update top(1) [{SchemaName}].[{TableName}] set {ValueList1} where {WhereList1}; ";
+                                    UNDOSQL = $"update top(1) [{SchemaName}].[{TableName}] set {ValueList0} where {WhereList0}; ";
+                                }
+                                stemp = "debug info: "
+                                            + " sValueList1=" + ValueList1
+                                            + " MR1=" + MR1.ToText() + ", "
+                                            + " MR0=" + MR0.ToText() + ", "
+                                            + " R1=" + log.RowLog_Contents_1.ToText() + ", "
+                                            + " R0=" + log.RowLog_Contents_0.ToText() + ". ";
+                            }
+                            else
+                            {
+                                stemp = "MR1=null";
+                            }
+                            break;
+                    }
+
+                    if (log.Operation == "LOP_MODIFY_ROW" || log.Operation == "LOP_MODIFY_COLUMNS" || log.Operation == "LOP_DELETE_ROWS")
+                    {
+                        DRTemp = DTMRlist.Select("PAGEID='" + log.Page_ID + "' and SlotID='" + SlotID + "' and AllocUnitId='" + log.AllocUnitId + "' ");
+                        if (DRTemp.Length > 0)
+                        {
+                            DTMRlist.Rows.Remove(DRTemp[0]);
                         }
+
+                        Mrtemp = DTMRlist.NewRow();
+                        Mrtemp["PAGEID"] = log.Page_ID;
+                        Mrtemp["SlotID"] = log.Slot_ID;
+                        Mrtemp["AllocUnitId"] = log.AllocUnitId;
+                        Mrtemp["MR1"] = MR0;
+                        Mrtemp["MR1TEXT"] = MR0.ToText();
+
+                        DTMRlist.Rows.Add(Mrtemp);
+                    }
 
 #if DEBUG
-                        FCommon.WriteTextFile(LogFile, $"LSN={log.Current_LSN},Operation={log.Operation},REDOSQL={REDOSQL} ");
+                    FCommon.WriteTextFile(LogFile, $"LSN={log.Current_LSN},Operation={log.Operation},REDOSQL={REDOSQL} ");
 #endif
 
-                        if (string.IsNullOrEmpty(BeginTime) == false)
+                    if (string.IsNullOrEmpty(BeginTime) == false)
+                    {
+                        tmplog = new DatabaseLog();
+                        tmplog.LSN = log.Current_LSN;
+                        tmplog.Type = "DML";
+                        tmplog.TransactionID = log.Transaction_ID;
+                        tmplog.BeginTime = BeginTime;
+                        tmplog.EndTime = EndTime;
+                        tmplog.ObjectName = $"[{SchemaName}].[{TableName}]";
+                        tmplog.Operation = log.Operation;
+                        tmplog.RedoSQL = REDOSQL;
+                        tmplog.UndoSQL = UNDOSQL;
+                        tmplog.Message = stemp;
+                        logs.Add(tmplog);
+                    }
+
+                    if ((log.Operation == "LOP_INSERT_ROWS" || log.Operation == "LOP_DELETE_ROWS")
+                        && wslog.Count > 0
+                        && log.Current_LSN == DTLogs
+                                              .Where(p => p.Transaction_ID == log.Transaction_ID && IsLCXTEXT(p) == false)
+                                              .FirstOrDefault()
+                                              .Current_LSN
+                       )
+                    {
+                        foreach (FLOG wl in wslog
+                                            .OrderBy(p => p.Page_ID 
+                                                          + (p.Slot_ID ?? 00).ToString() 
+                                                          + (p.Operation == "LOP_MODIFY_ROW" ? "_1" : "_2") 
+                                                    )
+                                )
                         {
-                            tmplog = new DatabaseLog();
-                            tmplog.LSN = log.Current_LSN;
-                            tmplog.Type = "DML";
-                            tmplog.TransactionID = log.Transaction_ID;
-                            tmplog.BeginTime = BeginTime;
-                            tmplog.EndTime = EndTime;
-                            tmplog.ObjectName = $"[{SchemaName}].[{TableName}]";
-                            tmplog.Operation = log.Operation;
-                            tmplog.RedoSQL = REDOSQL;
-                            tmplog.UndoSQL = UNDOSQL;
-                            tmplog.Message = stemp;
-                            logs.Add(tmplog);
+                            FRestoreLCXTEXT(wl);
                         }
                     }
-                    else
-                    {
-                        FRestoreLCXTEXT(log);
-                    }
-            }
+                }
                 catch (Exception ex)
                 {
 #if DEBUG
-                stemp = $"Message:{(ex.Message ?? "")}  StackTrace:{(ex.StackTrace ?? "")} ";
-                throw new Exception(stemp);
+                    stemp = $"Message:{(ex.Message ?? "")}  StackTrace:{(ex.StackTrace ?? "")} ";
+                    throw new Exception(stemp);
 #else
                         tmplog = new DatabaseLog();
                         tmplog.LSN = log.Current_LSN;
@@ -485,9 +497,8 @@ namespace DBLOG
                         tmplog.Message = "";
                         logs.Add(tmplog);
 #endif
+                }
             }
-
-        }
 
             return logs;
         }
@@ -496,6 +507,7 @@ namespace DBLOG
         {
             FPageInfo tpageinfo;
             string stemp;
+            int slotid, slotbegin;
 
             tpageinfo = GetPageInfo(log.Page_ID);
             stemp = tpageinfo.PageData;
@@ -537,18 +549,27 @@ namespace DBLOG
                 {
                     if (tpageinfo.SlotBeginIndex.Length - 1 >= log.Slot_ID)
                     {
-                        stemp = stemp.Stuff(tpageinfo.SlotBeginIndex[Convert.ToInt32(log.Slot_ID)] * 2 + (log.Offset_in_Row ?? 0), //Convert.ToInt32((96 + OffsetinRow) * 2),
-                                            log.RowLog_Contents_1.Length * 2, // (ModifySize ?? 0)
+                        stemp = stemp.Stuff(tpageinfo.SlotBeginIndex[Convert.ToInt32(log.Slot_ID)] * 2 + (log.Offset_in_Row ?? 0), // Convert.ToInt32((96 + OffsetinRow) * 2),
+                                            (log.Modify_Size ?? 0) * 2, //log.RowLog_Contents_1.Length * 2,
                                             log.RowLog_Contents_0.ToText());
                     }
                 }
 
                 if (log.Operation == "LOP_DELETE_ROWS")
                 {
-                    tpageinfo.SlotBeginIndex[Convert.ToInt32(log.Slot_ID)] = 96 + 84 * Convert.ToInt32(log.Slot_ID);
-                    stemp = stemp.Stuff(tpageinfo.SlotBeginIndex[Convert.ToInt32(log.Slot_ID)] * 2 + (log.Offset_in_Row ?? 0),
-                                        log.RowLog_Contents_0.Length * 2,
-                                        log.RowLog_Contents_0.ToText());
+                    slotid = Convert.ToInt32(log.Slot_ID);
+                    if (slotid <= tpageinfo.SlotBeginIndex.Length - 1)
+                    {
+                        slotbegin = (slotid == 0 ?
+                                         96 // 96-byte header that is used to store system information about the page
+                                         :
+                                         tpageinfo.SlotBeginIndex[slotid - 1] + log.RowLog_Contents_0.Length
+                                    );
+                        tpageinfo.SlotBeginIndex[slotid] = slotbegin;
+                        stemp = stemp.Stuff(slotbegin * 2 + (log.Offset_in_Row ?? 0),
+                                            log.RowLog_Contents_0.Length * 2,
+                                            log.RowLog_Contents_0.ToText());
+                    }
                 }
 
                 lobpagedata[log.Page_ID].PageData = stemp;
