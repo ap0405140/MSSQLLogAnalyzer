@@ -139,7 +139,7 @@ namespace DBLOG
             _tsql = "if object_id('tempdb..#LogList') is not null drop table #LogList; ";
             DB.ExecuteSQL(_tsql, false);
 
-            _tsql = "select * "
+            _tsql = "select *,IsVirtual=cast(0 as bit) "
                   + " into #LogList "
                   + " from sys.fn_dblog(null,null) t "
                   + " where 1=2; ";
@@ -148,7 +148,7 @@ namespace DBLOG
             _tsql = "set transaction isolation level read uncommitted; "
                     + "insert into #LogList "
                     + "output inserted.* "
-                    + "select * "
+                    + "select *,IsVirtual=cast(0 as bit) "
                     + "  from sys.fn_dblog(null,null) t "
                     + $" where [Current LSN]>='{_MinLSN}' "
                     + "  and [Context] in('LCX_HEAP','LCX_CLUSTERED','LCX_MARK_AS_GHOST','LCX_TEXT_TREE','LCX_TEXT_MIX') "
@@ -190,7 +190,9 @@ namespace DBLOG
                 schemaname = dr.schemaname;
                 tablelist[i] = new DBLOG_DML(databasename, schemaname, tablename, DB, LogFile);
                 tablelist[i].DTLogs = Loglist.Where(p => p.AllocUnitName == $"{schemaname}.{tablename}"
-                                                         || p.AllocUnitName.StartsWith($"{schemaname}.{tablename}.")).ToList();
+                                                         || p.AllocUnitName.StartsWith($"{schemaname}.{tablename}.")
+                                                   )
+                                             .ToList();
 
 #if DEBUG
                 FCommon.WriteTextFile(LogFile, $"Start Analysis Log for [{schemaname}].[{tablename}]. ");

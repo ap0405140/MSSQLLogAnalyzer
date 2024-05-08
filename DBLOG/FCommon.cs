@@ -914,6 +914,10 @@ namespace DBLOG
         [Column("Log Record", Order = 12)]
         [MaxLength(8000)]
         public byte[] Log_Record { get; set; }
+
+
+        public bool IsVirtual { get; set; }
+
     }
 
     public static class CollationHelper

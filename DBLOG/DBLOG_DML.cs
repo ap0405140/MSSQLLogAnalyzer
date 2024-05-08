@@ -1,15 +1,12 @@
-﻿using System;
+﻿using Newtonsoft.Json;
+using System;
 using System.Collections.Generic;
 using System.Data;
-using System.Diagnostics;
-using System.IO;
-using System.IO.Compression;
 using System.Linq;
 using System.Numerics;
+using System.Runtime.CompilerServices;
 using System.Text;
-using System.Threading.Tasks;
 using System.Xml;
-using Newtonsoft.Json;
 
 namespace DBLOG
 {
@@ -17,7 +14,7 @@ namespace DBLOG
     public partial class DBLOG_DML
     {
         private DatabaseOperation DB; // 数据库操作
-        private string stsql,         // 动态SQL
+        private string tsql,          // 动态SQL
                        DatabaseName,  // 数据库名
                        TableName,     // 表名
                        SchemaName,    // 架构名
@@ -65,7 +62,7 @@ namespace DBLOG
         {
             List<DatabaseLog> logs;
             DatabaseLog tmplog;
-            int j, MinimumLength;
+            int j, minlen;
             string BeginTime = string.Empty, // 事务开始时间
                    EndTime = string.Empty,   // 事务结束时间
                    REDOSQL = string.Empty,   // redo sql
@@ -79,8 +76,8 @@ namespace DBLOG
             DataRow[] DRTemp;
             SQLGraphNode tj;
             CompressionType compressiontype;
-            List<FLOG> wslog;
-            FLOG llog;
+            List<FLOG> wslog, vlog;
+            FLOG llog, tlog;
 
             logs = new List<DatabaseLog>();
             ColumnList = string.Join(",", TableColumns
@@ -96,24 +93,63 @@ namespace DBLOG
             DTMRlist.Columns.Add("MR1", typeof(byte[]));
             DTMRlist.Columns.Add("MR1TEXT", typeof(string));
 
-            stsql = @"if object_id('tempdb..#temppagedata') is not null drop table #temppagedata; 
+            tsql = @"if object_id('tempdb..#temppagedata') is not null drop table #temppagedata; 
                         create table #temppagedata(LSN nvarchar(1000),ParentObject sysname,Object sysname,Field sysname,Value nvarchar(max)); ";
-            DB.ExecuteSQL(stsql, false);
+            DB.ExecuteSQL(tsql, false);
 
-            stsql = "create index ix_#temppagedata on #temppagedata(LSN); ";
-            DB.ExecuteSQL(stsql, false);
+            tsql = "create index ix_#temppagedata on #temppagedata(LSN); ";
+            DB.ExecuteSQL(tsql, false);
 
-            stsql = @"if object_id('tempdb..#temppagedatalob') is not null drop table #temppagedatalob; 
+            tsql = @"if object_id('tempdb..#temppagedatalob') is not null drop table #temppagedatalob; 
                         create table #temppagedatalob(ParentObject sysname,Object sysname,Field sysname,Value nvarchar(max)); ";
-            DB.ExecuteSQL(stsql, false);
+            DB.ExecuteSQL(tsql, false);
 
-            stsql = @"if object_id('tempdb..#ModifiedRawData') is not null drop table #ModifiedRawData; 
+            tsql = @"if object_id('tempdb..#ModifiedRawData') is not null drop table #ModifiedRawData; 
                         create table #ModifiedRawData([SlotID] int,[RowLog Contents 0_var] nvarchar(max),[RowLog Contents 0] varbinary(max)); ";
-            DB.ExecuteSQL(stsql, false);
+            DB.ExecuteSQL(tsql, false);
 
             lobpagedata = new Dictionary<string, FPageInfo>();
 
             stemp = $"{SchemaName}.{TableName}{(TableInfos.AllocUnitName.Length == 0 ? "" : "." + TableInfos.AllocUnitName)}";
+
+            vlog = new List<FLOG>();
+            foreach (string tranid in DTLogs.Select(p => p.Transaction_ID).Distinct())
+            {
+                wslog = DTLogs.Where(p => p.Transaction_ID == tranid).ToList();
+                if (wslog.Any(p => p.Context == "LCX_CLUSTERED" || p.Context == "LCX_HEAP" || p.Context == "LCX_MARK_AS_GHOST") == false)
+                {
+                    tlog = wslog.OrderBy(p => p.Current_LSN).FirstOrDefault();
+                    tsql = $"with b as "
+                            + $"(select top 1 * from sys.fn_dblog(null,null) b1 "
+                            + $" where b1.[Current LSN]<'{tlog.Current_LSN}' "
+                            + $" and b1.[Page ID]='{tlog.Page_ID}' "
+                            + $" and b1.[Slot ID]={tlog.Slot_ID} "
+                            + $" and exists(select 1 from sys.fn_dblog(null,null) b2 where b2.[Transaction ID]=b1.[Transaction ID] and b2.Context in('LCX_CLUSTERED','LCX_HEAP','LCX_MARK_AS_GHOST')) "
+                            + $" order by [Current LSN] desc)"
+                            + $"select top 1 t.* from sys.fn_dblog(null,null) t "
+                            + $"join b on t.[Transaction ID]=b.[Transaction ID] and t.[Current LSN]>b.[Current LSN] "
+                            + $"where t.Context in('LCX_CLUSTERED','LCX_HEAP','LCX_MARK_AS_GHOST') "
+                            + $"order by t.[Current LSN] ";
+                    tlog = DB.Query<FLOG>(tsql, false).FirstOrDefault();
+
+                    if (tlog != null)
+                    {
+                        llog = new FLOG();
+                        llog.Current_LSN = wslog.OrderByDescending(p => p.Current_LSN).First().Current_LSN + "V";
+                        llog.Operation = "LOP_MODIFY_ROW";
+                        llog.Context = (TableInfos.IsHeapTable ? "LCX_HEAP" : "LCX_CLUSTERED");
+                        llog.Transaction_ID = tranid;
+                        llog.IsVirtual = true;
+                        llog.AllocUnitName = stemp;
+                        llog.Page_ID = tlog.Page_ID;
+                        llog.Slot_ID = tlog.Slot_ID;
+
+                        vlog.Add(llog);
+                    }
+                }
+            }
+            DTLogs.AddRange(vlog);
+            
             foreach (FLOG log in DTLogs.Where(p => (
                                                     (TableInfos.IsColumnStore == false && p.AllocUnitName == stemp)
                                                     ||
@@ -157,8 +193,8 @@ namespace DBLOG
                     FCommon.WriteTextFile(LogFile, $"TRANID={log.Transaction_ID} LSN={log.Current_LSN},LSN2={string.Join(",", wslog.Select(x => x.Current_LSN))},Operation={log.Operation} ");
 #endif
 
-                    stsql = $"select top 1 BeginTime=substring(BeginTime,1,19),EndTime=substring(EndTime,1,19) from #TransactionList where TransactionID='{log.Transaction_ID}'; ";
-                    (BeginTime, EndTime) = DB.Query<(string BeginTime, string EndTime)>(stsql, false).FirstOrDefault();
+                    tsql = $"select top 1 BeginTime=substring(BeginTime,1,19),EndTime=substring(EndTime,1,19) from #TransactionList where TransactionID='{log.Transaction_ID}'; ";
+                    (BeginTime, EndTime) = DB.Query<(string BeginTime, string EndTime)>(tsql, false).FirstOrDefault();
 
                     compressiontype = TableInfos.GetCompressionType(log.PartitionId);
 
@@ -247,6 +283,17 @@ namespace DBLOG
                     WhereList0 = string.Empty;
                     MR0 = new byte[1];
 
+                    if (log.Operation == "LOP_DELETE_ROWS"
+                        && log.Current_LSN == DTLogs
+                                              .Where(p => p.Transaction_ID == log.Transaction_ID && IsLCXTEXT(p) == false)
+                                              .OrderByDescending(p => p.Current_LSN)
+                                              .FirstOrDefault()
+                                              .Current_LSN
+                       )
+                    {
+                        FRestoreLCXTEXT(log, wslog);
+                    }
+
                     switch (log.Operation)
                     {
                         // Insert / Delete
@@ -257,9 +304,9 @@ namespace DBLOG
                                 case CompressionType.NONE:
                                 case CompressionType.COLUMNSTORE:
                                     SlotID = log.Slot_ID.ToString();
-                                    MinimumLength = 2 + TableColumns.Where(p => p.IsVarLenDataType == false).Sum(p => p.Length) + 2;
+                                    minlen = 2 + TableColumns.Where(p => p.IsVarLenDataType == false).Sum(p => p.Length) + 2;
 
-                                    if (log.RowLog_Contents_0.Length >= MinimumLength)
+                                    if (log.RowLog_Contents_0.Length >= minlen)
                                     {
                                         try
                                         {
@@ -279,14 +326,14 @@ namespace DBLOG
                                                 MR0 = GetMR1(log, "");
                                             }
 
-                                            if (MR0.Length < MinimumLength) { continue; }
+                                            if (MR0.Length < minlen) { continue; }
                                             TranslateData(MR0, TableColumns);
                                         }
                                     }
                                     else
                                     {
                                         MR0 = GetMR1(log, "");
-                                        if (MR0.Length < MinimumLength) { continue; }
+                                        if (MR0.Length < minlen) { continue; }
                                         TranslateData(MR0, TableColumns);
                                     }
                                     break;
@@ -331,21 +378,21 @@ namespace DBLOG
                                         if (TableColumns[j].ColumnName.StartsWith("$from_id") == true)
                                         {
                                             tj.type = "node";
-                                            stsql = "select schemaname=s.name,tablename=a.name "
+                                            tsql = "select schemaname=s.name,tablename=a.name "
                                                     + " from sys.tables a "
                                                     + " join sys.schemas s on a.schema_id=s.schema_id "
                                                     + $" where a.object_id={TableColumns.FirstOrDefault(p => p.ColumnName.StartsWith("from_obj_id") == true).Value}; ";
-                                            (tj.schema, tj.table) = DB.Query<(string, string)>(stsql, false).FirstOrDefault();
+                                            (tj.schema, tj.table) = DB.Query<(string, string)>(tsql, false).FirstOrDefault();
                                             tj.id = Convert.ToInt32(TableColumns.FirstOrDefault(p => p.ColumnName.StartsWith("from_id") == true).Value);
                                         }
                                         if (TableColumns[j].ColumnName.StartsWith("$to_id") == true)
                                         {
                                             tj.type = "node";
-                                            stsql = "select schemaname=s.name,tablename=a.name "
+                                            tsql = "select schemaname=s.name,tablename=a.name "
                                                     + " from sys.tables a "
                                                     + " join sys.schemas s on a.schema_id=s.schema_id "
                                                     + $" where a.object_id={TableColumns.FirstOrDefault(p => p.ColumnName.StartsWith("to_obj_id") == true).Value}; ";
-                                            (tj.schema, tj.table) = DB.Query<(string, string)>(stsql, false).FirstOrDefault();
+                                            (tj.schema, tj.table) = DB.Query<(string, string)>(tsql, false).FirstOrDefault();
                                             tj.id = Convert.ToInt32(TableColumns.FirstOrDefault(p => p.ColumnName.StartsWith("to_id") == true).Value);
                                         }
                                     }
@@ -440,7 +487,7 @@ namespace DBLOG
                     }
 
 #if DEBUG
-                    FCommon.WriteTextFile(LogFile, $"LSN={log.Current_LSN},Operation={log.Operation},REDOSQL={REDOSQL} ");
+                    FCommon.WriteTextFile(LogFile, $"LSN={log.Current_LSN},Operation={log.Operation},\r\nREDOSQL={REDOSQL},\r\nUNDOSQL={UNDOSQL} ");
 #endif
 
                     if (string.IsNullOrEmpty(BeginTime) == false)
@@ -459,23 +506,15 @@ namespace DBLOG
                         logs.Add(tmplog);
                     }
 
-                    if ((log.Operation == "LOP_INSERT_ROWS" || log.Operation == "LOP_DELETE_ROWS")
-                        && wslog.Count > 0
+                    if (log.Operation == "LOP_INSERT_ROWS"
                         && log.Current_LSN == DTLogs
                                               .Where(p => p.Transaction_ID == log.Transaction_ID && IsLCXTEXT(p) == false)
+                                              .OrderBy(p => p.Current_LSN)
                                               .FirstOrDefault()
                                               .Current_LSN
                        )
                     {
-                        foreach (FLOG wl in wslog
-                                            .OrderBy(p => p.Page_ID 
-                                                          + (p.Slot_ID ?? 00).ToString() 
-                                                          + (p.Operation == "LOP_MODIFY_ROW" ? "_1" : "_2") 
-                                                    )
-                                )
-                        {
-                            FRestoreLCXTEXT(wl);
-                        }
+                        FRestoreLCXTEXT(log, wslog);
                     }
                 }
                 catch (Exception ex)
@@ -503,77 +542,131 @@ namespace DBLOG
             return logs;
         }
 
-        private void FRestoreLCXTEXT(FLOG log)
+        private void FRestoreLCXTEXT(FLOG clog, List<FLOG> wslog)
         {
-            FPageInfo tpageinfo;
-            string stemp;
-            int slotid, slotbegin;
+            FPageInfo tpage;
+            string stemp, pagetail;
+            int slotid, slotbegin, modilen;
 
-            tpageinfo = GetPageInfo(log.Page_ID);
-            stemp = tpageinfo.PageData;
+            InitPrevPages(clog);
 
-            if (log.Operation == "LOP_FORMAT_PAGE")
+            foreach (FLOG log in wslog
+                                .OrderBy(p => p.Page_ID
+                                              + (p.Slot_ID ?? 0).ToString()
+                                              + (p.Operation == "LOP_MODIFY_ROW" ? "_1" : "_2")
+                                        )
+                    )
             {
-                lobpagedata.Remove(log.Page_ID);
-                if (PrevPages == null)
+                tpage = GetPageInfo(log.Page_ID);
+                stemp = tpage.PageData;
+
+                if (log.Operation == "LOP_FORMAT_PAGE")
                 {
-                    PrevPages = new List<(string, string)>();
+                    lobpagedata.Remove(log.Page_ID);
+                    SetPrevPages(log.Page_ID, log.Current_LSN);
                 }
                 else
                 {
-                    if (PrevPages.Any(p => p.pageid == log.Page_ID) == true)
+                    if (tpage.SlotBeginIndex == null)
                     {
-                        PrevPages.RemoveAll(p => p.pageid == log.Page_ID);
+                        tpage.SlotBeginIndex = new int[tpage.SlotCnt];
                     }
+
+                    if (log.Operation == "LOP_INSERT_ROWS")
+                    {
+                        if (log.Slot_ID <= tpage.SlotBeginIndex.Length - 1)
+                        {
+                            slotid = Convert.ToInt32(log.Slot_ID);
+                            stemp = stemp.Stuff((tpage.SlotBeginIndex[slotid] + (log.Offset_in_Row ?? 0)) * 2,
+                                                log.RowLog_Contents_0.Length * 2,
+                                                log.RowLog_Contents_0.ToText());
+                        }
+                    }
+
+                    if (log.Operation == "LOP_MODIFY_ROW")
+                    {
+                        if (tpage.SlotBeginIndex.Length - 1 >= log.Slot_ID)
+                        {
+                            slotid = Convert.ToInt32(log.Slot_ID);
+                            modilen = ((log.Modify_Size ?? 0) != 0 ? (log.Modify_Size ?? 0) : log.RowLog_Contents_1.Length) * 2;
+
+                            if (tpage.SlotData == null) { tpage.SlotData = new Dictionary<int, string>(); }
+                            if (tpage.SlotData.ContainsKey(slotid) == false) { tpage.SlotData.Add(slotid, ""); }
+                            tpage.SlotData[slotid] = tpage.SlotData[slotid]
+                                                          .Stuff((log.Offset_in_Row ?? 0) * 2,
+                                                                 modilen,
+                                                                 (log.RowLog_Contents_0.Length > 0 ? log.RowLog_Contents_0.ToText() : new string('0', modilen))
+                                                                );
+
+                            stemp = stemp.Substring(0, 96 * 2);
+                            pagetail = stemp.Substring(stemp.Length - tpage.SlotData.Count * 2 * 2, tpage.SlotData.Count * 2 * 2);
+                            for (slotid = 0; slotid <= tpage.SlotData.Count - 1; slotid = slotid + 1)
+                            {
+                                stemp = stemp + tpage.SlotData[slotid];
+                            }
+                            stemp = stemp + pagetail;
+                        }
+                    }
+
+                    if (log.Operation == "LOP_DELETE_ROWS")
+                    {
+                        slotid = Convert.ToInt32(log.Slot_ID);
+                        if (slotid <= tpage.SlotBeginIndex.Length - 1)
+                        {
+                            slotbegin = (slotid == 0 ?
+                                             96 // 96-byte header that is used to store system information about the page
+                                             :
+                                             tpage.SlotBeginIndex[slotid - 1] + log.RowLog_Contents_0.Length
+                                        );
+                            tpage.SlotBeginIndex[slotid] = slotbegin;
+                            stemp = stemp.Stuff((slotbegin + (log.Offset_in_Row ?? 0)) * 2,
+                                                log.RowLog_Contents_0.Length * 2,
+                                                log.RowLog_Contents_0.ToText());
+
+                            if (tpage.SlotData == null) { tpage.SlotData = new Dictionary<int, string>(); }
+                            if (tpage.SlotData.ContainsKey(slotid) == false) { tpage.SlotData.Add(slotid, ""); }
+                            tpage.SlotData[slotid] = log.RowLog_Contents_0.ToText();
+                        }
+                    }
+
+                    lobpagedata[log.Page_ID].PageData = stemp;
                 }
-                PrevPages.Add((log.Page_ID, log.Current_LSN));
+            }
+        }
+
+        private void InitPrevPages(FLOG log)
+        {
+            List<(string pageid, string lsn)> pps;
+
+            PrevPages = new List<(string pageid, string lsn)>();
+
+            tsql = $"select [Page ID],lsn='{log.Current_LSN}' " // min([Current LSN])
+                   + $"from sys.fn_dblog(null,null) t "
+                   + $"where t.[Current LSN]>'{log.Current_LSN}' "
+                   + $"and t.Operation='LOP_FORMAT_PAGE' "
+                   + $"and exists(select 1 from sys.fn_dblog(null,null) b where b.[Transaction ID]=t.[Transaction ID] and b.Operation='LOP_COMMIT_XACT') "
+                   + $"group by t.[Page ID] ";
+            pps = DB.Query<(string, string)>(tsql, false);
+            foreach ((string pageid, string lsn) in pps)
+            {
+                SetPrevPages(pageid, lsn);
+            }
+        }
+
+        private void SetPrevPages(string Page_ID, string Current_LSN)
+        {
+            if (PrevPages == null)
+            {
+                PrevPages = new List<(string, string)>();
             }
             else
             {
-                if (tpageinfo.SlotBeginIndex == null)
+                if (PrevPages.Any(p => p.pageid == Page_ID) == true)
                 {
-                    tpageinfo.SlotBeginIndex = new int[tpageinfo.SlotCnt];
+                    PrevPages.RemoveAll(p => p.pageid == Page_ID);
                 }
-
-                if (log.Operation == "LOP_INSERT_ROWS")
-                {
-                    if (log.Slot_ID <= tpageinfo.SlotBeginIndex.Length - 1)
-                    {
-                        stemp = stemp.Stuff(tpageinfo.SlotBeginIndex[Convert.ToInt32(log.Slot_ID)] * 2 + (log.Offset_in_Row ?? 0),
-                                            log.RowLog_Contents_0.Length * 2,
-                                            log.RowLog_Contents_0.ToText());
-                    }
-                }
-
-                if (log.Operation == "LOP_MODIFY_ROW")
-                {
-                    if (tpageinfo.SlotBeginIndex.Length - 1 >= log.Slot_ID)
-                    {
-                        stemp = stemp.Stuff(tpageinfo.SlotBeginIndex[Convert.ToInt32(log.Slot_ID)] * 2 + (log.Offset_in_Row ?? 0), // Convert.ToInt32((96 + OffsetinRow) * 2),
-                                            (log.Modify_Size ?? 0) * 2, //log.RowLog_Contents_1.Length * 2,
-                                            log.RowLog_Contents_0.ToText());
-                    }
-                }
-
-                if (log.Operation == "LOP_DELETE_ROWS")
-                {
-                    slotid = Convert.ToInt32(log.Slot_ID);
-                    if (slotid <= tpageinfo.SlotBeginIndex.Length - 1)
-                    {
-                        slotbegin = (slotid == 0 ?
-                                         96 // 96-byte header that is used to store system information about the page
-                                         :
-                                         tpageinfo.SlotBeginIndex[slotid - 1] + log.RowLog_Contents_0.Length
-                                    );
-                        tpageinfo.SlotBeginIndex[slotid] = slotbegin;
-                        stemp = stemp.Stuff(slotbegin * 2 + (log.Offset_in_Row ?? 0),
-                                            log.RowLog_Contents_0.Length * 2,
-                                            log.RowLog_Contents_0.ToText());
-                    }
-                }
-
-                lobpagedata[log.Page_ID].PageData = stemp;
             }
+            PrevPages.Add((Page_ID, Current_LSN));
         }
 
         private bool IsLCXTEXT(FLOG log)
@@ -594,13 +687,13 @@ namespace DBLOG
             
             fileid_dec = Convert.ToInt16(pLog.Page_ID.Split(':')[0], 16).ToString();
             pageid_dec = Convert.ToInt32(pLog.Page_ID.Split(':')[1], 16).ToString();
-            stsql = $"DBCC PAGE([{DatabaseName}],{fileid_dec},{pageid_dec},3) with tableresults,no_infomsgs; ";
-            stsql = "set transaction isolation level read uncommitted; "
-                    + $"insert into #temppagedata(ParentObject,Object,Field,Value) exec('{stsql}'); ";
-            DB.ExecuteSQL(stsql, false);
+            tsql = $"DBCC PAGE([{DatabaseName}],{fileid_dec},{pageid_dec},3) with tableresults,no_infomsgs; ";
+            tsql = "set transaction isolation level read uncommitted; "
+                    + $"insert into #temppagedata(ParentObject,Object,Field,Value) exec('{tsql}'); ";
+            DB.ExecuteSQL(tsql, false);
 
-            stsql = $"update #temppagedata set LSN=N'{pLog.Current_LSN}' where LSN is null; ";
-            DB.ExecuteSQL(stsql, false);
+            tsql = $"update #temppagedata set LSN=N'{pLog.Current_LSN}' where LSN is null; ";
+            DB.ExecuteSQL(tsql, false);
 
             switch (pLog.Operation)
             {
@@ -624,17 +717,17 @@ namespace DBLOG
             
             isfound = false;
 
-            stsql = "truncate table #ModifiedRawData; ";
-            DB.ExecuteSQL(stsql, false);
+            tsql = "truncate table #ModifiedRawData; ";
+            DB.ExecuteSQL(tsql, false);
 
-            stsql = " insert into #ModifiedRawData([RowLog Contents 0_var]) "
+            tsql = " insert into #ModifiedRawData([RowLog Contents 0_var]) "
                     + " select [RowLog Contents 0_var]=upper(replace(stuff((select replace(substring(C.[Value],charindex(N':',[Value],1)+1,48),N'†',N'') "
                     + "                                                     from #temppagedata C "
                     + $"                                                    where C.[LSN]=N'{pLog.Current_LSN}' "
                     + $"                                                    and C.[ParentObject] like 'Slot {pLog.Slot_ID.ToString()} Offset%' "
                     + "                                                     and C.[Object] like N'%Memory Dump%' "
                     + "                                                     for xml path('')),1,1,N''),N' ',N'')); ";
-            DB.ExecuteSQL(stsql, false);
+            DB.ExecuteSQL(tsql, false);
 
             if (TableInfos.GetCompressionType(pLog.PartitionId) != CompressionType.NONE)
             {
@@ -642,18 +735,18 @@ namespace DBLOG
             }
             else
             {
-                stsql = "select count(1) from #ModifiedRawData where [RowLog Contents 0_var] like N'%" + (checkvalue1.Length <= 3998 ? checkvalue1 : checkvalue1.Substring(0, 3998)) + "%'; ";
-                if (Convert.ToInt32(DB.Query11(stsql, false)) > 0)
+                tsql = "select count(1) from #ModifiedRawData where [RowLog Contents 0_var] like N'%" + (checkvalue1.Length <= 3998 ? checkvalue1 : checkvalue1.Substring(0, 3998)) + "%'; ";
+                if (Convert.ToInt32(DB.Query11(tsql, false)) > 0)
                 {
                     isfound = true;
                 }
 
                 if (isfound == false && pLog.Operation == "LOP_MODIFY_ROW")
                 {
-                    stsql = "truncate table #ModifiedRawData; ";
-                    DB.ExecuteSQL(stsql, false);
+                    tsql = "truncate table #ModifiedRawData; ";
+                    DB.ExecuteSQL(tsql, false);
 
-                    stsql = "with t as("
+                    tsql = "with t as("
                             + "select *,SlotID=replace(substring(ParentObject,5,charindex(N'Offset',ParentObject)-5),N' ',N'') "
                             + " from #temppagedata "
                             + " where LSN=N'" + pLog.Current_LSN + "' "
@@ -672,10 +765,10 @@ namespace DBLOG
                             + " from u "
                             + " where [RowLog Contents 0_var] like N'%" + (checkvalue1.Length <= 3998 ? checkvalue1 : checkvalue1.Substring(0, 3998)) + "%' "
                             + " and substring([RowLog Contents 0_var],9,len([RowLog Contents 0_var])-8) like N'%" + (checkvalue2.Length <= 3998 ? checkvalue2 : checkvalue2.Substring(0, 3998)) + "%'; ";
-                    DB.ExecuteSQL(stsql, false);
+                    DB.ExecuteSQL(tsql, false);
 
-                    stsql = "select count(1) from #ModifiedRawData where [RowLog Contents 0_var] like N'%" + (checkvalue1.Length <= 3998 ? checkvalue1 : checkvalue1.Substring(0, 3998)) + "%'; ";
-                    if (Convert.ToInt32(DB.Query11(stsql, false)) > 0)
+                    tsql = "select count(1) from #ModifiedRawData where [RowLog Contents 0_var] like N'%" + (checkvalue1.Length <= 3998 ? checkvalue1 : checkvalue1.Substring(0, 3998)) + "%'; ";
+                    if (Convert.ToInt32(DB.Query11(tsql, false)) > 0)
                     {
                         isfound = true;
                     }
@@ -684,11 +777,11 @@ namespace DBLOG
 
             if (isfound == true)
             {
-                stsql = @"update #ModifiedRawData set [RowLog Contents 0]=cast('' as xml).value('xs:hexBinary(substring(sql:column(""[RowLog Contents 0_var]""), 0) )', 'varbinary(max)'); ";
-                DB.ExecuteSQL(stsql, false);
+                tsql = @"update #ModifiedRawData set [RowLog Contents 0]=cast('' as xml).value('xs:hexBinary(substring(sql:column(""[RowLog Contents 0_var]""), 0) )', 'varbinary(max)'); ";
+                DB.ExecuteSQL(tsql, false);
 
-                stsql = "select top 1 'MR1'=[RowLog Contents 0] from #ModifiedRawData; ";
-                mr1 = DB.Query<byte[]>(stsql, false).FirstOrDefault();
+                tsql = "select top 1 'MR1'=[RowLog Contents 0] from #ModifiedRawData; ";
+                mr1 = DB.Query<byte[]>(tsql, false).FirstOrDefault();
             }
             else
             {
@@ -703,9 +796,9 @@ namespace DBLOG
             FPageInfo r;
             List<string> ds;
             int i, j, m_slotCnt;
-            string tmpstr, slotarray, tsql;
+            string tmpstr, slotarray;
             (string pageid, string lsn) pp;
-            List<FLOG> prevtran;
+            List<FLOG> prevlogs;
 
             pageid = pageid.ToLower();
             pp = (PrevPages == null ? (null,null) : PrevPages.FirstOrDefault(p => p.pageid == pageid));
@@ -719,29 +812,48 @@ namespace DBLOG
                        + $" and [Page ID]='{pp.pageid}' "
                        + "  and Operation in('LOP_FORMAT_PAGE','LOP_INSERT_ROWS','LOP_MODIFY_ROW') "
                        + "  order by [Current LSN] ";
-                prevtran = DB.Query<FLOG>(tsql, false);
+                prevlogs = DB.Query<FLOG>(tsql, false);
 
                 r = new FPageInfo();
-                tmpstr = new string(' ', 96 * 2);
-                foreach (FLOG log in prevtran)
+                r.SlotCnt = prevlogs.Where(p => p.Slot_ID != -1).Select(p => p.Slot_ID).Distinct().Count();
+                r.SlotBeginIndex = new int[r.SlotCnt];
+                r.SlotData = new Dictionary<int, string>();
+                for (i = 0; i <= r.SlotCnt - 1; i = i + 1) { r.SlotData.Add(i, ""); }
+                foreach (FLOG log in prevlogs
+                                     .OrderBy(p => (p.Slot_ID ?? 0).ToString().PadLeft(5, '0') + p.Current_LSN)
+                        )
                 {
+                    i = (log.Slot_ID ?? 0);
+
                     switch (log.Operation)
                     {
                         case "LOP_FORMAT_PAGE":
                             r.PageType = log.PageFormat_PageType.ToString();
-                            r.SlotBeginIndex = new int[1] { 96 };
                             break;
                         case "LOP_INSERT_ROWS":
-                            tmpstr = tmpstr + log.RowLog_Contents_0.ToText();
+                            r.SlotData[i] = log.RowLog_Contents_0.ToText();
                             break;
                         case "LOP_MODIFY_ROW":
-                            tmpstr = tmpstr.Stuff((Convert.ToInt32(log.Offset_in_Row) + 96) * 2,
-                                                  log.RowLog_Contents_0.Length * 2,
-                                                  log.RowLog_Contents_1.ToText());
+                            r.SlotData[i] = r.SlotData[i].Stuff(Convert.ToInt32(log.Offset_in_Row) * 2,
+                                                                log.RowLog_Contents_0.Length * 2,
+                                                                log.RowLog_Contents_1.ToText());
                             break;
                     }
+
+                    if (i >= 0)
+                    {
+                        r.SlotBeginIndex[i] = 96 + r.SlotData.Where(p => p.Key < i).Sum(p => p.Value.Length / 2);
+                    }
                 }
-                tmpstr = tmpstr + new string(' ', 42 * 2);
+
+                tmpstr = new string(' ', 96 * 2);
+                for (i = 0; i <= r.SlotCnt - 1; i = i + 1) 
+                { 
+                    tmpstr = tmpstr + r.SlotData[i];
+                }
+                tmpstr = tmpstr 
+                         + "78".Replicate(1024 * 8 - 96 - 42 - r.SlotData.Sum(p => p.Value.Length / 2))
+                         + new string(' ', 42 * 2);
                 r.PageData = tmpstr;
 
                 if (lobpagedata.ContainsKey(pageid) == true)
@@ -749,6 +861,8 @@ namespace DBLOG
                     lobpagedata.Remove(pageid);
                 }
                 lobpagedata.Add(pageid, r);
+
+                PrevPages.RemoveAll(p => p.pageid == pageid);
             }
             else
             {
@@ -763,17 +877,17 @@ namespace DBLOG
                     r.PageNum = Convert.ToInt32(pageid.Split(':')[1], 16);
                     r.FileNumPageNum_Hex = pageid;
 
-                    stsql = "truncate table #temppagedatalob; ";
-                    DB.ExecuteSQL(stsql, false);
+                    tsql = "truncate table #temppagedatalob; ";
+                    DB.ExecuteSQL(tsql, false);
 
-                    stsql = $"DBCC PAGE([{DatabaseName}],{r.FileNum.ToString()},{r.PageNum.ToString()},2) with tableresults,no_infomsgs; ";
-                    stsql = "set transaction isolation level read uncommitted; "
-                            + $"insert into #temppagedatalob(ParentObject,Object,Field,Value) exec('{stsql}'); ";
-                    DB.ExecuteSQL(stsql, false);
+                    tsql = $"DBCC PAGE([{DatabaseName}],{r.FileNum.ToString()},{r.PageNum.ToString()},2) with tableresults,no_infomsgs; ";
+                    tsql = "set transaction isolation level read uncommitted; "
+                            + $"insert into #temppagedatalob(ParentObject,Object,Field,Value) exec('{tsql}'); ";
+                    DB.ExecuteSQL(tsql, false);
 
                     // pagedata
-                    stsql = "select rn=row_number() over(order by Value)-1,Value=replace(upper(substring(Value,21,44)),N' ',N'') from #temppagedatalob where ParentObject=N'DATA:'; ";
-                    ds = DB.Query<(int rn, string Value)>(stsql, false).Select(p => p.Value).ToList();
+                    tsql = "select rn=row_number() over(order by Value)-1,Value=replace(upper(substring(Value,21,44)),N' ',N'') from #temppagedatalob where ParentObject=N'DATA:'; ";
+                    ds = DB.Query<(int rn, string Value)>(tsql, false).Select(p => p.Value).ToList();
                     r.PageData = string.Join("", ds);
                     if (r.PageData.Length > 1024 * 8 * 2)
                     {
@@ -781,12 +895,12 @@ namespace DBLOG
                     }
 
                     // pagetype
-                    stsql = "select Value from #temppagedatalob where ParentObject=N'PAGE HEADER:' and Field=N'm_type'; ";
-                    r.PageType = DB.Query11(stsql, false);
+                    tsql = "select Value from #temppagedatalob where ParentObject=N'PAGE HEADER:' and Field=N'm_type'; ";
+                    r.PageType = DB.Query11(tsql, false);
 
                     // SlotCnt
-                    stsql = "select Value from #temppagedatalob where ParentObject=N'PAGE HEADER:' and Field=N'm_slotCnt'; ";
-                    m_slotCnt = Convert.ToInt32(DB.Query11(stsql, false));
+                    tsql = "select Value from #temppagedatalob where ParentObject=N'PAGE HEADER:' and Field=N'm_slotCnt'; ";
+                    m_slotCnt = Convert.ToInt32(DB.Query11(tsql, false));
                     r.SlotCnt = m_slotCnt;
 
                     // SlotBeginIndex
@@ -801,6 +915,25 @@ namespace DBLOG
                     {
                         tmpstr = $"{slotarray.Substring(j, 2)}{slotarray.Substring(j - 2, 2)}";
                         r.SlotBeginIndex[i] = Convert.ToInt32(tmpstr, 16);
+                    }
+
+                    // SlotData
+                    r.SlotData = new Dictionary<int, string>();
+                    for (i = 0; i <= m_slotCnt - 1; i = i + 1)
+                    {
+                        if (r.SlotBeginIndex[i] >= 96)
+                        {
+                            j = (i < m_slotCnt - 1 ? 
+                                    (r.SlotBeginIndex[i + 1] - r.SlotBeginIndex[i]) * 2 
+                                    : (r.PageData.Length / 2 - m_slotCnt * 2 - r.SlotBeginIndex[i]) * 2
+                                );
+                            tmpstr = r.PageData.Substring(r.SlotBeginIndex[i] * 2, j);
+                        }
+                        else
+                        {
+                            tmpstr = "";
+                        }
+                        r.SlotData.Add(i, tmpstr);
                     }
 
                     lobpagedata.Add(pageid, r);
@@ -849,10 +982,7 @@ namespace DBLOG
                     break;
             }
 
-            foreach (FLOG lg in wslog.OrderByDescending(p => p.Current_LSN))
-            {
-                FRestoreLCXTEXT(lg);
-            }
+            FRestoreLCXTEXT(curlog, wslog);
 
             mr0 = mr0_str.ToByteArray();
 
@@ -915,7 +1045,7 @@ namespace DBLOG
 
             try
             {
-                if (mr1.Length >= 4)
+                if (mr1.Length >= 4 && log.IsVirtual == false)
                 {
                     mr0_str = mr1.ToText().Stuff(Convert.ToInt32(log.Offset_in_Row) * 2,
                                                  log.RowLog_Contents_1.ToText().Length,
@@ -2087,7 +2217,7 @@ namespace DBLOG
             tableinfo = new TableInformation();
 
             // PrimaryKeyColumns
-            stsql = "select primarykeycolumn=c.name "
+            tsql = "select primarykeycolumn=c.name "
                      + " from sys.indexes a "
                      + " join sys.index_columns b on a.object_id=b.object_id and a.index_id=b.index_id "
                      + " join sys.columns c on b.object_id=c.object_id and b.column_id=c.column_id "
@@ -2098,10 +2228,10 @@ namespace DBLOG
                      + "  and d.type='U' "
                      + $" and d.name=N'{pTablename}' "
                      + "  order by b.key_ordinal; ";
-            tableinfo.PrimaryKeyColumns = DB.Query<string>(stsql, false).ToList();
+            tableinfo.PrimaryKeyColumns = DB.Query<string>(tsql, false).ToList();
 
             // ClusteredIndexColumns
-            stsql = "select clusteredindexcolumn=c.name "
+            tsql = "select clusteredindexcolumn=c.name "
                     + "  from sys.indexes a "
                     + "  join sys.index_columns b on a.object_id=b.object_id and a.index_id=b.index_id "
                     + "  join sys.columns c on b.object_id=c.object_id and b.column_id=c.column_id "
@@ -2113,40 +2243,40 @@ namespace DBLOG
                     + "  and d.type='U' "
                     + $" and d.name=N'{pTablename}' "
                     + "  order by b.key_ordinal; ";
-            tableinfo.ClusteredIndexColumns = DB.Query<string>(stsql, false).ToList();
+            tableinfo.ClusteredIndexColumns = DB.Query<string>(tsql, false).ToList();
 
             // IsHeapTable
-            stsql = "select isheaptable=cast(case when exists(select 1 "
+            tsql = "select isheaptable=cast(case when exists(select 1 "
                       + "                                     from sys.tables t "
                       + "                                     join sys.schemas s on t.schema_id=s.schema_id "
                       + "                                     join sys.indexes i on t.object_id=i.object_id "
                       + $"                                    where s.name=N'{pSchemaName}' "
                       + $"                                    and t.name=N'{pTablename}' "
                       + "                                     and i.index_id=0) then 1 else 0 end as bit); ";
-            tableinfo.IsHeapTable = DB.Query<bool>(stsql, false).FirstOrDefault();
+            tableinfo.IsHeapTable = DB.Query<bool>(tsql, false).FirstOrDefault();
 
             // AllocUnitName
-            stsql = "select allocunitname=isnull(d.name,N'') "
+            tsql = "select allocunitname=isnull(d.name,N'') "
                     + "  from sys.tables a "
                     + "  join sys.schemas s on a.schema_id=s.schema_id "
                     + "  join sys.indexes d on a.object_id=d.object_id "
                     + "  where d.type in(0,1,5) "
                     + $" and s.name=N'{pSchemaName}' "
                     + $" and a.name=N'{pTablename}'; ";
-            tableinfo.AllocUnitName = DB.Query<string>(stsql, false).FirstOrDefault();
+            tableinfo.AllocUnitName = DB.Query<string>(tsql, false).FirstOrDefault();
 
             // TextInRow
-            stsql = "select textinrow=a.text_in_row_limit, "
+            tsql = "select textinrow=a.text_in_row_limit, "
                     + $"    isnodetable={(DB.Vesion >= 2017 ? "a.is_node" : "0")}, "
                     + $"    isedgetable={(DB.Vesion >= 2017 ? "a.is_edge" : "0")}"
                     + "  from sys.tables a "
                     + "  join sys.schemas s on a.schema_id=s.schema_id "
                     + $" where s.name=N'{pSchemaName}' "
                     + $" and a.name=N'{pTablename}'; ";
-            (tableinfo.TextInRow, tableinfo.IsNodeTable, tableinfo.IsEdgeTable) = DB.Query<(int, bool, bool)>(stsql, false).FirstOrDefault();
+            (tableinfo.TextInRow, tableinfo.IsNodeTable, tableinfo.IsEdgeTable) = DB.Query<(int, bool, bool)>(tsql, false).FirstOrDefault();
 
             // IsColumnStore
-            stsql = "select iscolumnstore=cast(case when exists(select 1 "
+            tsql = "select iscolumnstore=cast(case when exists(select 1 "
                       + "                                       from sys.tables t "
                       + "                                       join sys.schemas s on t.schema_id=s.schema_id "
                       + "                                       join sys.indexes i on t.object_id=i.object_id "
@@ -2154,10 +2284,10 @@ namespace DBLOG
                       + $"                                      and t.name=N'{pTablename}' "
                       + "                                       and i.index_id=1 "
                       + "                                       and i.type=5) then 1 else 0 end as bit); ";
-            tableinfo.IsColumnStore = DB.Query<bool>(stsql, false).FirstOrDefault();
+            tableinfo.IsColumnStore = DB.Query<bool>(tsql, false).FirstOrDefault();
 
             // DataCompressionType
-            stsql = "select PartitionId=p.partition_id, "
+            tsql = "select PartitionId=p.partition_id, "
                     + "     CompressionType=case p.data_compression when 0 then N'NONE' when 1 then N'ROW' when 2 then N'PAGE' when 3 then N'COLUMNSTORE' when 4 then N'COLUMNSTORE_ARCHIVE' else N'' end "
                     + "  from sys.tables t "
                     + "  join sys.schemas s on t.schema_id=s.schema_id "
@@ -2165,9 +2295,9 @@ namespace DBLOG
                     + $" where s.name=N'{pSchemaName}' "
                     + $" and t.name=N'{pTablename}' "
                     + "  and p.index_id<=1; ";
-            tableinfo.DataCompressionType = DB.Query<(long PartitionId, CompressionType CompressionType)>(stsql, false).ToDictionary(p => p.PartitionId, p => p.CompressionType);
+            tableinfo.DataCompressionType = DB.Query<(long PartitionId, CompressionType CompressionType)>(tsql, false).ToDictionary(p => p.PartitionId, p => p.CompressionType);
 
-            stsql = "select cast(("
+            tsql = "select cast(("
                         + "select ColumnID,ColumnName,DataType,PhysicalStorageType,Length,Precision,IsNullable,Scale,IsIdentity,IsComputed,LeafOffset,LeafNullBit,IsHidden,GraphType "
                         + " from (select 'ColumnID'=b.column_id, "
                         + "              'ColumnName'=b.name, "
@@ -2201,7 +2331,7 @@ namespace DBLOG
                         + " order by ColumnID "
                         + " for xml raw('Column'),root('ColumnList') "
                         + ") as nvarchar(max)); ";
-            stemp = DB.Query11(stsql, false);
+            stemp = DB.Query11(tsql, false);
             tablecolumns = AnalyzeTablelayout(stemp);
 
             return (tableinfo, tablecolumns);
@@ -3477,8 +3607,7 @@ namespace DBLOG
                 firstpage = new FPageInfo(tmpstr);
                 tmppage = GetPageInfo(firstpage.FileNumPageNum_Hex);
 
-                tmpstr = tmppage.PageData;
-                tmpstr = tmpstr.Stuff(0, tmppage.SlotBeginIndex[firstpage.SlotNum] * 2, "");
+                tmpstr = tmppage.SlotData[firstpage.SlotNum];
                 tmpstr = tmpstr.Stuff(0, tmpstr.IndexOf(fid) + fid.Length, "");
                 storagetype = tmpstr.Substring(0, 4);
 
@@ -3490,10 +3619,16 @@ namespace DBLOG
                         tmpstr = tmpstr.Stuff(0, 6 * 2, "");
                         fvaluehex = tmpstr.Substring(0, cutlen * 2);
                         break;
+                    case "0300":
+                        tmpstr = tmpstr.Stuff(0, 4, "");
+                        cutlen = tmpstr.IndexOf("00002121") / 2;
+                        fvaluehex = tmpstr.Substring(0, cutlen * 2);
+                        break;
                     case "0500":
                         tmpstr = tmpstr.Stuff(0, 4 * 2, "");
                         pageqty = Convert.ToInt32(tmpstr.Substring(2, 2) + tmpstr.Substring(0, 2), 16);
                         tmpstr = tmpstr.Stuff(0, 8 * 2, "");
+
                         tmps = new List<FPageInfo>();
                         for (i = 0; i <= pageqty - 1; i++)
                         {
@@ -3523,6 +3658,7 @@ namespace DBLOG
                                 continue;
                             }
                         }
+
                         fvaluehex = "";
                         i = 0;
                         foreach (FPageInfo tp in tmps)
@@ -3530,8 +3666,7 @@ namespace DBLOG
                             cutlen = Convert.ToInt32(tp.Offset - (i == 0 ? 0 : tmps[i - 1].Offset));
                             tmppage = GetPageInfo(tp.FileNumPageNum_Hex);
 
-                            subpage = tmppage.PageData;
-                            subpage = subpage.Stuff(0, tmppage.SlotBeginIndex[tp.SlotNum] * 2, "");
+                            subpage = tmppage.SlotData[tp.SlotNum];
                             subpage = subpage.Stuff(0, subpage.IndexOf(fid) + fid.Length, "");
                             subpage = subpage.Stuff(0, 2 * 2, "");
                             subpage = subpage.Substring(0, cutlen * 2);
@@ -3657,6 +3792,7 @@ namespace DBLOG
         
         public int SlotCnt { get; set; }
         public int[] SlotBeginIndex { get; set; }
+        public Dictionary<int, string> SlotData { get; set; }
     }
 
     public class SQLGraphNode
