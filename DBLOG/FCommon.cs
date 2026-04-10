@@ -41,7 +41,18 @@ namespace DBLOG
 
         public static string Replicate(this string pstr, int t)
         {
-            return new StringBuilder(pstr.Length * t).Insert(0, pstr, t).ToString();
+            string r;
+
+            if (t <= 0)
+            {
+                r = "";
+            }
+            else
+            {
+                r = new StringBuilder(pstr.Length * t).Insert(0, pstr, t).ToString();
+            }
+
+            return r;
         }
 
         public static byte[] ToByteArray(this string ss)
