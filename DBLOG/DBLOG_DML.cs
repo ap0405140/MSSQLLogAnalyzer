@@ -724,8 +724,9 @@ namespace DBLOG
                     + " select [RowLog Contents 0_var]=upper(replace(stuff((select replace(substring(C.[Value],charindex(N':',[Value],1)+1,48),N'†',N'') "
                     + "                                                     from #temppagedata C "
                     + $"                                                    where C.[LSN]=N'{pLog.Current_LSN}' "
-                    + $"                                                    and C.[ParentObject] like 'Slot {pLog.Slot_ID.ToString()} Offset%' "
+                    + $"                                                    and C.[ParentObject] like N'Slot {pLog.Slot_ID.ToString()} Offset%' "
                     + "                                                     and C.[Object] like N'%Memory Dump%' "
+                    + "                                                     order by C.[Value] "
                     + "                                                     for xml path('')),1,1,N''),N' ',N'')); ";
             DB.ExecuteSQL(tsql, false);
 
@@ -1116,13 +1117,44 @@ namespace DBLOG
                             fvalue0 = rowlogdata.Substring(j * 2, flength0 * 2);
                             j = j + flength0f4;
 
-                            flength1 = flength0;
-                            if (
-                                i == (log.RowLog_Contents_0.Length / 4)
-                                && (j * 2) < (rowlogdata.Length - 1)
-                               )
+                            //flength1 = flength0;
+                            //if (
+                            //    i == (log.RowLog_Contents_0.Length / 4)
+                            //    && (j * 2) < (rowlogdata.Length - 1)
+                            //   )
+                            //{
+                            //    flength1 = rowlogdata.Length / 2 - j;
+                            //}
+                            if (i < (log.RowLog_Contents_0.Length / 4))
                             {
-                                flength1 = rowlogdata.Length / 2 - j;
+                                // 對於 1 到 N-1 個元素：利用下一個元素的偏移量變化(Shift)來精確計算當前元素的新長度
+                                int next_fstart0 = Convert.ToInt32(log.RowLog_Contents_0[(i + 1) * 4 - 3].ToString("X2") + log.RowLog_Contents_0[(i + 1) * 4 - 4].ToString("X2"), 16);
+                                int next_fstart1 = Convert.ToInt32(log.RowLog_Contents_0[(i + 1) * 4 - 1].ToString("X2") + log.RowLog_Contents_0[(i + 1) * 4 - 2].ToString("X2"), 16);
+
+                                int currentShift = fstart1 - fstart0;
+                                int nextShift = next_fstart1 - next_fstart0;
+
+                                flength1 = flength0 + (nextShift - currentShift);
+                            }
+                            else
+                            {
+                                // 對於最後一個元素：因為沒有下一個偏移量可供參考，我們根據 rowlogdata 剩餘長度，與 mr1_str 進行精確比對以排除 Padding 補零位
+                                int max_flen1 = rowlogdata.Length / 2 - j;
+                                flength1 = 0;
+
+                                int max_check = Math.Min(max_flen1, mr1_str.Length / 2 - fstart1);
+                                for (k = 0; k < max_check; k++)
+                                {
+                                    // 逐 Byte 比對 Payload 與實際的 After Image，精確算出有效長度
+                                    if (rowlogdata.Substring((j + k) * 2, 2) == mr1_str.Substring((fstart1 + k) * 2, 2))
+                                    {
+                                        flength1++;
+                                    }
+                                    else
+                                    {
+                                        break;
+                                    }
+                                }
                             }
                             flength1f4 = (flength1 % 4 == 0 ? flength1 : flength1 + (4 - flength1 % 4));
 
@@ -3823,6 +3855,5 @@ namespace DBLOG
         public string table { get; set; }
         public int id { get; set; }
     }
-
 
 }
