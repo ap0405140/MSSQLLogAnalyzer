@@ -1,4 +1,6 @@
-## DBLOG.DatabaseLogAnalyzer can read the SQL Server transaction logs online, and return RedoSQL and UndoSQL for every transaction. It base on SQL Server fn_dblog() function and develop some extension.
+## DBLOG.DatabaseLogAnalyzer can read the SQL Server transaction logs online, and return RedoSQL and UndoSQL for every transaction. It base on SQL Server fn_dblog() function and develop some extension. 
+
+#### Notice: This project has been relicensed from MIT to GNU GPL v3.0. For commercial use or to obtain a commercial license, please contact the author.
 
 #### below is a demo:
 Connect to SQL Server, create a test table dbo.OrderDetail, and run some DML sql on this table.
