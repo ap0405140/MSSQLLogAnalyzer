@@ -13,6 +13,7 @@ using System.Timers;
 using System.Windows.Forms;
 using System.Configuration;
 using DBLOG;
+using DBLOG.Common;
 
 namespace MSSQLLogAnalyzer
 {
@@ -52,6 +53,7 @@ namespace MSSQLLogAnalyzer
             timer.Enabled = false;
 
             Init();
+
         }
 
         private void Form1_Shown(object sender, EventArgs e)

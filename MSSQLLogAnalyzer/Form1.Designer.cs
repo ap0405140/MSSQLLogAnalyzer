@@ -251,7 +251,7 @@
             // 
             // bindingSource1
             // 
-            this.bindingSource1.DataSource = typeof(DBLOG.DatabaseLog);
+            this.bindingSource1.DataSource = typeof(DBLOG.Common.DatabaseLog);
             // 
             // tableLayoutPanel1
             // 

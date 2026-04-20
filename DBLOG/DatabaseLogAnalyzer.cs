@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using DBLOG.Common;
 
 namespace DBLOG
 {
@@ -60,7 +61,13 @@ namespace DBLOG
         /// <returns>DatabaseLog array.</returns>
         public DatabaseLog[] ReadLog(string pStartTime, string pEndTime, string pObjectName)
         {
-            List<DatabaseLog> logs, dmllog, ddllog;
+            List<DatabaseLog> logs, tmplog;
+            int i;
+            string databasename, schemaname, tablename;
+            DataTable dtTemp;
+            DBLOG_DML_DDL[] tablelist;
+            List<FLOG> Loglist, Loglist_DDL;
+            List<(string tablename, string schemaname)> tables;
 
             _objectname = pObjectName ?? string.Empty;
             _objectname = (_objectname.Length > 0 && _objectname.Contains(".") == false ? "dbo." : "") + _objectname;
@@ -75,24 +82,6 @@ namespace DBLOG
             logs = new List<DatabaseLog>();
             ReadPercent = 0;
 
-            dmllog = ReadLogDML();
-            logs.AddRange(dmllog);
-
-            ReadPercent = 100;
-
-            return logs.ToArray();
-        }
-
-        private List<DatabaseLog> ReadLogDML()
-        {
-            List<DatabaseLog> dmllog, tmplog;
-            int i;
-            string databasename, schemaname, tablename;
-            DataTable dtTemp;
-            DBLOG_DML[] tablelist;
-            List<FLOG> Loglist;
-            List<(string tablename, string schemaname)> tables;
-
             databasename = DB.DatabaseName;
             schemaname = "";
             tablename = "";
@@ -102,7 +91,7 @@ namespace DBLOG
                 tablename = _objectname.Substring(_objectname.IndexOf(".", 0) + 1, _objectname.Length - _objectname.IndexOf(".", 0) - 1);
             }
 
-            // get DML Transaction list
+            // transaction list
             _tsql = "if object_id('tempdb..#TransactionList') is not null drop table #TransactionList; ";
             DB.ExecuteSQL(_tsql, false);
 
@@ -135,63 +124,78 @@ namespace DBLOG
                 _MinLSN = "";
             }
 
-            // get DML original log list
+            // get original logs
             _tsql = "if object_id('tempdb..#LogList') is not null drop table #LogList; ";
             DB.ExecuteSQL(_tsql, false);
 
-            _tsql = "select *,IsVirtual=cast(0 as bit) "
+            _tsql = "select *,IsVirtual=cast(0 as bit),LogType=cast(N'' as nvarchar(10)) "
                   + " into #LogList "
                   + " from sys.fn_dblog(null,null) t "
                   + " where 1=2; ";
             DB.ExecuteSQL(_tsql, false);
 
+            _tsql = $"alter table #LogList add constraint pk#LogList{Guid.NewGuid().ToString().Replace("-", "")} primary key clustered ([Current LSN]); ";
+            DB.ExecuteSQL(_tsql, false);
+
             _tsql = "set transaction isolation level read uncommitted; "
                     + "insert into #LogList "
                     + "output inserted.* "
-                    + "select *,IsVirtual=cast(0 as bit) "
+                    + "select *,IsVirtual=cast(0 as bit),LogType=N'DML' "
                     + "  from sys.fn_dblog(null,null) t "
-                    + $" where [Current LSN]>='{_MinLSN}' "
-                    + "  and [Context] in('LCX_HEAP','LCX_CLUSTERED','LCX_MARK_AS_GHOST','LCX_TEXT_TREE','LCX_TEXT_MIX') "
-                    + "  and [Operation] in('LOP_INSERT_ROWS','LOP_DELETE_ROWS','LOP_MODIFY_ROW','LOP_MODIFY_COLUMNS','LOP_FORMAT_PAGE') "
-                    + "  and [AllocUnitName]<>'Unknown Alloc Unit' "
-                    + "  and [AllocUnitName] not like 'sys.%' "
-                    + "  and [AllocUnitName] is not null ";
+                    + $" where [Current LSN]>=N'{_MinLSN}' "
+                    + "  and [Context] in(N'LCX_HEAP',N'LCX_CLUSTERED',N'LCX_MARK_AS_GHOST',N'LCX_TEXT_TREE',N'LCX_TEXT_MIX') "
+                    + "  and [Operation] in(N'LOP_INSERT_ROWS',N'LOP_DELETE_ROWS',N'LOP_MODIFY_ROW',N'LOP_MODIFY_COLUMNS',N'LOP_FORMAT_PAGE') "
+                    + "  and [AllocUnitName]<>N'Unknown Alloc Unit' "
+                    + "  and [AllocUnitName] not like N'sys.%' "
+                    + "  and [AllocUnitName] is not null "
+                    + "  [FDMLFILTER]; ";
 
             if (_objectname.Length > 0)
             {
-                _tsql = _tsql 
-                        + " and case when parsename([AllocUnitName],3) is not null then parsename([AllocUnitName],2) else parsename([AllocUnitName],1) end='" + tablename + "' "
-                        + " and case when parsename([AllocUnitName],3) is not null then parsename([AllocUnitName],3) else parsename([AllocUnitName],2) end='" + schemaname + "' ";
+                _tsql = _tsql.Replace("[FDMLFILTER]",
+                                      "and case when parsename([AllocUnitName],3) is not null then parsename([AllocUnitName],2) else parsename([AllocUnitName],1) end=N'" + tablename + "' "
+                                      + "and case when parsename([AllocUnitName],3) is not null then parsename([AllocUnitName],3) else parsename([AllocUnitName],2) end=N'" + schemaname + "' ");
+            }
+            else
+            {
+                _tsql = _tsql.Replace("[FDMLFILTER]", "");
             }
             Loglist = DB.Query<FLOG>(_tsql, false);
 
-            _tsql = $"alter table #LogList add constraint pk#LogList{Guid.NewGuid().ToString().Replace("-", "")} primary key clustered ([Current LSN]); ";
-            DB.ExecuteSQL(_tsql, false);
+            _tsql = "set transaction isolation level read uncommitted; "
+                    + "select *,IsVirtual=cast(0 as bit),LogType=N'DDL' "
+                    + "  from sys.fn_dblog(null,null) t "
+                    + $" where [Current LSN]>=N'{_MinLSN}' "
+                    + "  and [Transaction ID]<>N'0000:00000000' "
+                    + "  and exists(select 1 from sys.fn_dblog(null,null) b where b.[Transaction ID]=t.[Transaction ID] and b.Operation=N'LOP_BEGIN_XACT' and b.[Transaction Name] in(N'CREATE TABLE',N'DROPOBJ',N'create-schema',N'DROP SCHEMA',N'CREATE INDEX',N'DROP INDEX')) "
+                    + "  and exists(select 1 from sys.fn_dblog(null,null) b where b.[Transaction ID]=t.[Transaction ID] and b.Operation=N'LOP_COMMIT_XACT') "
+                    + "  and exists(select 1 from sys.fn_dblog(null,null) b where b.[Transaction ID]=t.[Transaction ID] and b.AllocUnitName is not null); ";
+            Loglist_DDL = DB.Query<FLOG>(_tsql, false);
 
             // get table list
             _tsql = "select 'TableName'=case when parsename([AllocUnitName],3) is not null then parsename([AllocUnitName],2) else parsename([AllocUnitName],1) end, "
                     + "     'SchemaName'=case when parsename([AllocUnitName],3) is not null then parsename([AllocUnitName],3) else parsename([AllocUnitName],2) end "
                     + " from #LogList "
                     + " where [Transaction ID] in(select TransactionID from #TransactionList) "
+                    + " and LogType=N'DML' "
                     + " group by case when parsename([AllocUnitName],3) is not null then parsename([AllocUnitName],2) else parsename([AllocUnitName],1) end, "
                     + "          case when parsename([AllocUnitName],3) is not null then parsename([AllocUnitName],3) else parsename([AllocUnitName],2) end "
                     + " order by max([Current LSN]) desc; ";
-            tables = DB.Query<(string tablename,string schemaname)>(_tsql, false).ToList();
+            tables = DB.Query<(string tablename, string schemaname)>(_tsql, false).ToList();
 
             ReadPercent = ReadPercent + 5;
 
-            tablelist = new DBLOG_DML[tables.Count];
-            dmllog = new List<DatabaseLog>();
-            DBLOG_DML.PrevPages = null;
+            DBLOG_DML_DDL.Init();
+            DBLOG_DML_DDL.DDLLogs = Loglist_DDL;
+            tablelist = new DBLOG_DML_DDL[tables.Count];
             i = 0;
-            foreach (var dr in tables)
+            foreach ((string tablename, string schemaname) dr in tables)
             {
                 tablename = dr.tablename;
                 schemaname = dr.schemaname;
-                tablelist[i] = new DBLOG_DML(databasename, schemaname, tablename, DB, LogFile);
+                tablelist[i] = new DBLOG_DML_DDL(databasename, schemaname, tablename, DB, LogFile);
                 tablelist[i].DTLogs = Loglist.Where(p => p.AllocUnitName == $"{schemaname}.{tablename}"
-                                                         || p.AllocUnitName.StartsWith($"{schemaname}.{tablename}.")
-                                                   )
+                                                         || p.AllocUnitName.StartsWith($"{schemaname}.{tablename}."))
                                              .ToList();
 
 #if DEBUG
@@ -199,7 +203,7 @@ namespace DBLOG
 #endif
 
                 tmplog = tablelist[i].AnalyzeLog();
-                dmllog.AddRange(tmplog);
+                logs.AddRange(tmplog);
                 ReadPercent = ReadPercent + Convert.ToInt32(Math.Floor((tablelist[i].DTLogs.Count * 1.0) / (Loglist.Count * 1.0) * 85.0));
 
 #if DEBUG
@@ -209,78 +213,13 @@ namespace DBLOG
                 i = i + 1;
             }
 
-            dmllog = dmllog.OrderBy(p => p.TransactionID).ToList();
+            logs = logs.OrderBy(p => p.TransactionID).ToList();
+            
+            ReadPercent = 100;
 
-            ReadPercent = 95;
-            return dmllog;
+            return logs.ToArray();
         }
-      
+
     }
 
-    [Serializable]
-    public class DatabaseLog
-    {
-        private string _redosql,
-                       _undosql;
-        private byte[] _redosqlfile,
-                       _undosqlfile;
-
-        public string LSN { get; set; }
-        public string Type { get; set; } // DML / DDL / DCL
-        public string TransactionID { get; set; }
-        public string BeginTime { get; set; }
-        public string EndTime { get; set; }
-        public string ObjectName { get; set; }
-        public string Operation { get; set; }
-
-        public string RedoSQL 
-        { 
-            get
-            {
-                return (_redosql.Length <= 1000 ? _redosql : _redosql.Substring(0, 1000) + "...");
-            }
-            set
-            {
-                _redosql = value;
-            }
-        }
-        public byte[] RedoSQLFile 
-        { 
-            get
-            {
-                if (_redosqlfile == null)
-                {
-                    _redosqlfile = _redosql.ToFileByteArray();
-                }
-
-                return _redosqlfile;
-            }
-        }
-
-        public string UndoSQL
-        {
-            get
-            {
-                return (_undosql.Length <= 1000 ? _undosql : _undosql.Substring(0, 1000) + "...");
-            }
-            set
-            {
-                _undosql = value;
-            }
-        }
-        public byte[] UndoSQLFile
-        {
-            get
-            {
-                if (_undosqlfile == null)
-                {
-                    _undosqlfile = _undosql.ToFileByteArray();
-                }
-
-                return _undosqlfile;
-            }
-        }
-
-        public string Message { get; set; }
-    }
 }

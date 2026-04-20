@@ -10,9 +10,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using static System.Net.Mime.MediaTypeNames;
 
-namespace DBLOG
+namespace DBLOG.Common
 {
-    // 数据库操作类
     public class DatabaseOperation
     {
         public string ServerName,

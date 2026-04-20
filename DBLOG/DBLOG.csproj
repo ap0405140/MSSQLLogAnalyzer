@@ -37,7 +37,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="Newtonsoft.Json, Version=13.0.0.0, Culture=neutral, PublicKeyToken=30ad4fe6b2a6aeed, processorArchitecture=MSIL">
-      <HintPath>..\packages\Newtonsoft.Json.13.0.1\lib\net45\Newtonsoft.Json.dll</HintPath>
+      <HintPath>..\packages\Newtonsoft.Json.13.0.4\lib\net45\Newtonsoft.Json.dll</HintPath>
     </Reference>
     <Reference Include="System" />
     <Reference Include="System.ComponentModel.DataAnnotations" />
@@ -51,11 +51,20 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="Common\CollationHelper.cs" />
+    <Compile Include="Common\DatabaseLog.cs" />
+    <Compile Include="Common\FLOG.cs" />
+    <Compile Include="Common\FPageInfo.cs" />
+    <Compile Include="Common\FVarColumnInfo.cs" />
+    <Compile Include="Common\SQLGraphNode.cs" />
+    <Compile Include="Common\TableColumn.cs" />
+    <Compile Include="Common\TableInformation.cs" />
     <Compile Include="DatabaseLogAnalyzer.cs" />
-    <Compile Include="DatabaseOperation.cs" />
-    <Compile Include="DBLOG_DDL.cs" />
-    <Compile Include="DBLOG_DML.cs" />
-    <Compile Include="FCommon.cs" />
+    <Compile Include="Common\DatabaseOperation.cs" />
+    <Compile Include="DBLOG_DML_DDL.cs" />
+    <Compile Include="Common\FCommon.cs" />
+    <Compile Include="DBLOG_DML_DDL_Compression.cs" />
+    <Compile Include="DBLOG_DML_DDL_Translate.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>
