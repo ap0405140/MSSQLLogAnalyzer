@@ -2,11 +2,12 @@
 using System.Data;
 using System.Data.SqlClient;
 using System.Data.SqlTypes;
-using Microsoft.SqlServer.Server;
-using DBLOG;
 using System.Collections.Generic;
 using System.Collections;
 using System.Threading.Tasks;
+using Microsoft.SqlServer.Server;
+using DBLOG;
+using DBLOG.Common;
 
 public partial class UserDefinedFunctions
 {
