@@ -1,48 +1,107 @@
-﻿using System;
+﻿using DBLOG.Common;
+using Newtonsoft.Json;
+using System;
 using System.Collections.Generic;
 using System.Data;
+using System.Globalization;
 using System.Linq;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Xml;
-using Newtonsoft.Json;
-using DBLOG.Common;
+using System.Xml.Linq;
 
 namespace DBLOG
 {
     // log analyzer for DML & DDL
     public partial class DBLOG_DML_DDL
     {
-        private DatabaseOperation DB; // 数据库操作
-        private string tsql,          // 动态SQL
-                       DatabaseName,  // 数据库名
-                       TableName,     // 表名
-                       SchemaName,    // 架构名
-                       LogFile;
-        private TableColumn[] TableColumns;  // 表结构定义
-        private TableInformation TableInfos;   // 表信息
-        private Dictionary<string, FPageInfo> lobpagedata; // key:fileid+pageid value:FPageInfo
+        public static List<FLOG> DDLLogs, DDLLogs_Tran;
+        private static List<TransactionInfo> DDLLogs_FTranID;
+        private static string DatabaseName, tsql, LogFile;
         private static List<string> RowCompressionAffectsStorage;
-        public static List<(string pageid, string lsn)> PrevPages; // fileid+pageid 
-        public List<FLOG> DTLogs;     // 原始日志信息
-        public static List<FLOG> DDLLogs;
+        private static List<(string pageid, string lsn)> PrevPages; // fileid+pageid 
+        private static DatabaseOperation DB;
 
-        public DBLOG_DML_DDL(string pDatabasename, string pSchemaName, string pTableName, DatabaseOperation poDB, string pLogFile)
+        private string TableName,
+                       SchemaName,
+                       AllocUnitType;
+        private TableInfo FTableInfo;
+        private Dictionary<string, FPageInfo> lobpagedata; // key:fileid+pageid value:FPageInfo
+        public List<FLOG> DTLogs;     // original logs
+        private List<DatabaseLog> wslogs;
+
+        public DBLOG_DML_DDL(string PSchemaName, string PTableName)
         {
-            DB = poDB;
-            DatabaseName = pDatabasename;
-            TableName = pTableName;
-            SchemaName = pSchemaName;
-            LogFile = pLogFile;
+            TableName = PTableName;
+            SchemaName = PSchemaName;
+            AllocUnitType = "NORMAL";
 
-            (TableInfos, TableColumns) = GetTableInfo(SchemaName, TableName);
-            
+            FTableInfo = GetTableInfo(SchemaName, TableName);
         }
 
-        public static void Init()
+        public DBLOG_DML_DDL(long PAllocUnitId, string PMaxLsn)
         {
-            // RowCompressionAffectsStorage
+            string wstranid;
+            DatabaseLog tmplog;
+            TransactionInfo traninfo;
+
+            AllocUnitType = "UNKNOWN";
+            traninfo = DDLLogs_FTranID.FirstOrDefault(t => string.Compare(t.LSNList.Min(), PMaxLsn) == 1
+                                                           && t.TransactionName == "DROPOBJ" 
+                                                           && t.AllocUnitId.Contains(PAllocUnitId.ToString()) == true
+                                                     );
+            if (traninfo != null)
+            {
+                TableName = traninfo.AllocUnitName.Split('.')[1].Replace("[", "").Replace("]", "");
+                SchemaName = traninfo.AllocUnitName.Split('.')[0].Replace("[", "").Replace("]", "");
+                FTableInfo = UserTables[$"{SchemaName}.{TableName}"];
+            }
+            else
+            {
+                wstranid = DDLLogs.Where(p => string.Compare(p.Current_LSN, PMaxLsn) == 1
+                                              && p.AllocUnitId == PAllocUnitId
+                                              && DDLLogs.Any(e => e.Transaction_ID == p.Transaction_ID && e.Transaction_Name == "DROPOBJ") == true
+                                              && DDLLogs_FTranID.Any(t => t.TransactionID == p.Transaction_ID) == false)
+                                  .Select(p => p.Transaction_ID)
+                                  .FirstOrDefault();
+
+                if (string.IsNullOrEmpty(wstranid) == false)
+                {
+                    wslogs = new List<DatabaseLog>();
+
+                    tmplog = AnalyzeDDLTran(wstranid);
+                    wslogs.Add(tmplog);
+
+                    TableName = tmplog.ObjectName.Split('.')[1].Replace("[", "").Replace("]", "");
+                    SchemaName = tmplog.ObjectName.Split('.')[0].Replace("[", "").Replace("]", "");
+                    FTableInfo = GetTableInfo(SchemaName, TableName);
+                }
+                else
+                {
+                    TableName = "";
+                    SchemaName = "";
+                    FTableInfo = null;
+                }
+            }
+
+        }
+
+        public DBLOG_DML_DDL()
+        {
+            TableName = "";
+            SchemaName = "";
+            AllocUnitType = "NORMAL";
+
+        }
+
+        public static void Init(string PDatabaseName, DatabaseOperation PDB, string PLogFile)
+        {
+            DatabaseName = PDatabaseName;
+            DB = PDB;
+            LogFile = PLogFile;
+
+            #region RowCompressionAffectsStorage
             RowCompressionAffectsStorage = new List<string>();
             RowCompressionAffectsStorage.Add("smallint"); // If the value fits in 1 byte, only 1 byte will be used.
             RowCompressionAffectsStorage.Add("int"); // Uses only the bytes that are needed. For example, if a value can be stored in 1 byte, storage will take only 1 byte.
@@ -61,6 +120,17 @@ namespace DBLOG
             RowCompressionAffectsStorage.Add("nchar"); // Trailing padding characters are removed. Note that the Database Engine inserts the same padding character regardless of the collation that is used.
             RowCompressionAffectsStorage.Add("binary"); // Trailing zeros are removed.
             RowCompressionAffectsStorage.Add("timestamp"); // Uses the integer data representation by using 8 bytes. There is a timestamp counter that is maintained for each database, and its value starts from 0. This can be compressed like any other integer value.
+            #endregion RowCompressionAffectsStorage
+
+            SystemTables = new Dictionary<string, TableInfo>();
+            UserTables = new Dictionary<string, TableInfo>();
+            DDLLogs_FTranID = new List<TransactionInfo>();
+
+            tsql = "select schema_id,name from sys.schemas; ";
+            Schemas = DB.Query<(int schema_id, string name)>(tsql, false).ToDictionary(p => p.schema_id, p => p.name);
+
+            tsql = "select typeid=rtrim(xtype)+'_'+rtrim(xusertype),name from sys.systypes; ";
+            Systypes = DB.Query<(string typeid, string name)>(tsql, false).ToDictionary(p => p.typeid, p => p.name);
 
         }
 
@@ -84,450 +154,480 @@ namespace DBLOG
             CompressionType compressiontype;
             List<FLOG> wslog, vlog;
             FLOG llog, tlog;
+            List<string> ddltranids;
+            TableInfo FTableInfo0;
 
             logs = new List<DatabaseLog>();
-            ColumnList = string.Join(",", TableColumns
-                                          .Where(p => p.PhysicalStorageType != SqlDbType.Timestamp 
-                                                      && p.IsComputed == false
-                                                      && p.IsHidden == false)
-                                          .Select(p => $"[{p.ColumnName}]"));
-
-            DTMRlist = new DataTable();
-            DTMRlist.Columns.Add("PAGEID", typeof(string));
-            DTMRlist.Columns.Add("SlotID", typeof(string));
-            DTMRlist.Columns.Add("AllocUnitId", typeof(string));
-            DTMRlist.Columns.Add("MR1", typeof(byte[]));
-            DTMRlist.Columns.Add("MR1TEXT", typeof(string));
-
-            tsql = @"if object_id('tempdb..#temppagedata') is not null drop table #temppagedata; 
-                        create table #temppagedata(LSN nvarchar(1000),ParentObject sysname,Object sysname,Field sysname,Value nvarchar(max)); ";
-            DB.ExecuteSQL(tsql, false);
-
-            tsql = "create index ix_#temppagedata on #temppagedata(LSN); ";
-            DB.ExecuteSQL(tsql, false);
-
-            tsql = @"if object_id('tempdb..#temppagedatalob') is not null drop table #temppagedatalob; 
-                        create table #temppagedatalob(ParentObject sysname,Object sysname,Field sysname,Value nvarchar(max)); ";
-            DB.ExecuteSQL(tsql, false);
-
-            tsql = @"if object_id('tempdb..#ModifiedRawData') is not null drop table #ModifiedRawData; 
-                        create table #ModifiedRawData([SlotID] int,[RowLog Contents 0_var] nvarchar(max),[RowLog Contents 0] varbinary(max)); ";
-            DB.ExecuteSQL(tsql, false);
-
-            lobpagedata = new Dictionary<string, FPageInfo>();
-
-            stemp = $"{SchemaName}.{TableName}{(TableInfos.AllocUnitName.Length == 0 ? "" : "." + TableInfos.AllocUnitName)}";
-
-            vlog = new List<FLOG>();
-            foreach (string tranid in DTLogs.Select(p => p.Transaction_ID).Distinct())
+            if (DTLogs != null && FTableInfo != null)
             {
-                wslog = DTLogs.Where(p => p.Transaction_ID == tranid).ToList();
-                if (wslog.Any(p => p.Context == "LCX_CLUSTERED" || p.Context == "LCX_HEAP" || p.Context == "LCX_MARK_AS_GHOST") == false)
+                ColumnList = string.Join(",", FTableInfo.Columns
+                                                        .Where(p => p.PhysicalStorageType != SqlDbType.Timestamp
+                                                                    && p.IsComputed == false
+                                                                    && p.IsHidden == false)
+                                                        .Select(p => $"[{p.ColumnName}]"));
+
+                DTMRlist = new DataTable();
+                DTMRlist.Columns.Add("PAGEID", typeof(string));
+                DTMRlist.Columns.Add("SlotID", typeof(string));
+                DTMRlist.Columns.Add("AllocUnitId", typeof(string));
+                DTMRlist.Columns.Add("MR1", typeof(byte[]));
+                DTMRlist.Columns.Add("MR1TEXT", typeof(string));
+
+                tsql = @"if object_id('tempdb..#temppagedata') is not null drop table #temppagedata; 
+                        create table #temppagedata(LSN nvarchar(1000),ParentObject sysname,Object sysname,Field sysname,Value nvarchar(max)); ";
+                DB.ExecuteSQL(tsql, false);
+
+                tsql = "create index ix_#temppagedata on #temppagedata(LSN); ";
+                DB.ExecuteSQL(tsql, false);
+
+                tsql = @"if object_id('tempdb..#temppagedatalob') is not null drop table #temppagedatalob; 
+                        create table #temppagedatalob(ParentObject sysname,Object sysname,Field sysname,Value nvarchar(max)); ";
+                DB.ExecuteSQL(tsql, false);
+
+                tsql = @"if object_id('tempdb..#ModifiedRawData') is not null drop table #ModifiedRawData; 
+                        create table #ModifiedRawData([SlotID] int,[RowLog Contents 0_var] nvarchar(max),[RowLog Contents 0] varbinary(max)); ";
+                DB.ExecuteSQL(tsql, false);
+
+                lobpagedata = new Dictionary<string, FPageInfo>();
+
+                stemp = "";
+                if (AllocUnitType == "NORMAL")
                 {
-                    tlog = wslog.OrderBy(p => p.Current_LSN).FirstOrDefault();
-                    tsql = $"with b as "
-                            + $"(select top 1 b1.* "
-                            + $" from sys.fn_dblog(null,null) b1 "
-                            + $" where b1.[Current LSN]<N'{tlog.Current_LSN}' "
-                            + $" and b1.[Page ID]='{tlog.Page_ID}' "
-                            + $" and b1.[Slot ID]={tlog.Slot_ID} "
-                            + $" and exists(select 1 from sys.fn_dblog(null,null) b2 where b2.[Transaction ID]=b1.[Transaction ID] and b2.Context in(N'LCX_CLUSTERED',N'LCX_HEAP',N'LCX_MARK_AS_GHOST')) "
-                            + $" order by b1.[Current LSN] desc)"
-                            + $"select top 1 t.* "
-                            + $"from sys.fn_dblog(null,null) t "
-                            + $"join b on t.[Transaction ID]=b.[Transaction ID] and t.[Current LSN]>b.[Current LSN] "
-                            + $"where t.Context in(N'LCX_CLUSTERED',N'LCX_HEAP',N'LCX_MARK_AS_GHOST') "
-                            + $"order by t.[Current LSN] ";
-                    tlog = DB.Query<FLOG>(tsql, false).FirstOrDefault();
+                    stemp = $"{SchemaName}.{TableName}{(FTableInfo.AllocUnitName.Length == 0 ? "" : "." + FTableInfo.AllocUnitName)}";
+                }
+                if (AllocUnitType == "UNKNOWN")
+                {
+                    stemp = $"Unknown Alloc Unit";
+                }
 
-                    if (tlog != null)
+                vlog = new List<FLOG>();
+                foreach (string tranid in DTLogs.Select(p => p.Transaction_ID).Distinct())
+                {
+                    wslog = DTLogs.Where(p => p.Transaction_ID == tranid).ToList();
+                    if (wslog.Any(p => p.Context == "LCX_CLUSTERED" || p.Context == "LCX_HEAP" || p.Context == "LCX_MARK_AS_GHOST") == false)
                     {
-                        llog = new FLOG();
-                        llog.Current_LSN = wslog.OrderByDescending(p => p.Current_LSN).First().Current_LSN + "V";
-                        llog.Operation = "LOP_MODIFY_ROW";
-                        llog.Context = (TableInfos.IsHeapTable ? "LCX_HEAP" : "LCX_CLUSTERED");
-                        llog.Transaction_ID = tranid;
-                        llog.IsVirtual = true;
-                        llog.AllocUnitName = stemp;
-                        llog.Page_ID = tlog.Page_ID;
-                        llog.Slot_ID = tlog.Slot_ID;
+                        tlog = wslog.OrderBy(p => p.Current_LSN).FirstOrDefault();
+                        tsql = $"with b as "
+                                + $"(select top 1 b1.* "
+                                + $" from sys.fn_dblog(null,null) b1 "
+                                + $" where b1.[Current LSN]<N'{tlog.Current_LSN}' "
+                                + $" and b1.[Page ID]='{tlog.Page_ID}' "
+                                + $" and b1.[Slot ID]={tlog.Slot_ID} "
+                                + $" and exists(select 1 from sys.fn_dblog(null,null) b2 where b2.[Transaction ID]=b1.[Transaction ID] and b2.Context in(N'LCX_CLUSTERED',N'LCX_HEAP',N'LCX_MARK_AS_GHOST')) "
+                                + $" order by b1.[Current LSN] desc)"
+                                + $"select top 1 t.* "
+                                + $"from sys.fn_dblog(null,null) t "
+                                + $"join b on t.[Transaction ID]=b.[Transaction ID] and t.[Current LSN]>b.[Current LSN] "
+                                + $"where t.Context in(N'LCX_CLUSTERED',N'LCX_HEAP',N'LCX_MARK_AS_GHOST') "
+                                + $"order by t.[Current LSN] ";
+                        tlog = DB.Query<FLOG>(tsql, false).FirstOrDefault();
 
-                        vlog.Add(llog);
+                        if (tlog != null)
+                        {
+                            llog = new FLOG();
+                            llog.Current_LSN = wslog.OrderByDescending(p => p.Current_LSN).First().Current_LSN + "V";
+                            llog.Operation = "LOP_MODIFY_ROW";
+                            llog.Context = (FTableInfo.IsHeapTable ? "LCX_HEAP" : "LCX_CLUSTERED");
+                            llog.Transaction_ID = tranid;
+                            llog.IsVirtual = true;
+                            llog.AllocUnitName = stemp;
+                            llog.Page_ID = tlog.Page_ID;
+                            llog.Slot_ID = tlog.Slot_ID;
+
+                            vlog.Add(llog);
+                        }
                     }
                 }
-            }
-            DTLogs.AddRange(vlog);
-            
-            foreach (FLOG log in DTLogs.Where(p => (
-                                                    (TableInfos.IsColumnStore == false && p.AllocUnitName == stemp)
-                                                    ||
-                                                    (TableInfos.IsColumnStore == true && p.AllocUnitName.StartsWith(stemp) == true)
-                                                   )
-                                                   &&
-                                                   IsLCXTEXT(p) == false)
-                                       .OrderByDescending(p => p.Transaction_ID + p.Current_LSN)
-                    )
-            {
-                try
+                DTLogs.AddRange(vlog);
+
+                foreach (FLOG log in DTLogs.Where(p => (
+                                                        (FTableInfo.IsColumnStore == false && p.AllocUnitName == stemp)
+                                                        ||
+                                                        (FTableInfo.IsColumnStore == true && p.AllocUnitName.StartsWith(stemp) == true)
+                                                       )
+                                                       &&
+                                                       IsLCXTEXT(p) == false)
+                                           .OrderByDescending(p => p.Transaction_ID + p.Current_LSN)
+                        )
                 {
-                    if (log.Operation == "LOP_MODIFY_ROW" || log.Operation == "LOP_MODIFY_COLUMNS")
+                    try
                     {
-                        llog = DTLogs
-                               .Where(p => p.Transaction_ID == log.Transaction_ID
-                                           && string.Compare(p.Current_LSN, log.Current_LSN) == -1
-                                           && IsLCXTEXT(p) == false)
-                               .OrderByDescending(p => p.Current_LSN)
-                               .FirstOrDefault();
-                        stemp = (llog != null ? llog.Current_LSN : "");
-                        wslog = DTLogs
-                                .Where(p => p.Transaction_ID == log.Transaction_ID
-                                            && IsLCXTEXT(p) == true
-                                            && string.Compare(p.Current_LSN, log.Current_LSN) == -1
-                                            && string.Compare(p.Current_LSN, stemp) == 1)
-                                .ToList();
-                    }
-                    else
-                    {
-                        wslog = DTLogs
-                                .Where(p => p.Transaction_ID == log.Transaction_ID
-                                            && IsLCXTEXT(p) == true)
-                                .ToList();
-                    }
-
-#if DEBUG
-                    FCommon.WriteTextFile(LogFile, $"TRANID={log.Transaction_ID} LSN={log.Current_LSN},LSN2={string.Join(",", wslog.Select(x => x.Current_LSN))},Operation={log.Operation} ");
-#endif
-
-                    tsql = $"select top 1 BeginTime=substring(BeginTime,1,19),EndTime=substring(EndTime,1,19) from #TransactionList where TransactionID='{log.Transaction_ID}'; ";
-                    (BeginTime, EndTime) = DB.Query<(string BeginTime, string EndTime)>(tsql, false).FirstOrDefault();
-
-                    compressiontype = TableInfos.GetCompressionType(log.PartitionId);
-
-                    if (log.Operation == "LOP_MODIFY_ROW" || log.Operation == "LOP_MODIFY_COLUMNS")
-                    {
-                        isfound = false;
-                        PrimaryKeyValue = "";
-
-                        DRTemp = DTMRlist.Select("PAGEID='" + log.Page_ID + "' and SlotID='" + log.Slot_ID.ToString() + "' and AllocUnitId='" + log.AllocUnitId.ToString() + "' ");
-                        if (DRTemp.Length > 0
-                            && (
-                                (log.Operation == "LOP_MODIFY_COLUMNS")
-                                ||
-                                (
-                                 log.Operation == "LOP_MODIFY_ROW"
-                                 && DRTemp[0]["MR1TEXT"].ToString().Contains(log.RowLog_Contents_1.ToText()) == true
-                                )
-                               )
-                           )
+                        FTableInfo0 = FTableInfo;
+                        ddltranids = DDLLogs.Where(p => string.Compare(p.Transaction_ID, log.Transaction_ID) == 1
+                                                        && DDLLogs_FTranID.Any(t => t.TransactionID == p.Transaction_ID) == false)
+                                            .Select(p => p.Transaction_ID)
+                                            .Distinct()
+                                            .ToList();
+                        foreach (string tranid in ddltranids.OrderByDescending(p => p))
                         {
-                            isfound = true;
+                            tmplog = AnalyzeDDLTran(tranid);
+                            logs.Add(tmplog);
                         }
+                        FTableInfo = FTableInfo0;
 
-                        if (isfound == false && log.Operation == "LOP_MODIFY_ROW")
+                        if (log.Operation == "LOP_MODIFY_ROW" || log.Operation == "LOP_MODIFY_COLUMNS")
                         {
-                            stemp = log.RowLog_Contents_2.ToText();
-                            if (stemp.Length >= 2)
-                            {
-                                switch (stemp.Substring(0, 2))
-                                {
-                                    case "16":
-                                        PrimaryKeyValue = stemp.Substring(2, stemp.Length - 4 * 2);
-                                        break;
-                                    case "36":
-                                        PrimaryKeyValue = stemp.Substring(16);
-                                        break;
-                                    default:
-                                        PrimaryKeyValue = "";
-                                        break;
-                                }
-                            }
-                            else
-                            {
-                                PrimaryKeyValue = "";
-                            }
-
-                            DRTemp = DTMRlist.Select("PAGEID='" + log.Page_ID + "' and MR1TEXT like '%" + log.RowLog_Contents_1.ToText() + "%' and MR1TEXT like '%" + PrimaryKeyValue + "%' ");
-                            isfound = (DRTemp.Length > 0 ? true : false);
-                        }
-
-                        if (isfound == false)
-                        {
-                            MR1 = GetMR1(log, PrimaryKeyValue);
-                            SlotID = log.Slot_ID.ToString();
-
-                            if (MR1 != null)
-                            {
-                                if (DRTemp.Length > 0)
-                                {
-                                    DTMRlist.Rows.Remove(DRTemp[0]);
-                                }
-
-                                Mrtemp = DTMRlist.NewRow();
-                                Mrtemp["PAGEID"] = log.Page_ID;
-                                Mrtemp["SlotID"] = log.Slot_ID;
-                                Mrtemp["AllocUnitId"] = log.AllocUnitId;
-                                Mrtemp["MR1"] = MR1;
-                                Mrtemp["MR1TEXT"] = MR1.ToText();
-
-                                DTMRlist.Rows.Add(Mrtemp);
-                            }
+                            llog = DTLogs
+                                   .Where(p => p.Transaction_ID == log.Transaction_ID
+                                               && string.Compare(p.Current_LSN, log.Current_LSN) == -1
+                                               && IsLCXTEXT(p) == false)
+                                   .OrderByDescending(p => p.Current_LSN)
+                                   .FirstOrDefault();
+                            stemp = (llog != null ? llog.Current_LSN : "");
+                            wslog = DTLogs
+                                    .Where(p => p.Transaction_ID == log.Transaction_ID
+                                                && IsLCXTEXT(p) == true
+                                                && string.Compare(p.Current_LSN, log.Current_LSN) == -1
+                                                && string.Compare(p.Current_LSN, stemp) == 1)
+                                    .ToList();
                         }
                         else
                         {
-                            MR1 = (byte[])DRTemp[0]["MR1"];
-                            SlotID = DRTemp[0]["SlotID"].ToString();
+                            wslog = DTLogs
+                                    .Where(p => p.Transaction_ID == log.Transaction_ID
+                                                && IsLCXTEXT(p) == true)
+                                    .ToList();
                         }
-                    }
 
-                    stemp = string.Empty;
-                    REDOSQL = string.Empty;
-                    UNDOSQL = string.Empty;
-                    ValueList1 = string.Empty;
-                    ValueList0 = string.Empty;
-                    WhereList1 = string.Empty;
-                    WhereList0 = string.Empty;
-                    MR0 = new byte[1];
+#if DEBUG
+                        FCommon.WriteTextFile(LogFile, $"TRANID={log.Transaction_ID} LSN={log.Current_LSN},LSN2={string.Join(",", wslog.Select(x => x.Current_LSN))},Operation={log.Operation} ");
+#endif
 
-                    if (log.Operation == "LOP_DELETE_ROWS"
-                        && log.Current_LSN == DTLogs
-                                              .Where(p => p.Transaction_ID == log.Transaction_ID && IsLCXTEXT(p) == false)
-                                              .OrderByDescending(p => p.Current_LSN)
-                                              .FirstOrDefault()
-                                              .Current_LSN
-                       )
-                    {
-                        FRestoreLCXTEXT(log, wslog);
-                    }
+                        tsql = $"select top 1 BeginTime=substring(BeginTime,1,19),EndTime=substring(EndTime,1,19) from #TransactionList where TransactionID='{log.Transaction_ID}'; ";
+                        (BeginTime, EndTime) = DB.Query<(string BeginTime, string EndTime)>(tsql, false).FirstOrDefault();
 
-                    switch (log.Operation)
-                    {
-                        // Insert / Delete
-                        case "LOP_INSERT_ROWS":
-                        case "LOP_DELETE_ROWS":
-                            switch (compressiontype)
+                        compressiontype = FTableInfo.GetCompressionType(log.PartitionId);
+
+                        if (log.Operation == "LOP_MODIFY_ROW" || log.Operation == "LOP_MODIFY_COLUMNS")
+                        {
+                            isfound = false;
+                            PrimaryKeyValue = "";
+
+                            DRTemp = DTMRlist.Select("PAGEID='" + log.Page_ID + "' and SlotID='" + log.Slot_ID.ToString() + "' and AllocUnitId='" + log.AllocUnitId.ToString() + "' ");
+                            if (DRTemp.Length > 0
+                                && (
+                                    (log.Operation == "LOP_MODIFY_COLUMNS")
+                                    ||
+                                    (
+                                     log.Operation == "LOP_MODIFY_ROW"
+                                     && DRTemp[0]["MR1TEXT"].ToString().Contains(log.RowLog_Contents_1.ToText()) == true
+                                    )
+                                   )
+                               )
                             {
-                                case CompressionType.NONE:
-                                case CompressionType.COLUMNSTORE:
-                                    SlotID = log.Slot_ID.ToString();
-                                    minlen = 2 + TableColumns.Where(p => p.IsVarLenDataType == false).Sum(p => p.Length) + 2;
+                                isfound = true;
+                            }
 
-                                    if (log.RowLog_Contents_0.Length >= minlen)
+                            if (isfound == false && log.Operation == "LOP_MODIFY_ROW")
+                            {
+                                stemp = log.RowLog_Contents_2.ToText();
+                                if (stemp.Length >= 2)
+                                {
+                                    switch (stemp.Substring(0, 2))
                                     {
-                                        try
-                                        {
-                                            TranslateData(log.RowLog_Contents_0, TableColumns);
-                                            MR0 = new byte[log.RowLog_Contents_0.Length];
-                                            MR0 = log.RowLog_Contents_0;
-                                        }
-                                        catch (Exception ex)
-                                        {
-                                            DRTemp = DTMRlist.Select("PAGEID='" + log.Page_ID + "' and SlotID='" + log.Slot_ID.ToString() + "' and AllocUnitId='" + log.AllocUnitId.ToString() + "' ");
-                                            if (DRTemp.Length > 0)
-                                            {
-                                                MR0 = (byte[])DRTemp[0]["MR1"];
-                                            }
-                                            else
-                                            {
-                                                MR0 = GetMR1(log, "");
-                                            }
-
-                                            if (MR0.Length < minlen) { continue; }
-                                            TranslateData(MR0, TableColumns);
-                                        }
+                                        case "16":
+                                            PrimaryKeyValue = stemp.Substring(2, stemp.Length - 4 * 2);
+                                            break;
+                                        case "36":
+                                            PrimaryKeyValue = stemp.Substring(16);
+                                            break;
+                                        default:
+                                            PrimaryKeyValue = "";
+                                            break;
                                     }
-                                    else
+                                }
+                                else
+                                {
+                                    PrimaryKeyValue = "";
+                                }
+
+                                DRTemp = DTMRlist.Select("PAGEID='" + log.Page_ID + "' and MR1TEXT like '%" + log.RowLog_Contents_1.ToText() + "%' and MR1TEXT like '%" + PrimaryKeyValue + "%' ");
+                                isfound = (DRTemp.Length > 0 ? true : false);
+                            }
+
+                            if (isfound == false)
+                            {
+                                MR1 = GetMR1(log, PrimaryKeyValue);
+                                SlotID = log.Slot_ID.ToString();
+
+                                if (MR1 != null)
+                                {
+                                    if (DRTemp.Length > 0)
                                     {
-                                        MR0 = GetMR1(log, "");
-                                        if (MR0.Length < minlen) { continue; }
-                                        TranslateData(MR0, TableColumns);
-                                    }
-                                    break;
-                                case CompressionType.ROW:
-                                case CompressionType.PAGE:
-                                    MR0 = log.RowLog_Contents_0;
-                                    TranslateData_Compression(MR0, TableColumns);
-                                    break;
-                            }
-
-                            for (j = 0; j <= TableColumns.Length - 1; j++)
-                            {
-                                if (TableColumns[j].PhysicalStorageType == SqlDbType.Timestamp
-                                    || TableColumns[j].IsComputed == true
-                                    || TableColumns[j].IsHidden == true)
-                                {
-                                    continue;
-                                }
-
-                                if ((TableInfos.IsNodeTable == true && j < 2)
-                                    || (TableInfos.IsEdgeTable == true && j < 8))
-
-                                {
-                                    tj = new SQLGraphNode { };
-
-                                    if (TableInfos.IsNodeTable == true)
-                                    {   // NodeTable
-                                        tj.type = "node";
-                                        tj.schema = SchemaName;
-                                        tj.table = TableName;
-                                        tj.id = Convert.ToInt32(TableColumns.FirstOrDefault(p => p.ColumnName.StartsWith("graph_id") == true).Value);
-                                    }
-                                    else
-                                    {   // EdgeTable
-                                        if (TableColumns[j].ColumnName.StartsWith("$edge_id") == true)
-                                        {
-                                            tj.type = "edge";
-                                            tj.schema = SchemaName;
-                                            tj.table = TableName;
-                                            tj.id = Convert.ToInt32(TableColumns.FirstOrDefault(p => p.ColumnName.StartsWith("graph_id") == true).Value);
-                                        }
-                                        if (TableColumns[j].ColumnName.StartsWith("$from_id") == true)
-                                        {
-                                            tj.type = "node";
-                                            tsql = "select schemaname=s.name,tablename=a.name "
-                                                    + " from sys.tables a "
-                                                    + " join sys.schemas s on a.schema_id=s.schema_id "
-                                                    + $" where a.object_id={TableColumns.FirstOrDefault(p => p.ColumnName.StartsWith("from_obj_id") == true).Value}; ";
-                                            (tj.schema, tj.table) = DB.Query<(string, string)>(tsql, false).FirstOrDefault();
-                                            tj.id = Convert.ToInt32(TableColumns.FirstOrDefault(p => p.ColumnName.StartsWith("from_id") == true).Value);
-                                        }
-                                        if (TableColumns[j].ColumnName.StartsWith("$to_id") == true)
-                                        {
-                                            tj.type = "node";
-                                            tsql = "select schemaname=s.name,tablename=a.name "
-                                                    + " from sys.tables a "
-                                                    + " join sys.schemas s on a.schema_id=s.schema_id "
-                                                    + $" where a.object_id={TableColumns.FirstOrDefault(p => p.ColumnName.StartsWith("to_obj_id") == true).Value}; ";
-                                            (tj.schema, tj.table) = DB.Query<(string, string)>(tsql, false).FirstOrDefault();
-                                            tj.id = Convert.ToInt32(TableColumns.FirstOrDefault(p => p.ColumnName.StartsWith("to_id") == true).Value);
-                                        }
+                                        DTMRlist.Rows.Remove(DRTemp[0]);
                                     }
 
-                                    TableColumns[j].IsNull = false;
-                                    TableColumns[j].Value = JsonConvert.SerializeObject(tj);
+                                    Mrtemp = DTMRlist.NewRow();
+                                    Mrtemp["PAGEID"] = log.Page_ID;
+                                    Mrtemp["SlotID"] = log.Slot_ID;
+                                    Mrtemp["AllocUnitId"] = log.AllocUnitId;
+                                    Mrtemp["MR1"] = MR1;
+                                    Mrtemp["MR1TEXT"] = MR1.ToText();
+
+                                    DTMRlist.Rows.Add(Mrtemp);
                                 }
-
-                                Value = ColumnValue2SQLValue(TableColumns[j]);
-                                ValueList1 = ValueList1 + (ValueList1.Length > 0 ? "," : "") + Value;
-
-                                if (TableInfos.PrimaryKeyColumns.Count == 0
-                                    || TableInfos.PrimaryKeyColumns.Contains(TableColumns[j].ColumnName))
-                                {
-                                    WhereList0 = WhereList0
-                                                 + (WhereList0.Length > 0 ? " and " : "")
-                                                 + ColumnName2SQLName(TableColumns[j])
-                                                 + (TableColumns[j].IsNull ? " is " : "=")
-                                                 + Value;
-                                }
-                            }
-
-                            // 产生redo sql和undo sql -- Insert
-                            if (log.Operation == "LOP_INSERT_ROWS")
-                            {
-                                REDOSQL = $"insert into [{SchemaName}].[{TableName}]({ColumnList}) values({ValueList1}); ";
-                                UNDOSQL = $"delete top(1) from [{SchemaName}].[{TableName}] where {WhereList0}; ";
-
-                                if (TableColumns.Any(p => p.IsIdentity) == true)
-                                {
-                                    REDOSQL = $"set identity_insert [{SchemaName}].[{TableName}] on; " + "\r\n"
-                                              + REDOSQL + "\r\n"
-                                              + $"set identity_insert [{SchemaName}].[{TableName}] off; " + "\r\n";
-                                }
-                            }
-                            // 产生redo sql和undo sql -- Delete
-                            if (log.Operation == "LOP_DELETE_ROWS")
-                            {
-                                REDOSQL = $"delete top(1) from [{SchemaName}].[{TableName}] where {WhereList0}; ";
-                                UNDOSQL = $"insert into [{SchemaName}].[{TableName}]({ColumnList}) values({ValueList1}); ";
-
-                                if (TableColumns.Any(p => p.IsIdentity) == true)
-                                {
-                                    UNDOSQL = $"set identity_insert [{SchemaName}].[{TableName}] on; " + "\r\n"
-                                              + UNDOSQL + "\r\n"
-                                              + $"set identity_insert [{SchemaName}].[{TableName}] off; " + "\r\n";
-                                }
-                            }
-
-                            break;
-                        // Update
-                        case "LOP_MODIFY_ROW":
-                        case "LOP_MODIFY_COLUMNS":
-                            if (MR1 != null)
-                            {
-                                AnalyzeUpdate(log, MR1, wslog, ref ValueList1, ref ValueList0, ref WhereList1, ref WhereList0, ref MR0);
-                                if (ValueList1.Length > 0)
-                                {
-                                    REDOSQL = $"update top(1) [{SchemaName}].[{TableName}] set {ValueList1} where {WhereList1}; ";
-                                    UNDOSQL = $"update top(1) [{SchemaName}].[{TableName}] set {ValueList0} where {WhereList0}; ";
-                                }
-                                stemp = "debug info: "
-                                            + " sValueList1=" + ValueList1
-                                            + " MR1=" + MR1.ToText() + ", "
-                                            + " MR0=" + MR0.ToText() + ", "
-                                            + " R1=" + log.RowLog_Contents_1.ToText() + ", "
-                                            + " R0=" + log.RowLog_Contents_0.ToText() + ". ";
                             }
                             else
                             {
-                                stemp = "MR1=null";
+                                MR1 = (byte[])DRTemp[0]["MR1"];
+                                SlotID = DRTemp[0]["SlotID"].ToString();
                             }
-                            break;
-                    }
-
-                    if (log.Operation == "LOP_MODIFY_ROW" || log.Operation == "LOP_MODIFY_COLUMNS" || log.Operation == "LOP_DELETE_ROWS")
-                    {
-                        DRTemp = DTMRlist.Select("PAGEID='" + log.Page_ID + "' and SlotID='" + SlotID + "' and AllocUnitId='" + log.AllocUnitId + "' ");
-                        if (DRTemp.Length > 0)
-                        {
-                            DTMRlist.Rows.Remove(DRTemp[0]);
                         }
 
-                        Mrtemp = DTMRlist.NewRow();
-                        Mrtemp["PAGEID"] = log.Page_ID;
-                        Mrtemp["SlotID"] = log.Slot_ID;
-                        Mrtemp["AllocUnitId"] = log.AllocUnitId;
-                        Mrtemp["MR1"] = MR0;
-                        Mrtemp["MR1TEXT"] = MR0.ToText();
+                        stemp = string.Empty;
+                        REDOSQL = string.Empty;
+                        UNDOSQL = string.Empty;
+                        ValueList1 = string.Empty;
+                        ValueList0 = string.Empty;
+                        WhereList1 = string.Empty;
+                        WhereList0 = string.Empty;
+                        MR0 = new byte[1];
 
-                        DTMRlist.Rows.Add(Mrtemp);
-                    }
+                        if (log.Operation == "LOP_DELETE_ROWS"
+                            && log.Current_LSN == DTLogs
+                                                  .Where(p => p.Transaction_ID == log.Transaction_ID && IsLCXTEXT(p) == false)
+                                                  .OrderByDescending(p => p.Current_LSN)
+                                                  .FirstOrDefault()
+                                                  .Current_LSN
+                           )
+                        {
+                            FRestoreLCXTEXT(log, wslog);
+                        }
+
+                        switch (log.Operation)
+                        {
+                            // Insert / Delete
+                            case "LOP_INSERT_ROWS":
+                            case "LOP_DELETE_ROWS":
+                                switch (compressiontype)
+                                {
+                                    case CompressionType.NONE:
+                                    case CompressionType.COLUMNSTORE:
+                                        SlotID = log.Slot_ID.ToString();
+                                        minlen = 2 + FTableInfo.Columns.Where(p => p.IsVarLenDataType == false).Sum(p => p.Length) + 2;
+
+                                        if (log.RowLog_Contents_0.Length >= minlen)
+                                        {
+                                            try
+                                            {
+                                                TranslateData(log.RowLog_Contents_0, FTableInfo.Columns);
+                                                MR0 = new byte[log.RowLog_Contents_0.Length];
+                                                MR0 = log.RowLog_Contents_0;
+                                            }
+                                            catch (Exception ex)
+                                            {
+                                                DRTemp = DTMRlist.Select("PAGEID='" + log.Page_ID + "' and SlotID='" + log.Slot_ID.ToString() + "' and AllocUnitId='" + log.AllocUnitId.ToString() + "' ");
+                                                if (DRTemp.Length > 0)
+                                                {
+                                                    MR0 = (byte[])DRTemp[0]["MR1"];
+                                                }
+                                                else
+                                                {
+                                                    MR0 = GetMR1(log, "");
+                                                }
+
+                                                if (MR0.Length < minlen) { continue; }
+                                                TranslateData(MR0, FTableInfo.Columns);
+                                            }
+                                        }
+                                        else
+                                        {
+                                            if (AllocUnitType == "NORMAL")
+                                            {
+                                                MR0 = GetMR1(log, "");
+                                                if (MR0.Length < minlen) { continue; }
+                                                TranslateData(MR0, FTableInfo.Columns);
+                                            }
+                                            
+                                        }
+                                        break;
+                                    case CompressionType.ROW:
+                                    case CompressionType.PAGE:
+                                        MR0 = log.RowLog_Contents_0;
+                                        TranslateData_Compression(MR0, FTableInfo.Columns);
+                                        break;
+                                }
+
+                                for (j = 0; j <= FTableInfo.Columns.Length - 1; j++)
+                                {
+                                    if (FTableInfo.Columns[j].PhysicalStorageType == SqlDbType.Timestamp
+                                        || FTableInfo.Columns[j].IsComputed == true
+                                        || FTableInfo.Columns[j].IsHidden == true)
+                                    {
+                                        continue;
+                                    }
+
+                                    if ((FTableInfo.IsNodeTable == true && j < 2)
+                                        || (FTableInfo.IsEdgeTable == true && j < 8))
+
+                                    {
+                                        tj = new SQLGraphNode { };
+
+                                        if (FTableInfo.IsNodeTable == true)
+                                        {   // NodeTable
+                                            tj.type = "node";
+                                            tj.schema = SchemaName;
+                                            tj.table = TableName;
+                                            tj.id = Convert.ToInt32(FTableInfo.Columns.FirstOrDefault(p => p.ColumnName.StartsWith("graph_id") == true).Value);
+                                        }
+                                        else
+                                        {   // EdgeTable
+                                            if (FTableInfo.Columns[j].ColumnName.StartsWith("$edge_id") == true)
+                                            {
+                                                tj.type = "edge";
+                                                tj.schema = SchemaName;
+                                                tj.table = TableName;
+                                                tj.id = Convert.ToInt32(FTableInfo.Columns.FirstOrDefault(p => p.ColumnName.StartsWith("graph_id") == true).Value);
+                                            }
+                                            if (FTableInfo.Columns[j].ColumnName.StartsWith("$from_id") == true)
+                                            {
+                                                tj.type = "node";
+                                                tsql = "select schemaname=s.name,tablename=a.name "
+                                                        + " from sys.tables a "
+                                                        + " join sys.schemas s on a.schema_id=s.schema_id "
+                                                        + $" where a.object_id={FTableInfo.Columns.FirstOrDefault(p => p.ColumnName.StartsWith("from_obj_id") == true).Value}; ";
+                                                (tj.schema, tj.table) = DB.Query<(string, string)>(tsql, false).FirstOrDefault();
+                                                tj.id = Convert.ToInt32(FTableInfo.Columns.FirstOrDefault(p => p.ColumnName.StartsWith("from_id") == true).Value);
+                                            }
+                                            if (FTableInfo.Columns[j].ColumnName.StartsWith("$to_id") == true)
+                                            {
+                                                tj.type = "node";
+                                                tsql = "select schemaname=s.name,tablename=a.name "
+                                                        + " from sys.tables a "
+                                                        + " join sys.schemas s on a.schema_id=s.schema_id "
+                                                        + $" where a.object_id={FTableInfo.Columns.FirstOrDefault(p => p.ColumnName.StartsWith("to_obj_id") == true).Value}; ";
+                                                (tj.schema, tj.table) = DB.Query<(string, string)>(tsql, false).FirstOrDefault();
+                                                tj.id = Convert.ToInt32(FTableInfo.Columns.FirstOrDefault(p => p.ColumnName.StartsWith("to_id") == true).Value);
+                                            }
+                                        }
+
+                                        FTableInfo.Columns[j].IsNull = false;
+                                        FTableInfo.Columns[j].Value = JsonConvert.SerializeObject(tj);
+                                    }
+
+                                    Value = ColumnValue2SQLValue(FTableInfo.Columns[j]);
+                                    ValueList1 = ValueList1 + (ValueList1.Length > 0 ? "," : "") + Value;
+
+                                    if (FTableInfo.PrimaryKeyColumns.Count == 0
+                                        || FTableInfo.PrimaryKeyColumns.Contains(FTableInfo.Columns[j].ColumnName))
+                                    {
+                                        WhereList0 = WhereList0
+                                                     + (WhereList0.Length > 0 ? " and " : "")
+                                                     + ColumnName2SQLName(FTableInfo.Columns[j])
+                                                     + (FTableInfo.Columns[j].IsNull ? " is " : "=")
+                                                     + Value;
+                                    }
+                                }
+
+                                // 产生redo sql和undo sql -- Insert
+                                if (log.Operation == "LOP_INSERT_ROWS")
+                                {
+                                    REDOSQL = $"insert into [{SchemaName}].[{TableName}]({ColumnList}) values({ValueList1}); ";
+                                    UNDOSQL = $"delete top(1) from [{SchemaName}].[{TableName}] where {WhereList0}; ";
+
+                                    if (FTableInfo.Columns.Any(p => p.IsIdentity) == true)
+                                    {
+                                        REDOSQL = $"set identity_insert [{SchemaName}].[{TableName}] on; " + "\r\n"
+                                                  + REDOSQL + "\r\n"
+                                                  + $"set identity_insert [{SchemaName}].[{TableName}] off; " + "\r\n";
+                                    }
+                                }
+                                // 产生redo sql和undo sql -- Delete
+                                if (log.Operation == "LOP_DELETE_ROWS")
+                                {
+                                    REDOSQL = $"delete top(1) from [{SchemaName}].[{TableName}] where {WhereList0}; ";
+                                    UNDOSQL = $"insert into [{SchemaName}].[{TableName}]({ColumnList}) values({ValueList1}); ";
+
+                                    if (FTableInfo.Columns.Any(p => p.IsIdentity) == true)
+                                    {
+                                        UNDOSQL = $"set identity_insert [{SchemaName}].[{TableName}] on; " + "\r\n"
+                                                  + UNDOSQL + "\r\n"
+                                                  + $"set identity_insert [{SchemaName}].[{TableName}] off; " + "\r\n";
+                                    }
+                                }
+
+                                break;
+                            // Update
+                            case "LOP_MODIFY_ROW":
+                            case "LOP_MODIFY_COLUMNS":
+                                if (MR1 != null)
+                                {
+                                    AnalyzeUpdate(log, MR1, wslog, ref ValueList1, ref ValueList0, ref WhereList1, ref WhereList0, ref MR0);
+                                    if (ValueList1.Length > 0)
+                                    {
+                                        REDOSQL = $"update top(1) [{SchemaName}].[{TableName}] set {ValueList1} where {WhereList1}; ";
+                                        UNDOSQL = $"update top(1) [{SchemaName}].[{TableName}] set {ValueList0} where {WhereList0}; ";
+                                    }
+                                    stemp = "debug info: "
+                                                + " sValueList1=" + ValueList1
+                                                + " MR1=" + MR1.ToText() + ", "
+                                                + " MR0=" + MR0.ToText() + ", "
+                                                + " R1=" + log.RowLog_Contents_1.ToText() + ", "
+                                                + " R0=" + log.RowLog_Contents_0.ToText() + ". ";
+                                }
+                                else
+                                {
+                                    stemp = "MR1=null";
+                                }
+                                break;
+                        }
+
+                        if (log.Operation == "LOP_MODIFY_ROW" || log.Operation == "LOP_MODIFY_COLUMNS" || log.Operation == "LOP_DELETE_ROWS")
+                        {
+                            DRTemp = DTMRlist.Select("PAGEID='" + log.Page_ID + "' and SlotID='" + SlotID + "' and AllocUnitId='" + log.AllocUnitId + "' ");
+                            if (DRTemp.Length > 0)
+                            {
+                                DTMRlist.Rows.Remove(DRTemp[0]);
+                            }
+
+                            Mrtemp = DTMRlist.NewRow();
+                            Mrtemp["PAGEID"] = log.Page_ID;
+                            Mrtemp["SlotID"] = log.Slot_ID;
+                            Mrtemp["AllocUnitId"] = log.AllocUnitId;
+                            Mrtemp["MR1"] = MR0;
+                            Mrtemp["MR1TEXT"] = MR0.ToText();
+
+                            DTMRlist.Rows.Add(Mrtemp);
+                        }
 
 #if DEBUG
-                    FCommon.WriteTextFile(LogFile, $"LSN={log.Current_LSN},Operation={log.Operation},\r\nREDOSQL={REDOSQL},\r\nUNDOSQL={UNDOSQL} ");
+                        FCommon.WriteTextFile(LogFile, $"LSN={log.Current_LSN},Operation={log.Operation},\r\nREDOSQL={REDOSQL},\r\nUNDOSQL={UNDOSQL} ");
 #endif
 
-                    if (string.IsNullOrEmpty(BeginTime) == false)
-                    {
-                        tmplog = new DatabaseLog();
-                        tmplog.LSN = log.Current_LSN;
-                        tmplog.Type = "DML";
-                        tmplog.TransactionID = log.Transaction_ID;
-                        tmplog.BeginTime = BeginTime;
-                        tmplog.EndTime = EndTime;
-                        tmplog.ObjectName = $"[{SchemaName}].[{TableName}]";
-                        tmplog.Operation = log.Operation;
-                        tmplog.RedoSQL = REDOSQL;
-                        tmplog.UndoSQL = UNDOSQL;
-                        tmplog.Message = stemp;
-                        logs.Add(tmplog);
-                    }
+                        if (string.IsNullOrEmpty(BeginTime) == false)
+                        {
+                            tmplog = new DatabaseLog();
+                            tmplog.LSN = log.Current_LSN;
+                            tmplog.Type = "DML";
+                            tmplog.TransactionID = log.Transaction_ID;
+                            tmplog.BeginTime = Convert.ToDateTime(BeginTime); // DateTime.ParseExact(BeginTime, "yyyy/MM/dd HH:mm:ss:fff", CultureInfo.InvariantCulture);
+                            tmplog.EndTime = Convert.ToDateTime(EndTime); // DateTime.ParseExact(EndTime, "yyyy/MM/dd HH:mm:ss:fff", CultureInfo.InvariantCulture);
+                            tmplog.ObjectName = $"[{SchemaName}].[{TableName}]";
+                            tmplog.Operation = log.Operation;
+                            tmplog.RedoSQL = REDOSQL;
+                            tmplog.UndoSQL = UNDOSQL;
+                            tmplog.Message = stemp;
+                            logs.Add(tmplog);
+                        }
 
-                    if (log.Operation == "LOP_INSERT_ROWS"
-                        && log.Current_LSN == DTLogs
-                                              .Where(p => p.Transaction_ID == log.Transaction_ID && IsLCXTEXT(p) == false)
-                                              .OrderBy(p => p.Current_LSN)
-                                              .FirstOrDefault()
-                                              .Current_LSN
-                       )
-                    {
-                        FRestoreLCXTEXT(log, wslog);
+                        if (log.Operation == "LOP_INSERT_ROWS"
+                            && log.Current_LSN == DTLogs
+                                                  .Where(p => p.Transaction_ID == log.Transaction_ID && IsLCXTEXT(p) == false)
+                                                  .OrderBy(p => p.Current_LSN)
+                                                  .FirstOrDefault()
+                                                  .Current_LSN
+                           )
+                        {
+                            FRestoreLCXTEXT(log, wslog);
+                        }
+                        
                     }
-                }
-                catch (Exception ex)
-                {
+                    catch (Exception ex)
+                    {
 #if DEBUG
-                    stemp = $"Message:{(ex.Message ?? "")}  StackTrace:{(ex.StackTrace ?? "")} ";
+                        stemp = $"Message:{(ex.Message ?? "")}  StackTrace:{(ex.StackTrace ?? "")} ";
 
-                    throw new Exception(stemp);
+                        throw new Exception(stemp);
 #else
                         tmplog = new DatabaseLog();
                         tmplog.LSN = log.Current_LSN;
@@ -542,7 +642,13 @@ namespace DBLOG
                         tmplog.Message = "";
                         logs.Add(tmplog);
 #endif
+                    }
                 }
+            }
+
+            if (wslogs != null && wslogs.Count > 0)
+            {
+                logs.AddRange(wslogs);
             }
 
             return logs;
@@ -736,7 +842,7 @@ namespace DBLOG
                     + "                                                     for xml path('')),1,1,N''),N' ',N'')); ";
             DB.ExecuteSQL(tsql, false);
 
-            if (TableInfos.GetCompressionType(pLog.PartitionId) != CompressionType.NONE)
+            if (FTableInfo.GetCompressionType(pLog.PartitionId) != CompressionType.NONE)
             {
                 isfound = true;
             }
@@ -970,10 +1076,10 @@ namespace DBLOG
             TableColumn[] columns0, columns1;
             CompressionType compressiontype;
 
-            columns0 = TableColumns.CopyToNew().Cast<TableColumn>().ToArray();
-            columns1 = TableColumns.CopyToNew().Cast<TableColumn>().ToArray();
+            columns0 = FTableInfo.Columns.CopyToNew().Cast<TableColumn>().ToArray();
+            columns1 = FTableInfo.Columns.CopyToNew().Cast<TableColumn>().ToArray();
 
-            compressiontype = TableInfos.GetCompressionType(curlog.PartitionId);
+            compressiontype = FTableInfo.GetCompressionType(curlog.PartitionId);
             switch (compressiontype)
             {
                 case CompressionType.NONE:
@@ -1019,9 +1125,9 @@ namespace DBLOG
             ValueList0 = "";
             WhereList1 = "";
             WhereList0 = "";
-            for (i = 0; i <= TableColumns.Length - 1; i++)
+            for (i = 0; i <= FTableInfo.Columns.Length - 1; i++)
             {
-                if (TableColumns[i].PhysicalStorageType == SqlDbType.Timestamp || TableColumns[i].IsComputed == true) { continue; }
+                if (FTableInfo.Columns[i].PhysicalStorageType == SqlDbType.Timestamp || FTableInfo.Columns[i].IsComputed == true) { continue; }
 
                 if ((columns0[i].IsNull == false
                      && columns1[i].IsNull == false
@@ -1039,15 +1145,15 @@ namespace DBLOG
                                  + ColumnValue2SQLValue(columns1[i]);
                 }
 
-                if (TableInfos.PrimaryKeyColumns.Count == 0
-                    || TableInfos.PrimaryKeyColumns.Contains(TableColumns[i].ColumnName))
+                if (FTableInfo.PrimaryKeyColumns.Count == 0
+                    || FTableInfo.PrimaryKeyColumns.Contains(FTableInfo.Columns[i].ColumnName))
                 {
                     WhereList0 = WhereList0 + (WhereList0.Length > 0 ? " and " : "")
-                                  + ColumnName2SQLName(TableColumns[i]) 
+                                  + ColumnName2SQLName(FTableInfo.Columns[i]) 
                                   + (columns1[i].IsNull ? " is " : "=")
                                   + ColumnValue2SQLValue(columns1[i]);
                     WhereList1 = WhereList1 + (WhereList1.Length > 0 ? " and " : "")
-                                  + ColumnName2SQLName(TableColumns[i]) 
+                                  + ColumnName2SQLName(FTableInfo.Columns[i]) 
                                   + (columns0[i].IsNull ? " is " : "=")
                                   + ColumnValue2SQLValue(columns0[i]);
                 }
@@ -1353,7 +1459,7 @@ namespace DBLOG
             UniqueidentifierColumnCount = Convert.ToInt16(columns.Count(p => p.PhysicalStorageType == SqlDbType.UniqueIdentifier));
 
             if (UniqueidentifierColumnCount >= 2
-                && TableInfos.IsHeapTable == false) // 堆表不适用本规则
+                && FTableInfo.IsHeapTable == false) // 堆表不适用本规则
             {
                 columns2 = new TableColumn[columns.Length];
 
@@ -1413,13 +1519,13 @@ namespace DBLOG
             columns2 = columns2.Where(p => p.IsComputed == false).ToArray();
 
             // 预处理聚集索引字段
-            if (TableInfos.ClusteredIndexColumns.Count > 0)
+            if (FTableInfo.ClusteredIndexColumns.Count > 0)
             {
                 i = 0;
                 columns3 = new TableColumn[columns2.Length];
 
                 // 主键字段置前
-                foreach (string cc in TableInfos.ClusteredIndexColumns)
+                foreach (string cc in FTableInfo.ClusteredIndexColumns)
                 {
                     TmpTableColumn = columns2.Where(p => p.ColumnName == cc && p.IsVarLenDataType == false).FirstOrDefault();
                     if (TmpTableColumn != null)
@@ -1448,13 +1554,13 @@ namespace DBLOG
             columns2 = columns3;
 
             // 预处理主键字段
-            if (TableInfos.ClusteredIndexColumns.Count == 0 && TableInfos.PrimaryKeyColumns.Count > 0)
+            if (FTableInfo.ClusteredIndexColumns.Count == 0 && FTableInfo.PrimaryKeyColumns.Count > 0)
             {
                 i = 0;
                 columns3 = new TableColumn[columns2.Length];
 
                 // 主键字段置前
-                foreach (string pc in TableInfos.PrimaryKeyColumns)
+                foreach (string pc in FTableInfo.PrimaryKeyColumns)
                 {
                     TmpTableColumn = columns2.Where(p => p.ColumnName == pc && p.IsVarLenDataType == false).FirstOrDefault();
                     if (TmpTableColumn != null)
@@ -1490,7 +1596,7 @@ namespace DBLOG
             }
             NullStatus = NullStatus.Reverse();  // 字符串反转
 
-            if (TableInfos.IsHeapTable == false && TableInfos.PrimaryKeyColumns.SequenceEqual(TableInfos.ClusteredIndexColumns) == false)
+            if (FTableInfo.IsHeapTable == false && FTableInfo.PrimaryKeyColumns.SequenceEqual(FTableInfo.ClusteredIndexColumns) == false)
             {
                 NullStatus = NullStatus.Substring(1, NullStatus.Length - 1);
             }
@@ -1765,13 +1871,13 @@ namespace DBLOG
                                 c.Value = Value;
                                 break;
                             case System.Data.SqlDbType.Text:
-                                (ValueHex, Value) = TranslateData_Text(rowdata, tvc, false, TableInfos.TextInRow);
+                                (ValueHex, Value) = TranslateData_Text(rowdata, tvc, false, FTableInfo.TextInRow);
                                 c.ValueHex = ValueHex;
                                 c.Value = Value;
                                 c.IsNull = (ValueHex == null && Value == "nullvalue");
                                 break;
                             case System.Data.SqlDbType.NText:
-                                (ValueHex, Value) = TranslateData_Text(rowdata, tvc, true, TableInfos.TextInRow);
+                                (ValueHex, Value) = TranslateData_Text(rowdata, tvc, true, FTableInfo.TextInRow);
                                 c.ValueHex = ValueHex;
                                 c.Value = Value;
                                 c.IsNull = (ValueHex == null && Value == "nullvalue");
@@ -1830,142 +1936,158 @@ namespace DBLOG
             }
         }
         
-        private (TableInformation, TableColumn[]) GetTableInfo(string pSchemaName, string pTablename)
+        private TableInfo GetTableInfo(string PSchemaName, string PTablename, bool save = true)
         {
             string stemp;
-            TableInformation tableinfo;
-            TableColumn[] tablecolumns;
+            TableInfo tableinfo;
 
-            tableinfo = new TableInformation();
+            if (UserTables.ContainsKey($"{PSchemaName}.{PTablename}") == true)
+            {
+                tableinfo = UserTables[$"{PSchemaName}.{PTablename}"];
+            }
+            else 
+            {
+                tableinfo = new TableInfo();
 
-            // PrimaryKeyColumns
-            tsql = "select primarykeycolumn=c.name "
-                     + " from sys.indexes a "
-                     + " join sys.index_columns b on a.object_id=b.object_id and a.index_id=b.index_id "
-                     + " join sys.columns c on b.object_id=c.object_id and b.column_id=c.column_id "
-                     + " join sys.objects d on a.object_id=d.object_id "
-                     + " join sys.schemas s on d.schema_id=s.schema_id "
-                     + " where a.is_primary_key=1 "
-                     + $" and s.name=N'{pSchemaName}' "
-                     + "  and d.type='U' "
-                     + $" and d.name=N'{pTablename}' "
-                     + "  order by b.key_ordinal; ";
-            tableinfo.PrimaryKeyColumns = DB.Query<string>(tsql, false).ToList();
+                // PrimaryKeyColumns
+                tsql = "select primarykeycolumn=c.name "
+                         + " from sys.indexes a "
+                         + " join sys.index_columns b on a.object_id=b.object_id and a.index_id=b.index_id "
+                         + " join sys.columns c on b.object_id=c.object_id and b.column_id=c.column_id "
+                         + " join sys.objects d on a.object_id=d.object_id "
+                         + " join sys.schemas s on d.schema_id=s.schema_id "
+                         + " where a.is_primary_key=1 "
+                         + $" and s.name=N'{PSchemaName}' "
+                         + "  and d.type='U' "
+                         + $" and d.name=N'{PTablename}' "
+                         + "  order by b.key_ordinal; ";
+                tableinfo.PrimaryKeyColumns = DB.Query<string>(tsql, false).ToList();
 
-            // ClusteredIndexColumns
-            tsql = "select clusteredindexcolumn=c.name "
-                    + "  from sys.indexes a "
-                    + "  join sys.index_columns b on a.object_id=b.object_id and a.index_id=b.index_id "
-                    + "  join sys.columns c on b.object_id=c.object_id and b.column_id=c.column_id "
-                    + "  join sys.objects d on a.object_id=d.object_id "
-                    + "  join sys.schemas s on d.schema_id=s.schema_id "
-                    + "  where a.index_id<=1 "
-                    + "  and a.type=1 "
-                    + $" and s.name=N'{pSchemaName}' "
-                    + "  and d.type='U' "
-                    + $" and d.name=N'{pTablename}' "
-                    + "  order by b.key_ordinal; ";
-            tableinfo.ClusteredIndexColumns = DB.Query<string>(tsql, false).ToList();
+                // ClusteredIndexColumns
+                tsql = "select clusteredindexcolumn=c.name "
+                        + "  from sys.indexes a "
+                        + "  join sys.index_columns b on a.object_id=b.object_id and a.index_id=b.index_id "
+                        + "  join sys.columns c on b.object_id=c.object_id and b.column_id=c.column_id "
+                        + "  join sys.objects d on a.object_id=d.object_id "
+                        + "  join sys.schemas s on d.schema_id=s.schema_id "
+                        + "  where a.index_id<=1 "
+                        + "  and a.type=1 "
+                        + $" and s.name=N'{PSchemaName}' "
+                        + "  and d.type='U' "
+                        + $" and d.name=N'{PTablename}' "
+                        + "  order by b.key_ordinal; ";
+                tableinfo.ClusteredIndexColumns = DB.Query<string>(tsql, false).ToList();
 
-            // IsHeapTable
-            tsql = "select isheaptable=cast(case when exists(select 1 "
-                      + "                                     from sys.tables t "
-                      + "                                     join sys.schemas s on t.schema_id=s.schema_id "
-                      + "                                     join sys.indexes i on t.object_id=i.object_id "
-                      + $"                                    where s.name=N'{pSchemaName}' "
-                      + $"                                    and t.name=N'{pTablename}' "
-                      + "                                     and i.index_id=0) then 1 else 0 end as bit); ";
-            tableinfo.IsHeapTable = DB.Query<bool>(tsql, false).FirstOrDefault();
+                // IsHeapTable
+                tsql = "select isheaptable=cast(case when exists(select 1 "
+                          + "                                     from sys.tables t "
+                          + "                                     join sys.schemas s on t.schema_id=s.schema_id "
+                          + "                                     join sys.indexes i on t.object_id=i.object_id "
+                          + $"                                    where s.name=N'{PSchemaName}' "
+                          + $"                                    and t.name=N'{PTablename}' "
+                          + "                                     and i.index_id=0) then 1 else 0 end as bit); ";
+                tableinfo.IsHeapTable = DB.Query<bool>(tsql, false).FirstOrDefault();
 
-            // AllocUnitName
-            tsql = "select allocunitname=isnull(d.name,N'') "
-                    + "  from sys.tables a "
-                    + "  join sys.schemas s on a.schema_id=s.schema_id "
-                    + "  join sys.indexes d on a.object_id=d.object_id "
-                    + "  where d.type in(0,1,5) "
-                    + $" and s.name=N'{pSchemaName}' "
-                    + $" and a.name=N'{pTablename}'; ";
-            tableinfo.AllocUnitName = DB.Query<string>(tsql, false).FirstOrDefault();
+                // AllocUnitName
+                tsql = "select allocunitname=isnull(d.name,N'') "
+                        + "  from sys.tables a "
+                        + "  join sys.schemas s on a.schema_id=s.schema_id "
+                        + "  join sys.indexes d on a.object_id=d.object_id "
+                        + "  where d.type in(0,1,5) "
+                        + $" and s.name=N'{PSchemaName}' "
+                        + $" and a.name=N'{PTablename}'; ";
+                tableinfo.AllocUnitName = DB.Query<string>(tsql, false).FirstOrDefault();
 
-            // TextInRow
-            tsql = "select textinrow=a.text_in_row_limit, "
-                    + $"    isnodetable={(DB.Vesion >= 2017 ? "a.is_node" : "0")}, "
-                    + $"    isedgetable={(DB.Vesion >= 2017 ? "a.is_edge" : "0")}"
-                    + "  from sys.tables a "
-                    + "  join sys.schemas s on a.schema_id=s.schema_id "
-                    + $" where s.name=N'{pSchemaName}' "
-                    + $" and a.name=N'{pTablename}'; ";
-            (tableinfo.TextInRow, tableinfo.IsNodeTable, tableinfo.IsEdgeTable) = DB.Query<(int, bool, bool)>(tsql, false).FirstOrDefault();
+                // TextInRow
+                tsql = "select textinrow=a.text_in_row_limit, "
+                        + $"    isnodetable={(DB.Vesion >= 2017 ? "a.is_node" : "0")}, "
+                        + $"    isedgetable={(DB.Vesion >= 2017 ? "a.is_edge" : "0")}"
+                        + "  from sys.tables a "
+                        + "  join sys.schemas s on a.schema_id=s.schema_id "
+                        + $" where s.name=N'{PSchemaName}' "
+                        + $" and a.name=N'{PTablename}'; ";
+                (tableinfo.TextInRow, tableinfo.IsNodeTable, tableinfo.IsEdgeTable) = DB.Query<(int, bool, bool)>(tsql, false).FirstOrDefault();
 
-            // IsColumnStore
-            tsql = "select iscolumnstore=cast(case when exists(select 1 "
-                      + "                                       from sys.tables t "
-                      + "                                       join sys.schemas s on t.schema_id=s.schema_id "
-                      + "                                       join sys.indexes i on t.object_id=i.object_id "
-                      + $"                                      where s.name=N'{pSchemaName}' "
-                      + $"                                      and t.name=N'{pTablename}' "
-                      + "                                       and i.index_id=1 "
-                      + "                                       and i.type=5) then 1 else 0 end as bit); ";
-            tableinfo.IsColumnStore = DB.Query<bool>(tsql, false).FirstOrDefault();
+                // IsColumnStore
+                tsql = "select iscolumnstore=cast(case when exists(select 1 "
+                          + "                                       from sys.tables t "
+                          + "                                       join sys.schemas s on t.schema_id=s.schema_id "
+                          + "                                       join sys.indexes i on t.object_id=i.object_id "
+                          + $"                                      where s.name=N'{PSchemaName}' "
+                          + $"                                      and t.name=N'{PTablename}' "
+                          + "                                       and i.index_id=1 "
+                          + "                                       and i.type=5) then 1 else 0 end as bit); ";
+                tableinfo.IsColumnStore = DB.Query<bool>(tsql, false).FirstOrDefault();
 
-            // DataCompressionType
-            tsql = "select PartitionId=p.partition_id, "
-                    + "    CompressionType=case p.data_compression when 0 then N'NONE' when 1 then N'ROW' when 2 then N'PAGE' when 3 then N'COLUMNSTORE' when 4 then N'COLUMNSTORE_ARCHIVE' else N'' end "
-                    + "  from sys.tables t "
-                    + "  join sys.schemas s on t.schema_id=s.schema_id "
-                    + "  join sys.partitions p on t.object_id=p.object_id "
-                    + $" where s.name=N'{pSchemaName}' "
-                    + $" and t.name=N'{pTablename}' "
-                    + "  and p.index_id<=1; ";
-            tableinfo.DataCompressionType = DB.Query<(long PartitionId, CompressionType CompressionType)>(tsql, false).ToDictionary(p => p.PartitionId, p => p.CompressionType);
+                // DataCompressionType
+                tsql = "select PartitionId=p.partition_id, "
+                        + "    CompressionType=case p.data_compression when 0 then N'NONE' when 1 then N'ROW' when 2 then N'PAGE' when 3 then N'COLUMNSTORE' when 4 then N'COLUMNSTORE_ARCHIVE' else N'' end "
+                        + "  from sys.tables t "
+                        + "  join sys.schemas s on t.schema_id=s.schema_id "
+                        + "  join sys.partitions p on t.object_id=p.object_id "
+                        + $" where s.name=N'{PSchemaName}' "
+                        + $" and t.name=N'{PTablename}' "
+                        + "  and p.index_id<=1; ";
+                tableinfo.DataCompressionType = DB.Query<(long PartitionId, CompressionType CompressionType)>(tsql, false).ToDictionary(p => p.PartitionId, p => p.CompressionType);
 
-            tsql = "select cast(("
-                        + "select ColumnID,ColumnName,DataType,PhysicalStorageType,Length,Precision,IsNullable,Scale,IsIdentity,IsComputed,LeafOffset,LeafNullBit,IsHidden,GraphType "
-                        + " from (select 'ColumnID'=b.column_id, "
-                        + "              'ColumnName'=b.name, "
-                        + "              'DataType'=c.name, "
-                        + "              'PhysicalStorageType'=case when c.name not in(N'geography',N'geometry',N'hierarchyid') then c2.name else N'varbinary' end, "
-                        + "              'Length'=b.max_length, "
-                        + "              'Precision'=b.precision, "
-                        + "              'IsNullable'=b.is_nullable, "
-                        + "              'Scale'=b.scale, "
-                        + "              'IsIdentity'=b.is_identity, "
-                        + "              'IsComputed'=b.is_computed, "
-                        + "              'LeafOffset'=isnull(d2.leaf_offset,0), "
-                        + "              'LeafNullBit'=isnull(d2.leaf_null_bit,0), "
-                        + $"             'IsHidden'={(DB.Vesion >= 2017 ? "b.is_hidden" : "0")}, "
-                        + $"             'GraphType'=isnull({(DB.Vesion >= 2017 ? "b.graph_type" : "null")},-1) "
-                        + "       from sys.tables a "
-                        + "       join sys.schemas s on a.schema_id=s.schema_id "
-                        + "       join sys.columns b on a.object_id=b.object_id "
-                        + "       join sys.systypes c on b.system_type_id=c.xtype and b.user_type_id=c.xusertype "
-                        + "       left join sys.systypes c2 on c.xtype=c2.xtype and c.xtype=c2.xusertype "
-                        + "       outer apply (select d.leaf_offset,d.leaf_null_bit "
-                        + "                    from sys.system_internals_partition_columns d "
-                        + "                    where d.partition_column_id=b.column_id "
-                        + "                    and d.partition_id in (select partitionss.partition_id "
-                        + "                                           from sys.allocation_units allocunits "
-                        + "                                           join sys.partitions partitionss on (allocunits.type in(1, 3) and allocunits.container_id=partitionss.hobt_id) "
-                        + "                                                                              or (allocunits.type=2 and allocunits.container_id=partitionss.partition_id) "
-                        + "                                           where partitionss.object_id=a.object_id and partitionss.index_id<=1)) d2 "
-                        + $"      where s.name=N'{pSchemaName}' "
-                        + $"      and a.name=N'{pTablename}') t "
-                        + " order by ColumnID "
-                        + " for xml raw('Column'),root('ColumnList') "
-                        + ") as nvarchar(max)); ";
-            stemp = DB.Query11(tsql, false);
-            tablecolumns = AnalyzeTablelayout(stemp);
+                tsql = "select cast(("
+                            + "select ColumnID,ColumnName,DataType,PhysicalStorageType,Length,Precision,IsNullable,Scale,IsIdentity,IsComputed,LeafOffset,LeafNullBit,IsHidden,GraphType "
+                            + " from (select 'ColumnID'=b.column_id, "
+                            + "              'ColumnName'=b.name, "
+                            + "              'DataType'=c.name, "
+                            + "              'PhysicalStorageType'=case when c.name not in(N'geography',N'geometry',N'hierarchyid') then c2.name else N'varbinary' end, "
+                            + "              'Length'=b.max_length, "
+                            + "              'Precision'=b.precision, "
+                            + "              'IsNullable'=b.is_nullable, "
+                            + "              'Scale'=b.scale, "
+                            + "              'IsIdentity'=b.is_identity, "
+                            + "              'IsComputed'=b.is_computed, "
+                            + "              'LeafOffset'=isnull(d2.leaf_offset,0), "
+                            + "              'LeafNullBit'=isnull(d2.leaf_null_bit,0), "
+                            + $"             'IsHidden'={(DB.Vesion >= 2017 ? "b.is_hidden" : "0")}, "
+                            + $"             'GraphType'=isnull({(DB.Vesion >= 2017 ? "b.graph_type" : "null")},-1) "
+                            + "       from sys.objects a " // sys.tables
+                            + "       join sys.schemas s on a.schema_id=s.schema_id "
+                            + "       join sys.columns b on a.object_id=b.object_id "
+                            + "       join sys.systypes c on b.system_type_id=c.xtype and b.user_type_id=c.xusertype "
+                            + "       left join sys.systypes c2 on c.xtype=c2.xtype and c.xtype=c2.xusertype "
+                            + "       outer apply (select d.leaf_offset,d.leaf_null_bit "
+                            + "                    from sys.system_internals_partition_columns d "
+                            + "                    where d.partition_column_id=b.column_id "
+                            + "                    and d.partition_id in (select partitionss.partition_id "
+                            + "                                           from sys.allocation_units allocunits "
+                            + "                                           join sys.partitions partitionss on (allocunits.type in(1, 3) and allocunits.container_id=partitionss.hobt_id) "
+                            + "                                                                              or (allocunits.type=2 and allocunits.container_id=partitionss.partition_id) "
+                            + "                                           where partitionss.object_id=a.object_id and partitionss.index_id<=1)) d2 "
+                            + $"      where s.name=N'{PSchemaName}' "
+                            + $"      and a.name=N'{PTablename}') t "
+                            + " order by ColumnID "
+                            + " for xml raw('Column'),root('ColumnList') "
+                            + ") as nvarchar(max)); ";
+                stemp = DB.Query11(tsql, false);
+                tableinfo.Columns = AnalyzeTablelayout(stemp);
+                tableinfo.Version = "";
 
-            return (tableinfo, tablecolumns);
+                if (save == true)
+                {
+                    if (UserTables.ContainsKey($"{PSchemaName}.{PTablename}") == true)
+                    {
+                        UserTables.Remove($"{PSchemaName}.{PTablename}");
+                    }
+                    UserTables.Add($"{PSchemaName}.{PTablename}", tableinfo);
+                }
+            }
+
+            return tableinfo;
         }
 
-        public TableColumn[] AnalyzeTablelayout(string TableLayout)
+        private TableColumn[] AnalyzeTablelayout(string TableLayout)
         {
             int i;
             XmlDocument xmlDoc;
             XmlNode xmlRootnode;
             XmlNodeList xmlNodelist;
-            TableColumn[] TableColumns;
+            TableColumn[] Columns;
             TableColumn fcol;
 
             xmlDoc = new XmlDocument();
@@ -1973,7 +2095,7 @@ namespace DBLOG
             xmlRootnode = xmlDoc.SelectSingleNode("ColumnList");
             xmlNodelist = xmlRootnode.ChildNodes;
 
-            TableColumns = new TableColumn[xmlNodelist.Count];
+            Columns = new TableColumn[xmlNodelist.Count];
             i = 0;
             foreach (XmlNode xmlNode in xmlNodelist)
             {
@@ -1981,44 +2103,7 @@ namespace DBLOG
                 fcol.ColumnID = Convert.ToInt16(xmlNode.Attributes["ColumnID"].Value.ToString());
                 fcol.ColumnName = xmlNode.Attributes["ColumnName"].Value;
                 fcol.DataType = xmlNode.Attributes["DataType"].Value;
-                switch (xmlNode.Attributes["PhysicalStorageType"].Value)
-                {
-                    case "bigint": fcol.PhysicalStorageType = System.Data.SqlDbType.BigInt; break;
-                    case "binary": fcol.PhysicalStorageType = System.Data.SqlDbType.Binary; break;
-                    case "bit": fcol.PhysicalStorageType = System.Data.SqlDbType.Bit; break;
-                    case "char": fcol.PhysicalStorageType = System.Data.SqlDbType.Char; break;
-                    case "date": fcol.PhysicalStorageType = System.Data.SqlDbType.Date; break;
-                    case "datetime": fcol.PhysicalStorageType = System.Data.SqlDbType.DateTime; break;
-                    case "datetime2": fcol.PhysicalStorageType = System.Data.SqlDbType.DateTime2; break;
-                    case "datetimeoffset": fcol.PhysicalStorageType = System.Data.SqlDbType.DateTimeOffset; break;
-                    case "decimal": fcol.PhysicalStorageType = System.Data.SqlDbType.Decimal; break;
-                    case "float": fcol.PhysicalStorageType = System.Data.SqlDbType.Float; break;
-                    case "geography": fcol.PhysicalStorageType = System.Data.SqlDbType.VarBinary; break;
-                    case "geometry": fcol.PhysicalStorageType = System.Data.SqlDbType.VarBinary; break;
-                    case "hierarchyid": fcol.PhysicalStorageType = System.Data.SqlDbType.VarBinary; break;
-                    case "image": fcol.PhysicalStorageType = System.Data.SqlDbType.Image; break;
-                    case "int": fcol.PhysicalStorageType = System.Data.SqlDbType.Int; break;
-                    case "money": fcol.PhysicalStorageType = System.Data.SqlDbType.Money; break;
-                    case "nchar": fcol.PhysicalStorageType = System.Data.SqlDbType.NChar; break;
-                    case "ntext": fcol.PhysicalStorageType = System.Data.SqlDbType.NText; break;
-                    case "numeric": fcol.PhysicalStorageType = System.Data.SqlDbType.Decimal; break; // numeric=decimal
-                    case "nvarchar": fcol.PhysicalStorageType = System.Data.SqlDbType.NVarChar; break;
-                    case "real": fcol.PhysicalStorageType = System.Data.SqlDbType.Real; break;
-                    case "smalldatetime": fcol.PhysicalStorageType = System.Data.SqlDbType.SmallDateTime; break;
-                    case "smallint": fcol.PhysicalStorageType = System.Data.SqlDbType.SmallInt; break;
-                    case "smallmoney": fcol.PhysicalStorageType = System.Data.SqlDbType.SmallMoney; break;
-                    case "sql_variant": fcol.PhysicalStorageType = System.Data.SqlDbType.Variant; break;
-                    case "sysname": fcol.PhysicalStorageType = System.Data.SqlDbType.NVarChar; break;
-                    case "text": fcol.PhysicalStorageType = System.Data.SqlDbType.Text; break;
-                    case "time": fcol.PhysicalStorageType = System.Data.SqlDbType.Time; break;
-                    case "timestamp": fcol.PhysicalStorageType = System.Data.SqlDbType.Timestamp; break;
-                    case "tinyint": fcol.PhysicalStorageType = System.Data.SqlDbType.TinyInt; break;
-                    case "uniqueidentifier": fcol.PhysicalStorageType = System.Data.SqlDbType.UniqueIdentifier; break;
-                    case "varbinary": fcol.PhysicalStorageType = System.Data.SqlDbType.VarBinary; break;
-                    case "varchar": fcol.PhysicalStorageType = System.Data.SqlDbType.VarChar; break;
-                    case "xml": fcol.PhysicalStorageType = System.Data.SqlDbType.Xml; break;
-                    default: break;
-                }
+                fcol.PhysicalStorageType = GetPhysicalStorageType(xmlNode.Attributes["PhysicalStorageType"].Value);
                 fcol.Length = Convert.ToInt16(xmlNode.Attributes["Length"].Value);
                 fcol.Precision = Convert.ToInt16(xmlNode.Attributes["Precision"].Value);
                 fcol.Scale = Convert.ToInt16(xmlNode.Attributes["Scale"].Value);
@@ -2030,11 +2115,57 @@ namespace DBLOG
                 fcol.IsHidden = (xmlNode.Attributes["IsHidden"].Value.ToString() == "0" ? false : true);
                 fcol.GraphType = Convert.ToInt16(xmlNode.Attributes["GraphType"].Value);
 
-                TableColumns[i] = fcol;
+                Columns[i] = fcol;
                 i = i + 1;
             }
 
-            return TableColumns;
+            return Columns;
+        }
+
+        private System.Data.SqlDbType GetPhysicalStorageType(string ftype)
+        {
+            System.Data.SqlDbType r;
+            
+            switch (ftype)
+            {
+                case "bigint": r = System.Data.SqlDbType.BigInt; break;
+                case "binary": r = System.Data.SqlDbType.Binary; break;
+                case "bit": r = System.Data.SqlDbType.Bit; break;
+                case "char": r = System.Data.SqlDbType.Char; break;
+                case "date": r = System.Data.SqlDbType.Date; break;
+                case "datetime": r = System.Data.SqlDbType.DateTime; break;
+                case "datetime2": r = System.Data.SqlDbType.DateTime2; break;
+                case "datetimeoffset": r = System.Data.SqlDbType.DateTimeOffset; break;
+                case "decimal": r = System.Data.SqlDbType.Decimal; break;
+                case "float": r = System.Data.SqlDbType.Float; break;
+                case "geography": r = System.Data.SqlDbType.VarBinary; break;
+                case "geometry": r = System.Data.SqlDbType.VarBinary; break;
+                case "hierarchyid": r = System.Data.SqlDbType.VarBinary; break;
+                case "image": r = System.Data.SqlDbType.Image; break;
+                case "int": r = System.Data.SqlDbType.Int; break;
+                case "money": r = System.Data.SqlDbType.Money; break;
+                case "nchar": r = System.Data.SqlDbType.NChar; break;
+                case "ntext": r = System.Data.SqlDbType.NText; break;
+                case "numeric": r = System.Data.SqlDbType.Decimal; break; // numeric=decimal
+                case "nvarchar": r = System.Data.SqlDbType.NVarChar; break;
+                case "real": r = System.Data.SqlDbType.Real; break;
+                case "smalldatetime": r = System.Data.SqlDbType.SmallDateTime; break;
+                case "smallint": r = System.Data.SqlDbType.SmallInt; break;
+                case "smallmoney": r = System.Data.SqlDbType.SmallMoney; break;
+                case "sql_variant": r = System.Data.SqlDbType.Variant; break;
+                case "sysname": r = System.Data.SqlDbType.NVarChar; break;
+                case "text": r = System.Data.SqlDbType.Text; break;
+                case "time": r = System.Data.SqlDbType.Time; break;
+                case "timestamp": r = System.Data.SqlDbType.Timestamp; break;
+                case "tinyint": r = System.Data.SqlDbType.TinyInt; break;
+                case "uniqueidentifier": r = System.Data.SqlDbType.UniqueIdentifier; break;
+                case "varbinary": r = System.Data.SqlDbType.VarBinary; break;
+                case "varchar": r = System.Data.SqlDbType.VarChar; break;
+                case "xml": r = System.Data.SqlDbType.Xml; break;
+                default: r = System.Data.SqlDbType.Variant; break;
+            }
+
+            return r;
         }
 
         private string ColumnValue2SQLValue(TableColumn pcol)

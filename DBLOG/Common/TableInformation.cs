@@ -12,20 +12,30 @@ using System.Threading.Tasks;
 
 namespace DBLOG.Common
 {
-    public class TableInformation
+    public class TableInfo
     {
         public List<string> PrimaryKeyColumns;
         public List<string> ClusteredIndexColumns;
-        public bool IsHeapTable;  // 是否堆表
+        public bool IsHeapTable;
         public string AllocUnitName;
         public int TextInRow; // sp_tableoption @TableName,'text in row',@OptionValue --> When specified and @OptionValue is ON (enabled) or an integer value from 24 through 7000, new text, ntext, or image strings are stored directly in the data row. 
-        public bool IsColumnStore; // 是否列存储
+        public bool IsColumnStore;
         public bool IsNodeTable;
         public bool IsEdgeTable;
-        public Dictionary<long, CompressionType> DataCompressionType; // PartitionId, CompressionType
+        public Dictionary<long, CompressionType> DataCompressionType; // key:PartitionId value:CompressionType
+        public TableColumn[] Columns;
+        public string Version;
 
-        public TableInformation()
+        public TableInfo()
         {
+            PrimaryKeyColumns = new List<string>();
+            ClusteredIndexColumns = new List<string>();
+            DataCompressionType = new Dictionary<long, CompressionType>();
+            Columns = new TableColumn[] { };
+            Version = "";
+            IsColumnStore = false;
+            IsNodeTable = false;
+            IsEdgeTable = false;
 
         }
 

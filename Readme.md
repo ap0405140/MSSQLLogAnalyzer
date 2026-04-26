@@ -81,7 +81,7 @@ update dbo.OrderDetail set [QTY]=100 where [OrderID]=1001 and [ItemID]=1
 #### Some Tips:
 #### 1. The SQL Server to be analyzed needs 2008 or later version.
 #### 2. Target Database Recovery model must be 'Full'.
-#### 3. This module only analyzes for DML transaction.
+#### 3. This module only analyzes for DML and DDL transaction.
 #### 4. For develop, please install Visual Studio 2017 or later version and .NET Framework 4.8.
 #### 5. Please contact me when have any question: ap0405140@163.com
 ----

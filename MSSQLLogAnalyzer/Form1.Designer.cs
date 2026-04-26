@@ -29,7 +29,8 @@
         private void InitializeComponent()
         {
             this.components = new System.ComponentModel.Container();
-            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle4 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle1 = new System.Windows.Forms.DataGridViewCellStyle();
+            System.Windows.Forms.DataGridViewCellStyle dataGridViewCellStyle2 = new System.Windows.Forms.DataGridViewCellStyle();
             this.txtConnectionstring = new System.Windows.Forms.TextBox();
             this.label4 = new System.Windows.Forms.Label();
             this.txtTablename = new System.Windows.Forms.TextBox();
@@ -40,22 +41,22 @@
             this.label2 = new System.Windows.Forms.Label();
             this.btnReadlog = new System.Windows.Forms.Button();
             this.dgLogs = new System.Windows.Forms.DataGridView();
+            this.bindingSource1 = new System.Windows.Forms.BindingSource(this.components);
+            this.tableLayoutPanel1 = new System.Windows.Forms.TableLayoutPanel();
+            this.panel3 = new System.Windows.Forms.Panel();
+            this.statusStrip1 = new System.Windows.Forms.StatusStrip();
+            this.tsProg = new System.Windows.Forms.ToolStripProgressBar();
+            this.toolStripStatusLabel1 = new System.Windows.Forms.ToolStripStatusLabel();
+            this.tsTime = new System.Windows.Forms.ToolStripStatusLabel();
+            this.tsRows = new System.Windows.Forms.ToolStripStatusLabel();
+            this.panel2 = new System.Windows.Forms.Panel();
+            this.panel1 = new System.Windows.Forms.Panel();
             this.transactionIDDataGridViewTextBoxColumn = new System.Windows.Forms.DataGridViewTextBoxColumn();
             this.beginTimeDataGridViewTextBoxColumn = new System.Windows.Forms.DataGridViewTextBoxColumn();
             this.objectNameDataGridViewTextBoxColumn = new System.Windows.Forms.DataGridViewTextBoxColumn();
             this.operationDataGridViewTextBoxColumn = new System.Windows.Forms.DataGridViewTextBoxColumn();
             this.redoSQLDataGridViewTextBoxColumn = new System.Windows.Forms.DataGridViewTextBoxColumn();
             this.undoSQLDataGridViewTextBoxColumn = new System.Windows.Forms.DataGridViewTextBoxColumn();
-            this.bindingSource1 = new System.Windows.Forms.BindingSource(this.components);
-            this.tableLayoutPanel1 = new System.Windows.Forms.TableLayoutPanel();
-            this.panel3 = new System.Windows.Forms.Panel();
-            this.statusStrip1 = new System.Windows.Forms.StatusStrip();
-            this.tsProg = new System.Windows.Forms.ToolStripProgressBar();
-            this.tsTime = new System.Windows.Forms.ToolStripStatusLabel();
-            this.tsRows = new System.Windows.Forms.ToolStripStatusLabel();
-            this.panel2 = new System.Windows.Forms.Panel();
-            this.panel1 = new System.Windows.Forms.Panel();
-            this.toolStripStatusLabel1 = new System.Windows.Forms.ToolStripStatusLabel();
             ((System.ComponentModel.ISupportInitialize)(this.dgLogs)).BeginInit();
             ((System.ComponentModel.ISupportInitialize)(this.bindingSource1)).BeginInit();
             this.tableLayoutPanel1.SuspendLayout();
@@ -171,14 +172,14 @@
             this.dgLogs.AutoGenerateColumns = false;
             this.dgLogs.BackgroundColor = System.Drawing.Color.FromArgb(((int)(((byte)(224)))), ((int)(((byte)(224)))), ((int)(((byte)(224)))));
             this.dgLogs.ColumnHeadersBorderStyle = System.Windows.Forms.DataGridViewHeaderBorderStyle.Single;
-            dataGridViewCellStyle4.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleLeft;
-            dataGridViewCellStyle4.BackColor = System.Drawing.Color.Silver;
-            dataGridViewCellStyle4.Font = new System.Drawing.Font("Microsoft Sans Serif", 10.5F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            dataGridViewCellStyle4.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(192)))), ((int)(((byte)(0)))), ((int)(((byte)(192)))));
-            dataGridViewCellStyle4.SelectionBackColor = System.Drawing.SystemColors.Highlight;
-            dataGridViewCellStyle4.SelectionForeColor = System.Drawing.SystemColors.HighlightText;
-            dataGridViewCellStyle4.WrapMode = System.Windows.Forms.DataGridViewTriState.True;
-            this.dgLogs.ColumnHeadersDefaultCellStyle = dataGridViewCellStyle4;
+            dataGridViewCellStyle1.Alignment = System.Windows.Forms.DataGridViewContentAlignment.MiddleLeft;
+            dataGridViewCellStyle1.BackColor = System.Drawing.Color.Silver;
+            dataGridViewCellStyle1.Font = new System.Drawing.Font("Microsoft Sans Serif", 10.5F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            dataGridViewCellStyle1.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(192)))), ((int)(((byte)(0)))), ((int)(((byte)(192)))));
+            dataGridViewCellStyle1.SelectionBackColor = System.Drawing.SystemColors.Highlight;
+            dataGridViewCellStyle1.SelectionForeColor = System.Drawing.SystemColors.HighlightText;
+            dataGridViewCellStyle1.WrapMode = System.Windows.Forms.DataGridViewTriState.True;
+            this.dgLogs.ColumnHeadersDefaultCellStyle = dataGridViewCellStyle1;
             this.dgLogs.ColumnHeadersHeightSizeMode = System.Windows.Forms.DataGridViewColumnHeadersHeightSizeMode.AutoSize;
             this.dgLogs.Columns.AddRange(new System.Windows.Forms.DataGridViewColumn[] {
             this.transactionIDDataGridViewTextBoxColumn,
@@ -202,52 +203,6 @@
             this.dgLogs.Size = new System.Drawing.Size(1278, 572);
             this.dgLogs.TabIndex = 46;
             this.dgLogs.CellDoubleClick += new System.Windows.Forms.DataGridViewCellEventHandler(this.dgLogs_CellDoubleClick);
-            // 
-            // transactionIDDataGridViewTextBoxColumn
-            // 
-            this.transactionIDDataGridViewTextBoxColumn.DataPropertyName = "TransactionID";
-            this.transactionIDDataGridViewTextBoxColumn.HeaderText = "TransactionID";
-            this.transactionIDDataGridViewTextBoxColumn.Name = "transactionIDDataGridViewTextBoxColumn";
-            this.transactionIDDataGridViewTextBoxColumn.ReadOnly = true;
-            this.transactionIDDataGridViewTextBoxColumn.Width = 110;
-            // 
-            // beginTimeDataGridViewTextBoxColumn
-            // 
-            this.beginTimeDataGridViewTextBoxColumn.DataPropertyName = "BeginTime";
-            this.beginTimeDataGridViewTextBoxColumn.HeaderText = "BeginTime";
-            this.beginTimeDataGridViewTextBoxColumn.Name = "beginTimeDataGridViewTextBoxColumn";
-            this.beginTimeDataGridViewTextBoxColumn.ReadOnly = true;
-            this.beginTimeDataGridViewTextBoxColumn.Width = 145;
-            // 
-            // objectNameDataGridViewTextBoxColumn
-            // 
-            this.objectNameDataGridViewTextBoxColumn.DataPropertyName = "ObjectName";
-            this.objectNameDataGridViewTextBoxColumn.HeaderText = "ObjectName";
-            this.objectNameDataGridViewTextBoxColumn.Name = "objectNameDataGridViewTextBoxColumn";
-            this.objectNameDataGridViewTextBoxColumn.ReadOnly = true;
-            // 
-            // operationDataGridViewTextBoxColumn
-            // 
-            this.operationDataGridViewTextBoxColumn.DataPropertyName = "Operation";
-            this.operationDataGridViewTextBoxColumn.HeaderText = "Operation";
-            this.operationDataGridViewTextBoxColumn.Name = "operationDataGridViewTextBoxColumn";
-            this.operationDataGridViewTextBoxColumn.ReadOnly = true;
-            // 
-            // redoSQLDataGridViewTextBoxColumn
-            // 
-            this.redoSQLDataGridViewTextBoxColumn.DataPropertyName = "RedoSQL";
-            this.redoSQLDataGridViewTextBoxColumn.HeaderText = "RedoSQL  (DoubleClick cell to View full SQL)";
-            this.redoSQLDataGridViewTextBoxColumn.Name = "redoSQLDataGridViewTextBoxColumn";
-            this.redoSQLDataGridViewTextBoxColumn.ReadOnly = true;
-            this.redoSQLDataGridViewTextBoxColumn.Width = 320;
-            // 
-            // undoSQLDataGridViewTextBoxColumn
-            // 
-            this.undoSQLDataGridViewTextBoxColumn.DataPropertyName = "UndoSQL";
-            this.undoSQLDataGridViewTextBoxColumn.HeaderText = "UndoSQL  (DoubleClick cell to View full SQL)";
-            this.undoSQLDataGridViewTextBoxColumn.Name = "undoSQLDataGridViewTextBoxColumn";
-            this.undoSQLDataGridViewTextBoxColumn.ReadOnly = true;
-            this.undoSQLDataGridViewTextBoxColumn.Width = 320;
             // 
             // bindingSource1
             // 
@@ -301,6 +256,12 @@
             this.tsProg.Step = 1;
             this.tsProg.Style = System.Windows.Forms.ProgressBarStyle.Continuous;
             // 
+            // toolStripStatusLabel1
+            // 
+            this.toolStripStatusLabel1.Name = "toolStripStatusLabel1";
+            this.toolStripStatusLabel1.Size = new System.Drawing.Size(1027, 24);
+            this.toolStripStatusLabel1.Spring = true;
+            // 
             // tsTime
             // 
             this.tsTime.BorderSides = System.Windows.Forms.ToolStripStatusLabelBorderSides.Left;
@@ -345,11 +306,54 @@
             this.panel1.Size = new System.Drawing.Size(1278, 59);
             this.panel1.TabIndex = 0;
             // 
-            // toolStripStatusLabel1
+            // transactionIDDataGridViewTextBoxColumn
             // 
-            this.toolStripStatusLabel1.Name = "toolStripStatusLabel1";
-            this.toolStripStatusLabel1.Size = new System.Drawing.Size(996, 24);
-            this.toolStripStatusLabel1.Spring = true;
+            this.transactionIDDataGridViewTextBoxColumn.DataPropertyName = "TransactionID";
+            this.transactionIDDataGridViewTextBoxColumn.HeaderText = "TransactionID";
+            this.transactionIDDataGridViewTextBoxColumn.Name = "transactionIDDataGridViewTextBoxColumn";
+            this.transactionIDDataGridViewTextBoxColumn.ReadOnly = true;
+            this.transactionIDDataGridViewTextBoxColumn.Width = 110;
+            // 
+            // beginTimeDataGridViewTextBoxColumn
+            // 
+            this.beginTimeDataGridViewTextBoxColumn.DataPropertyName = "BeginTime";
+            dataGridViewCellStyle2.Format = "yyyy-MM-dd HH:mm:ss";
+            dataGridViewCellStyle2.NullValue = null;
+            this.beginTimeDataGridViewTextBoxColumn.DefaultCellStyle = dataGridViewCellStyle2;
+            this.beginTimeDataGridViewTextBoxColumn.HeaderText = "BeginTime";
+            this.beginTimeDataGridViewTextBoxColumn.Name = "beginTimeDataGridViewTextBoxColumn";
+            this.beginTimeDataGridViewTextBoxColumn.ReadOnly = true;
+            this.beginTimeDataGridViewTextBoxColumn.Width = 145;
+            // 
+            // objectNameDataGridViewTextBoxColumn
+            // 
+            this.objectNameDataGridViewTextBoxColumn.DataPropertyName = "ObjectName";
+            this.objectNameDataGridViewTextBoxColumn.HeaderText = "ObjectName";
+            this.objectNameDataGridViewTextBoxColumn.Name = "objectNameDataGridViewTextBoxColumn";
+            this.objectNameDataGridViewTextBoxColumn.ReadOnly = true;
+            // 
+            // operationDataGridViewTextBoxColumn
+            // 
+            this.operationDataGridViewTextBoxColumn.DataPropertyName = "Operation";
+            this.operationDataGridViewTextBoxColumn.HeaderText = "Operation";
+            this.operationDataGridViewTextBoxColumn.Name = "operationDataGridViewTextBoxColumn";
+            this.operationDataGridViewTextBoxColumn.ReadOnly = true;
+            // 
+            // redoSQLDataGridViewTextBoxColumn
+            // 
+            this.redoSQLDataGridViewTextBoxColumn.DataPropertyName = "RedoSQL";
+            this.redoSQLDataGridViewTextBoxColumn.HeaderText = "RedoSQL  (DoubleClick cell to View full SQL)";
+            this.redoSQLDataGridViewTextBoxColumn.Name = "redoSQLDataGridViewTextBoxColumn";
+            this.redoSQLDataGridViewTextBoxColumn.ReadOnly = true;
+            this.redoSQLDataGridViewTextBoxColumn.Width = 320;
+            // 
+            // undoSQLDataGridViewTextBoxColumn
+            // 
+            this.undoSQLDataGridViewTextBoxColumn.DataPropertyName = "UndoSQL";
+            this.undoSQLDataGridViewTextBoxColumn.HeaderText = "UndoSQL  (DoubleClick cell to View full SQL)";
+            this.undoSQLDataGridViewTextBoxColumn.Name = "undoSQLDataGridViewTextBoxColumn";
+            this.undoSQLDataGridViewTextBoxColumn.ReadOnly = true;
+            this.undoSQLDataGridViewTextBoxColumn.Width = 320;
             // 
             // Form1
             // 
@@ -391,12 +395,6 @@
         private System.Windows.Forms.Button btnReadlog;
         private System.Windows.Forms.BindingSource bindingSource1;
         private System.Windows.Forms.DataGridView dgLogs;
-        private System.Windows.Forms.DataGridViewTextBoxColumn transactionIDDataGridViewTextBoxColumn;
-        private System.Windows.Forms.DataGridViewTextBoxColumn beginTimeDataGridViewTextBoxColumn;
-        private System.Windows.Forms.DataGridViewTextBoxColumn objectNameDataGridViewTextBoxColumn;
-        private System.Windows.Forms.DataGridViewTextBoxColumn operationDataGridViewTextBoxColumn;
-        private System.Windows.Forms.DataGridViewTextBoxColumn redoSQLDataGridViewTextBoxColumn;
-        private System.Windows.Forms.DataGridViewTextBoxColumn undoSQLDataGridViewTextBoxColumn;
         private System.Windows.Forms.TableLayoutPanel tableLayoutPanel1;
         private System.Windows.Forms.Panel panel3;
         private System.Windows.Forms.Panel panel2;
@@ -406,6 +404,12 @@
         private System.Windows.Forms.ToolStripStatusLabel tsRows;
         private System.Windows.Forms.ToolStripProgressBar tsProg;
         private System.Windows.Forms.ToolStripStatusLabel toolStripStatusLabel1;
+        private System.Windows.Forms.DataGridViewTextBoxColumn transactionIDDataGridViewTextBoxColumn;
+        private System.Windows.Forms.DataGridViewTextBoxColumn beginTimeDataGridViewTextBoxColumn;
+        private System.Windows.Forms.DataGridViewTextBoxColumn objectNameDataGridViewTextBoxColumn;
+        private System.Windows.Forms.DataGridViewTextBoxColumn operationDataGridViewTextBoxColumn;
+        private System.Windows.Forms.DataGridViewTextBoxColumn redoSQLDataGridViewTextBoxColumn;
+        private System.Windows.Forms.DataGridViewTextBoxColumn undoSQLDataGridViewTextBoxColumn;
     }
 }
 

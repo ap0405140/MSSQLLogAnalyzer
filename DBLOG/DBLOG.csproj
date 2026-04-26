@@ -59,11 +59,13 @@
     <Compile Include="Common\SQLGraphNode.cs" />
     <Compile Include="Common\TableColumn.cs" />
     <Compile Include="Common\TableInformation.cs" />
+    <Compile Include="Common\TransactionInfo.cs" />
     <Compile Include="DatabaseLogAnalyzer.cs" />
     <Compile Include="Common\DatabaseOperation.cs" />
     <Compile Include="DBLOG_DML_DDL.cs" />
     <Compile Include="Common\FCommon.cs" />
     <Compile Include="DBLOG_DML_DDL_Compression.cs" />
+    <Compile Include="DBLOG_DML_DDL_for_DDL.cs" />
     <Compile Include="DBLOG_DML_DDL_Translate.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>

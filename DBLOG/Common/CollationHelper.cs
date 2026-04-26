@@ -3982,6 +3982,25 @@ namespace DBLOG.Common
 
             return name;
         }
+
+        public static string GetCollationNameByID(int pid)
+        {
+            string name, stemp, searchkey;
+            int i;
+
+            Init();
+            stemp = pid.ToString("X8");
+            searchkey = "";
+            for (i = stemp.Length - 2; i >= 0; i = i - 2)
+            {
+                searchkey = searchkey + stemp.Substring(i, 2);
+            }
+            name = (ls.ContainsKey(searchkey) ? ls[searchkey] : "");
+
+            return name;
+        }
+
+
     }
 
 }

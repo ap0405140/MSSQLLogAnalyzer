@@ -17,8 +17,8 @@ namespace DBLOG.Common
         public string LSN { get; set; }
         public string Type { get; set; } // DML / DDL / DCL
         public string TransactionID { get; set; }
-        public string BeginTime { get; set; }
-        public string EndTime { get; set; }
+        public DateTime BeginTime { get; set; }
+        public DateTime EndTime { get; set; }
         public string ObjectName { get; set; }
         public string Operation { get; set; }
 

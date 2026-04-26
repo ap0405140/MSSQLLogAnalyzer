@@ -61,13 +61,14 @@ namespace DBLOG
         /// <returns>DatabaseLog array.</returns>
         public DatabaseLog[] ReadLog(string pStartTime, string pEndTime, string pObjectName)
         {
-            List<DatabaseLog> logs, tmplog;
+            List<DatabaseLog> logs, tmplog, ddllogs;
             int i;
-            string databasename, schemaname, tablename;
+            string databasename, schemaname, tablename, maxlsn;
+            long allocunitid;
             DataTable dtTemp;
             DBLOG_DML_DDL[] tablelist;
             List<FLOG> Loglist, Loglist_DDL;
-            List<(string tablename, string schemaname)> tables;
+            List<(string TableName, string SchemaName, long AllocUnitId, string MaxLSN)> tables, tablesUK;
 
             _objectname = pObjectName ?? string.Empty;
             _objectname = (_objectname.Length > 0 && _objectname.Contains(".") == false ? "dbo." : "") + _objectname;
@@ -111,7 +112,7 @@ namespace DBLOG
             DB.ExecuteSQL(_tsql, false);
             ReadPercent = ReadPercent + 5;
 
-            // get StartLSN and EndLSN
+            // get StartLSN
             _tsql = "select 'MinLSN'=cast(min(BeginLSN) as varchar) from #TransactionList; ";
             dtTemp = DB.Query(_tsql, false);
 
@@ -145,7 +146,6 @@ namespace DBLOG
                     + $" where [Current LSN]>=N'{_MinLSN}' "
                     + "  and [Context] in(N'LCX_HEAP',N'LCX_CLUSTERED',N'LCX_MARK_AS_GHOST',N'LCX_TEXT_TREE',N'LCX_TEXT_MIX') "
                     + "  and [Operation] in(N'LOP_INSERT_ROWS',N'LOP_DELETE_ROWS',N'LOP_MODIFY_ROW',N'LOP_MODIFY_COLUMNS',N'LOP_FORMAT_PAGE') "
-                    + "  and [AllocUnitName]<>N'Unknown Alloc Unit' "
                     + "  and [AllocUnitName] not like N'sys.%' "
                     + "  and [AllocUnitName] is not null "
                     + "  [FDMLFILTER]; ";
@@ -172,54 +172,112 @@ namespace DBLOG
                     + "  and exists(select 1 from sys.fn_dblog(null,null) b where b.[Transaction ID]=t.[Transaction ID] and b.AllocUnitName is not null); ";
             Loglist_DDL = DB.Query<FLOG>(_tsql, false);
 
-            // get table list
-            _tsql = "select 'TableName'=case when parsename([AllocUnitName],3) is not null then parsename([AllocUnitName],2) else parsename([AllocUnitName],1) end, "
-                    + "     'SchemaName'=case when parsename([AllocUnitName],3) is not null then parsename([AllocUnitName],3) else parsename([AllocUnitName],2) end "
+            // get dml table list
+            _tsql = "select TableName=case when parsename([AllocUnitName],3) is not null then parsename([AllocUnitName],2) else parsename([AllocUnitName],1) end, "
+                    + "     SchemaName=case when parsename([AllocUnitName],3) is not null then parsename([AllocUnitName],3) else parsename([AllocUnitName],2) end, "
+                    + "     AllocUnitId=0, "
+                    + "     MaxLSN=max([Current LSN]) "
                     + " from #LogList "
                     + " where [Transaction ID] in(select TransactionID from #TransactionList) "
                     + " and LogType=N'DML' "
+                    + " and [AllocUnitName]<>N'Unknown Alloc Unit' "
                     + " group by case when parsename([AllocUnitName],3) is not null then parsename([AllocUnitName],2) else parsename([AllocUnitName],1) end, "
                     + "          case when parsename([AllocUnitName],3) is not null then parsename([AllocUnitName],3) else parsename([AllocUnitName],2) end "
                     + " order by max([Current LSN]) desc; ";
-            tables = DB.Query<(string tablename, string schemaname)>(_tsql, false).ToList();
+            tables = DB.Query<(string TableName, string SchemaName, long AllocUnitId, string MaxLSN)>(_tsql, false).ToList();
+
+            _tsql = "select TableName=N'', "
+                    + "     SchemaName=N'', "
+                    + "     AllocUnitId=[AllocUnitId], "
+                    + "     MaxLSN=max([Current LSN]) "
+                    + " from #LogList "
+                    + " where [Transaction ID] in(select TransactionID from #TransactionList) "
+                    + " and LogType=N'DML' "
+                    + " and [AllocUnitName]=N'Unknown Alloc Unit' "
+                    + " and [AllocUnitId] is not null "
+                    + " group by [AllocUnitId] "
+                    + " order by max([Current LSN]) desc; ";
+            tablesUK = DB.Query<(string TableName, string SchemaName, long AllocUnitId, string MaxLSN)>(_tsql, false).ToList();
+            tables.AddRange(tablesUK);
 
             ReadPercent = ReadPercent + 5;
 
-            DBLOG_DML_DDL.Init();
+            DBLOG_DML_DDL.Init(databasename, DB, LogFile);
             DBLOG_DML_DDL.DDLLogs = Loglist_DDL;
-            tablelist = new DBLOG_DML_DDL[tables.Count];
-            i = 0;
-            foreach ((string tablename, string schemaname) dr in tables)
+
+            if (tables.Count > 0)
             {
-                tablename = dr.tablename;
-                schemaname = dr.schemaname;
-                tablelist[i] = new DBLOG_DML_DDL(databasename, schemaname, tablename, DB, LogFile);
-                tablelist[i].DTLogs = Loglist.Where(p => p.AllocUnitName == $"{schemaname}.{tablename}"
-                                                         || p.AllocUnitName.StartsWith($"{schemaname}.{tablename}."))
-                                             .ToList();
+                tablelist = new DBLOG_DML_DDL[tables.Count];
+                i = 0;
+                foreach ((string TableName, string SchemaName, long AllocUnitId, string MaxLSN) dr in tables)
+                {
+                    tablename = dr.TableName;
+                    schemaname = dr.SchemaName;
+                    allocunitid = dr.AllocUnitId;
+                    maxlsn = dr.MaxLSN;
+
+                    if (string.IsNullOrEmpty(tablename) == false && string.IsNullOrEmpty(schemaname) == false)
+                    {
+                        tablelist[i] = new DBLOG_DML_DDL(schemaname, tablename);
+                        tablelist[i].DTLogs = Loglist.Where(p => p.AllocUnitName == $"{schemaname}.{tablename}"
+                                                                 || p.AllocUnitName.StartsWith($"{schemaname}.{tablename}."))
+                                                     .ToList();
+                    }
+                    else
+                    {
+                        tablelist[i] = new DBLOG_DML_DDL(allocunitid, maxlsn);
+                        tablelist[i].DTLogs = Loglist.Where(p => p.AllocUnitId == Convert.ToInt64(allocunitid))
+                                                     .ToList();
+                    }
 
 #if DEBUG
-                FCommon.WriteTextFile(LogFile, $"Start Analysis Log for [{schemaname}].[{tablename}]. ");
+                    FCommon.WriteTextFile(LogFile, $"Start Analysis Log for [{schemaname}].[{tablename}]. ");
 #endif
 
-                tmplog = tablelist[i].AnalyzeLog();
-                logs.AddRange(tmplog);
-                ReadPercent = ReadPercent + Convert.ToInt32(Math.Floor((tablelist[i].DTLogs.Count * 1.0) / (Loglist.Count * 1.0) * 85.0));
+                    tmplog = tablelist[i].AnalyzeLog()
+                                         .Where(p => IsInTimeRange(p.BeginTime, p.EndTime) == true)
+                                         .ToList();
+                    logs.AddRange(tmplog);
+                    ReadPercent = ReadPercent + Convert.ToInt32(Math.Floor((tablelist[i].DTLogs.Count * 1.0) / (Loglist.Count * 1.0) * 85.0));
 
 #if DEBUG
-                FCommon.WriteTextFile(LogFile, $"End Analysis Log for [{schemaname}].[{tablename}]. ");
+                    FCommon.WriteTextFile(LogFile, $"End Analysis Log for [{schemaname}].[{tablename}]. ");
 #endif
 
-                i = i + 1;
+                    i = i + 1;
+                }
+
             }
 
+            DBLOG_DML_DDL ddl = new DBLOG_DML_DDL();
+            ddllogs = ddl.AnalyzeDDLLog()
+                         .Where(p => IsInTimeRange(p.BeginTime, p.EndTime) == true)
+                         .ToList();
+            logs.AddRange(ddllogs);
+
             logs = logs.OrderBy(p => p.TransactionID).ToList();
-            
+
             ReadPercent = 100;
 
             return logs.ToArray();
         }
 
-    }
+        private bool IsInTimeRange(DateTime begintime, DateTime endtime)
+        {
+            bool r;
 
+            if ((begintime >= Convert.ToDateTime(_starttime) && begintime <= Convert.ToDateTime(_endtime))
+                || (endtime >= Convert.ToDateTime(_starttime) && endtime <= Convert.ToDateTime(_endtime)))
+            {
+                r = true;
+            }
+            else
+            {
+                r = false;
+            }
+
+            return r;
+        }
+
+    }
 }

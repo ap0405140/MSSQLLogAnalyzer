@@ -326,6 +326,20 @@ namespace DBLOG.Common
             fs.Dispose();
         }
 
+        public static Dictionary<string, string> ToDict(this TableColumn[] tablecolumns)
+        {
+            Dictionary<string, string> r;
+
+            r = new Dictionary<string, string>();
+            foreach (TableColumn c in tablecolumns)
+            {
+                r.Add(c.ColumnName, (c.Value != null ? c.Value.ToString() : null));
+            }
+
+            return r;
+        }
+
+
     }
     
     public enum CompressionType

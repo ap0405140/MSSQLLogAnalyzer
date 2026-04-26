@@ -53,7 +53,7 @@ namespace MSSQLLogAnalyzer
             timer.Enabled = false;
 
             Init();
-
+            
         }
 
         private void Form1_Shown(object sender, EventArgs e)

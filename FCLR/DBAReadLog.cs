@@ -56,8 +56,8 @@ public partial class UserDefinedFunctions
         LSN = x.LSN;
         Type = x.Type;
         TransactionID = x.TransactionID;
-        BeginTime = x.BeginTime;
-        EndTime = x.EndTime;
+        BeginTime = x.BeginTime.ToString("yyyy-MM-dd HH:mm:ss");
+        EndTime = x.EndTime.ToString("yyyy-MM-dd HH:mm:ss");
         ObjectName = x.ObjectName;
         Operation = x.Operation;
         RedoSQL = x.RedoSQL;
