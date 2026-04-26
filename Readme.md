@@ -1,13 +1,12 @@
-## DBLOG.DatabaseLogAnalyzer can read the SQL Server transaction logs online, and return RedoSQL and UndoSQL for every transaction. It base on SQL Server fn_dblog() function and develop some extension. 
+## DBLOG.DatabaseLogAnalyzer can read the SQL Server transaction logs online, and return RedoSQL and UndoSQL for every transaction. It base on SQL Server sys.fn_dblog() function and develop some extension. 
 
-#### Notice: This project has been relicensed from MIT to GNU GPL v3.0. For commercial use or to obtain a commercial license, please contact the author.
-
-#### below is a demo:
-Connect to SQL Server, create a test table dbo.OrderDetail, and run some DML sql on this table.
+#### below is a use demo:
+Connect to SQL Server, create a table dbo.OrderDetail, and run some sql on this table.
 ~~~~sql
 -- create table
 create table dbo.OrderDetail
-(OrderID int not null,
+(
+ OrderID int not null,
  ItemID int not null,
  ItemNumber varchar(10),
  QTY int,
@@ -32,14 +31,16 @@ update dbo.OrderDetail set QTY=999 where OrderID=1001 and ItemID=1
 update dbo.OrderDetail set ItemNumber='!@#$%'
 
 -- transaction4: delete all rows
-delete  from dbo.OrderDetail
+delete from dbo.OrderDetail
+
+-- transaction5: drop table
+drop table dbo.OrderDetail
 ~~~~
-After run, there is no records in test table.
+After run, there is no table in the database.
 ~~~~sql
--- query result
  select * from dbo.OrderDetail
 ~~~~
-![pic1](https://img-blog.csdn.net/20160114160814768?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQv/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/SouthEast "")
+![pic1](images/demo01.png)
 
 **Right now, we can use this tool to recover data online(no need to restore database and logs).**
 **Please download zip file in Releases, and extract files to a folder.**
@@ -54,26 +55,41 @@ After run, there is no records in test table.
 
 **step3: Click [Readlog] button, wait for analysis results. below screenshot is the run result.**
 
-![pic2](https://img-blog.csdnimg.cn/20200321113032844.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L2FwMDQwNTE0MA==,size_16,color_FFFFFF,t_70 "")
+![pic2](images/demo02.png)
 **After run finished, It returned some RedoSQL and UndoSQL for every transaction, For recovery,  we can use UndoSQL to recover all operations (execute from the back forward).**
 ~~~~sql
--- recover transaction4(delete all rows)
-insert into dbo.OrderDetail([OrderID],[ItemID],[ItemNumber],[QTY],[Price],[ADate],[AUser],[UDate],[UUser]) values(1002, 1, '!@#$%', 300, 182.07, '2015-12-12', 'CL1', '2015-12-18 02:45:32.000', 'LY6'); 
-insert into dbo.OrderDetail([OrderID],[ItemID],[ItemNumber],[QTY],[Price],[ADate],[AUser],[UDate],[UUser]) values(1001, 2, '!@#$%', 150, 180.00, '2015-01-02', 'cx5', '2015-01-08 02:45:32.000', 'Yx3'); 
-insert into dbo.OrderDetail([OrderID],[ItemID],[ItemNumber],[QTY],[Price],[ADate],[AUser],[UDate],[UUser]) values(1001, 1, '!@#$%', 999, 45.62, '2015-01-02', 'Xh6', '2015-01-03 20:15:18.000', 'Lx4'); 
- 
--- recover transaction3(update 3 rows)
-update dbo.OrderDetail set [ItemNumber]='Z001_2' where [OrderID]=1002 and [ItemID]=1
-update dbo.OrderDetail set [ItemNumber]='Z001_2' where [OrderID]=1001 and [ItemID]=2
-update dbo.OrderDetail set [ItemNumber]='D001' where [OrderID]=1001 and [ItemID]=1
- 
--- recover transaction2(update 1 row)
-update dbo.OrderDetail set [QTY]=100 where [OrderID]=1001 and [ItemID]=1
+-- recover transaction5(drop table)
+create table [dbo].[OrderDetail]
+([OrderID] int not null,
+ [ItemID] int not null,
+ [ItemNumber] varchar(10) collate Chinese_PRC_CI_AS null,
+ [QTY] int null,
+ [Price] decimal(8,2) null,
+ [ADate] date null,
+ [AUser] char(20) collate Chinese_PRC_CI_AS null,
+ [UDate] datetime null,
+ [UUser] varchar(20) collate Chinese_PRC_CI_AS null
+ constraint [pk_OrderDetail] primary key clustered ([OrderID] asc,[ItemID] asc) 
+); 
 
--- query recovery result
+-- recover transaction4(delete all rows)
+insert into [dbo].[OrderDetail]([OrderID],[ItemID],[ItemNumber],[QTY],[Price],[ADate],[AUser],[UDate],[UUser]) values(1002,1,'!@#$%',300,182.07,'2015-12-12','CL1','2015-12-18 02:45:32.000','LY6'); 
+insert into [dbo].[OrderDetail]([OrderID],[ItemID],[ItemNumber],[QTY],[Price],[ADate],[AUser],[UDate],[UUser]) values(1001,2,'!@#$%',150,180.00,'2015-01-02','cx5','2015-01-08 02:45:32.000','Yx3'); 
+insert into [dbo].[OrderDetail]([OrderID],[ItemID],[ItemNumber],[QTY],[Price],[ADate],[AUser],[UDate],[UUser]) values(1001,1,'!@#$%',999,45.62,'2015-01-02','Xh6','2015-01-03 20:15:18.000','Lx4'); 
+
+-- recover transaction3(update 3 rows)
+update top(1) [dbo].[OrderDetail] set [ItemNumber]='Z001_2' where [OrderID]=1002 and [ItemID]=1; 
+update top(1) [dbo].[OrderDetail] set [ItemNumber]='Z001_2' where [OrderID]=1001 and [ItemID]=2; 
+update top(1) [dbo].[OrderDetail] set [ItemNumber]='D001' where [OrderID]=1001 and [ItemID]=1; 
+
+-- recover transaction2(update 1 row)
+update top(1) [dbo].[OrderDetail] set [QTY]=100 where [OrderID]=1001 and [ItemID]=1; 
+~~~~
+Query recovery result:
+~~~~sql
  select * from dbo.OrderDetail
 ~~~~
-![pic3](https://img-blog.csdn.net/20160114161619096?watermark/2/text/aHR0cDovL2Jsb2cuY3Nkbi5uZXQv/font/5a6L5L2T/fontsize/400/fill/I0JBQkFCMA==/dissolve/70/gravity/SouthEast "")
+![pic3](images/demo03.png)
 <br/>
 **Recovery finished!**
 
@@ -84,6 +100,8 @@ update dbo.OrderDetail set [QTY]=100 where [OrderID]=1001 and [ItemID]=1
 #### 3. This module only analyzes for DML and DDL transaction.
 #### 4. For develop, please install Visual Studio 2017 or later version and .NET Framework 4.8.
 #### 5. Please contact me when have any question: ap0405140@163.com
+#### 6. This project is open source, welcome to contribute code or give me some advice to make it better.
+#### 7. This project use GPL-3.0 license, For commercial use or to obtain a commercial license, please contact the author.
 ----
 
 #### SQLCLR use example:
@@ -134,7 +152,7 @@ order by LSN
 ----
 
 #### DBLOG.dll use example:
-step1: Start Visual Studio 2017, create a new project.
+step1: Start Visual Studio 2022, create a new project.
 
 step2: Add reference DBLOG.dll to current project.
 
