@@ -633,8 +633,8 @@ namespace DBLOG
                         tmplog.LSN = log.Current_LSN;
                         tmplog.Type = "DML";
                         tmplog.TransactionID = log.Transaction_ID;
-                        tmplog.BeginTime = BeginTime;
-                        tmplog.EndTime = EndTime;
+                        tmplog.BeginTime = Convert.ToDateTime(BeginTime);
+                        tmplog.EndTime = Convert.ToDateTime(EndTime);
                         tmplog.ObjectName = $"[{SchemaName}].[{TableName}]";
                         tmplog.Operation = log.Operation;
                         tmplog.RedoSQL = "";
