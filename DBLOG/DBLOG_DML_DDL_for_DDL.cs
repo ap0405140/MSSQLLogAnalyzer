@@ -131,8 +131,8 @@ namespace DBLOG
 
         private void TCreateTable(int d, out string objectname, out string redosql, out string undosql)
         {
-            string schemaname, columndefinition, columnname, datatype, collationname, constraint, graphtype;
-            Int16 maxlength;
+            string schemaname, columndefinition, columnname, datatype, collationname, constraint, graphtype, others;
+            short maxlength;
             long seed, increment;
             bool nullable, isidentity, iscomputed, isnode, isedge, ishidden;
             List<string> lstemp1, lstemp2, lstemp3, lstemp4, lstemp5;
@@ -205,13 +205,24 @@ namespace DBLOG
                     switch (datatype)
                     {
                         case "char":
-                        case "nchar":
                         case "varchar":
+                        case "nchar":
                         case "nvarchar":
                             collationname = CollationHelper.GetCollationNameByID(Convert.ToInt32(col["collationid"]));
                             stemp1 = stemp1
                                      + $"({(maxlength == -1 ? "max" : (datatype.StartsWith("n") ? maxlength / 2 : maxlength).ToString())})"
                                      + $" collate {collationname}";
+                            break;
+                        case "binary":
+                        case "varbinary":
+                            stemp1 = stemp1
+                                     + $"({(maxlength == -1 ? "max" : maxlength.ToString())})";
+                            break;
+                        case "time":
+                        case "datetime2":
+                        case "datetimeoffset":
+                            stemp1 = stemp1
+                                     + $"({col["scale"]})";
                             break;
                         case "int":
                         case "tinyint":
@@ -229,6 +240,7 @@ namespace DBLOG
                             }
                             break;
                         case "decimal":
+                        case "numeric":
                             stemp1 = stemp1
                                      + $"({col["prec"]},{col["scale"]})";
                             break;
@@ -249,7 +261,10 @@ namespace DBLOG
                     stemp1 = $"[{columnname}] as {stemp4}";
                 }
 
-                lstemp1.Add(stemp1);
+                if (ishidden == false && graphtype == "")
+                {
+                    lstemp1.Add(stemp1);
+                }
 
                 fcol = new TableColumn();
                 fcol.ColumnID = Convert.ToInt16(col["colid"]);
@@ -323,15 +338,25 @@ namespace DBLOG
             }
 
             objectname = $"[{schemaname}].[{objectname}]";
+            others = "";
+            if (isnode == true)
+            {
+                others = others + " as node";
+            }
+            if (isedge == true)
+            {
+                others = others + " as edge";
+            }
+
             if (d == 1)
             {
-                redosql = $"create table {objectname}\r\n({columndefinition}\r\n{constraint}){(ftabinfo.IsNodeTable == true ? " as node" : "")}; ";
+                redosql = $"create table {objectname}\r\n({columndefinition}\r\n{constraint}){others}; ";
                 undosql = $"drop table {objectname}; ";
             }
             else
             {
                 redosql = $"drop table {objectname}; ";
-                undosql = $"create table {objectname}\r\n({columndefinition}\r\n{constraint}){(ftabinfo.IsNodeTable == true ? " as node" : "")};";
+                undosql = $"create table {objectname}\r\n({columndefinition}\r\n{constraint}){others}; ";
 
                 UserTables.Add($"{objectname.Replace("[", "").Replace("]", "")}", ftabinfo);
             }
