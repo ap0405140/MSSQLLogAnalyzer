@@ -296,8 +296,9 @@ namespace DBLOG
                 i = i + 1;
             }
             
-            columndefinition = string.Join(",\r\n ", lstemp1);
+            columndefinition = string.Join(",\r\n ", lstemp1) + ",";
 
+            constraint = "";
             //  primary key, unique
             if (fsysschobjs.Any(p => p["type"] == "PK" || p["type"] == "UQ") == true)
             {
@@ -332,10 +333,15 @@ namespace DBLOG
                 }
 
             }
-            else
+
+            if (fsysidxstats.Any(p => p["type"] == "5") == true) // CLUSTERED COLUMNSTORE
             {
-                constraint = "";
+                dsysidxstats = fsysidxstats.First(p => p["type"] == "5");
+                constraint = $"index {dsysidxstats["name"]} clustered columnstore";
+
+                ftabinfo.IsColumnStore = true;
             }
+
 
             objectname = $"[{schemaname}].[{objectname}]";
             others = "";
