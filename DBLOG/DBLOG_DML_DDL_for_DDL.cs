@@ -48,7 +48,7 @@ namespace DBLOG
             string objectname, redosql, undosql, TransactionName, BeginTime, EndTime;
 
 #if DEBUG
-            FCommon.WriteTextFile(LogFile, $"TransactionID={TransactionID} ");
+            FCommon.WriteTextFile(LogFile, $"DDL TransactionID={TransactionID} ");
 #endif
 
             DDLLogs_Tran = DDLLogs.Where(p => p.Transaction_ID == TransactionID).OrderBy(p => p.Current_LSN).ToList();
@@ -108,15 +108,23 @@ namespace DBLOG
 
             DDLLogs_FTranID.Add(traninfo);
 
+#if DEBUG
+            FCommon.WriteTextFile(LogFile, redosql);
+#endif
+
             return ddllog;
         }
 
         private void TCreateSchema(int d, out string objectname, out string redosql, out string undosql)
         {
+            int schemaid;
+
             fsysclsobjs = TranslateSystemTable("sys.sysclsobjs.clst");
             dsysclsobjs = fsysclsobjs.First();
 
             objectname = dsysclsobjs["name"];
+            schemaid = Convert.ToInt32(dsysclsobjs["id"]);
+
             if (d == 1)
             {
                 redosql = $"create schema [{objectname}];";
@@ -126,12 +134,15 @@ namespace DBLOG
             {
                 redosql = $"drop schema [{objectname}];";
                 undosql = $"create schema [{objectname}];";
+
+                if (Schemas.ContainsKey(schemaid)) { Schemas.Remove(schemaid); }
+                Schemas.Add(schemaid, objectname);
             }
         }
 
         private void TCreateTable(int d, out string objectname, out string redosql, out string undosql)
         {
-            string schemaname, columndefinition, columnname, datatype, collationname, constraint, graphtype, others;
+            string schemaname, columndefinition, columnname, datatype, collationname, constraint, graphtype, others, stk;
             short maxlength;
             long seed, increment;
             bool nullable, isidentity, iscomputed, isnode, isedge, ishidden;
@@ -334,10 +345,11 @@ namespace DBLOG
 
             }
 
+            // clustered columnstore
             if (fsysidxstats.Any(p => p["type"] == "5") == true) // CLUSTERED COLUMNSTORE
             {
                 dsysidxstats = fsysidxstats.First(p => p["type"] == "5");
-                constraint = $"index {dsysidxstats["name"]} clustered columnstore";
+                constraint = $" index [{dsysidxstats["name"]}] clustered columnstore\r\n";
 
                 ftabinfo.IsColumnStore = true;
             }
@@ -364,7 +376,9 @@ namespace DBLOG
                 redosql = $"drop table {objectname}; ";
                 undosql = $"create table {objectname}\r\n({columndefinition}\r\n{constraint}){others}; ";
 
-                UserTables.Add($"{objectname.Replace("[", "").Replace("]", "")}", ftabinfo);
+                stk = objectname.Replace("[", "").Replace("]", "");
+                if (UserTables.ContainsKey(stk)) { UserTables.Remove(stk); }
+                UserTables.Add(stk, ftabinfo);
             }
 
         }
