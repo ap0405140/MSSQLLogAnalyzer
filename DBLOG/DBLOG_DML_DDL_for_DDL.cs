@@ -82,6 +82,9 @@ namespace DBLOG
                 case "DROPOBJ":
                     TCreateTable(-1, out objectname, out redosql, out undosql);
                     break;
+                case "user_transaction":
+                    TUserTransaction(1, out objectname, out redosql, out undosql);
+                    break;
                     //case "CREATE INDEX":
                     //    TCreateIndex(1, out objectname, out redosql, out undosql);
                     //    break;
@@ -119,7 +122,7 @@ namespace DBLOG
         {
             int schemaid;
 
-            fsysclsobjs = TranslateSystemTable("sys.sysclsobjs.clst");
+            fsysclsobjs = TranslateSystemTable("sys.sysclsobjs.clst", d, out _);
             dsysclsobjs = fsysclsobjs.First();
 
             objectname = dsysclsobjs["name"];
@@ -155,7 +158,7 @@ namespace DBLOG
             ftabinfo = new TableInfo();
 
             // sys.sysschobjs
-            fsysschobjs = TranslateSystemTable("sys.sysschobjs.clst", d);
+            fsysschobjs = TranslateSystemTable("sys.sysschobjs.clst", d, out _);
 
             dsysschobjs = fsysschobjs.First(p => p["type"] == "U");
             schemaname = Schemas[Convert.ToInt32(dsysschobjs["nsid"])];
@@ -168,19 +171,19 @@ namespace DBLOG
             ftabinfo.IsEdgeTable = isedge;
 
             // sys.sysiscols
-            fsysiscols = TranslateSystemTable("sys.sysiscols.clst", d);
+            fsysiscols = TranslateSystemTable("sys.sysiscols.clst", d, out _);
 
             // sys.sysidxstats
-            fsysidxstats = TranslateSystemTable("sys.sysidxstats.clst", d);
+            fsysidxstats = TranslateSystemTable("sys.sysidxstats.clst", d, out _);
 
             // sys.sysobjvalues
-            fsysobjvalues = TranslateSystemTable("sys.sysobjvalues.clst", d);
+            fsysobjvalues = TranslateSystemTable("sys.sysobjvalues.clst", d, out _);
 
             // sys.sysrscols
-            fsysrscols = TranslateSystemTable("sys.sysrscols.clst", d);
+            fsysrscols = TranslateSystemTable("sys.sysrscols.clst", d, out _);
 
             // sys.syscolpars
-            fsyscolpars = TranslateSystemTable("sys.syscolpars.clst", d);
+            fsyscolpars = TranslateSystemTable("sys.syscolpars.clst", d, out _);
             lstemp1 = new List<string>();
             ftabinfo.Columns = new TableColumn[fsyscolpars.Count];
             i = 0;
@@ -383,6 +386,66 @@ namespace DBLOG
 
         }
 
+        private void TUserTransaction(int d, out string objectname, out string redosql, out string undosql)
+        {
+            string optionname, val0, val1, schemaname;
+            Dictionary<string, string> sysidxstats0, sysidxstats1;
+            List<Dictionary<string, string>> fsysschobjs0, fsysidxstats0;
+            List<DiffColumn> diff;
+
+            objectname = "";
+            redosql = "";
+            undosql = "";
+
+            // sys.sysschobjs
+            fsysschobjs = TranslateSystemTable("sys.sysschobjs.clst", d, out fsysschobjs0);
+
+            // sys.sysidxstats
+            fsysidxstats = TranslateSystemTable("sys.sysidxstats.clst", d, out fsysidxstats0);
+
+            if (fsysidxstats.Count(p => Convert.ToInt32(p["indid"]) <= 1) > 0
+                && fsysidxstats0.Count(p => Convert.ToInt32(p["indid"]) <= 1) > 0)
+            {
+                sysidxstats1 = fsysidxstats.First(p => Convert.ToInt32(p["indid"]) <= 1);
+                sysidxstats0 = fsysidxstats0.First(p => Convert.ToInt32(p["indid"]) <= 1);
+
+                diff = DDL_Compare(sysidxstats0, sysidxstats1);
+                if (diff.Any(p => p.ColumnName == "intprop") == true)
+                {
+                    dsysschobjs = fsysschobjs.First(p => p["id"] == sysidxstats1["id"]);
+                    schemaname = Schemas[Convert.ToInt32(dsysschobjs["nsid"])];
+                    objectname = schemaname + "." + dsysschobjs["name"];
+                    optionname = "text in row";
+                    val0 = diff.First(p => p.ColumnName == "intprop").OldValue;
+                    val1 = diff.First(p => p.ColumnName == "intprop").NewValue;
+
+                    redosql = $"exec sp_tableoption N'{objectname}','{optionname}','{val1}'; ";
+                    undosql = $"exec sp_tableoption N'{objectname}','{optionname}','{val0}'; ";
+                }
+            }
+
+            
+
+        }
+
+        private List<DiffColumn> DDL_Compare(Dictionary<string, string> dr0, Dictionary<string, string> dr1)
+        {
+            List<DiffColumn> r;
+            DiffColumn f;
+
+            r = new List<DiffColumn>();
+            foreach (string key in dr0.Keys)
+            {
+                if (dr0[key] != dr1[key])
+                {
+                    f = new DiffColumn() { ColumnName = key, OldValue = dr0[key], NewValue = dr1[key] };
+                    r.Add(f);
+                }
+            }
+
+            return r;
+        }
+
         private (List<string> indextype, List<string> indexcolumns, List<string> includecolumns) Tcreateindex_0(string pindexname)
         {
             List<string> indextype, indexcolumns, includecolumns;
@@ -426,16 +489,22 @@ namespace DBLOG
             return (indextype, indexcolumns, includecolumns);
         }
 
-        private List<Dictionary<string, string>> TranslateSystemTable(string PAllocUnitName, int d = 1)
+        private List<Dictionary<string, string>> TranslateSystemTable
+            (
+              string PAllocUnitName, 
+              int d, 
+              out List<Dictionary<string, string>> DT0
+            )
         {
             List<(TableColumn[], byte[], FLOG)> r;
             (TableColumn[], byte[], FLOG) o;
             FLOG[] plogs;
-            byte[] mr;
+            byte[] mr, slotdata;
             TableColumn[] tca;
             List<Dictionary<string, string>> r2;
             string schemaname, tablename;
             TableInfo tableinfo;
+            Dictionary<string, string> dr0;
 
             schemaname = PAllocUnitName.Split('.')[0];
             tablename = PAllocUnitName.Split('.')[1];
@@ -455,19 +524,31 @@ namespace DBLOG
             }
 
             r = new List<(TableColumn[], byte[], FLOG)>();
+            DT0 = new List<Dictionary<string, string>>();
             foreach (FLOG ls in plogs)
             {
                 switch (ls.Operation)
                 {
                     case "LOP_INSERT_ROWS":
                     case "LOP_DELETE_ROWS":
-                        tca = GetColumnValue(ls.AllocUnitName, ls.RowLog_Contents_0);
+                        tca = DDL_GetColumnValue(ls.AllocUnitName, ls.RowLog_Contents_0);
                         r.Add((tca, ls.RowLog_Contents_0, ls));
                         break;
                     case "LOP_MODIFY_ROW":
-                        o = r.First(p => p.Item3.Page_ID == ls.Page_ID && p.Item3.Slot_ID == ls.Slot_ID);
-                        mr = REDO_LOP_MODIFY_ROW(ls, o.Item2).ToByteArray();
-                        tca = GetColumnValue(ls.AllocUnitName, mr);
+                        o = r.FirstOrDefault(p => p.Item3.Page_ID == ls.Page_ID && p.Item3.Slot_ID == ls.Slot_ID);
+                        if (o.Item3 == null)
+                        {
+                            slotdata = DDL_GetPrevSlotData(ls);
+                            dr0 = DDL_GetColumnValue(ls.AllocUnitName, slotdata).ToDict();
+                            DT0.Add(dr0);
+                        }
+                        else                        
+                        {
+                            slotdata = o.Item2;
+                        }   
+
+                        mr = REDO_LOP_MODIFY_ROW(ls, slotdata).ToByteArray();
+                        tca = DDL_GetColumnValue(ls.AllocUnitName, mr);
                         r.Remove(o);
                         r.Add((tca, mr, ls));
                         break;
@@ -496,7 +577,7 @@ namespace DBLOG
             return mr0_str;
         }
 
-        private TableColumn[] GetColumnValue(string PAllocUnitName, byte[] PRowLogContents0)
+        private TableColumn[] DDL_GetColumnValue(string PAllocUnitName, byte[] PRowLogContents0)
         {
             string schemaname, tablename;
             TableColumn[] tablecolumns2;
@@ -511,6 +592,47 @@ namespace DBLOG
             TranslateData(PRowLogContents0, tablecolumns2);
 
             return tablecolumns2;
+        }
+
+        private byte[] DDL_GetPrevSlotData(FLOG ls)
+        {
+            byte[] r;
+            List<FLOG> prevlogs;
+            string tmpstr;
+
+            tsql = "set transaction isolation level read uncommitted; "
+                 + "select * "
+                 + "  from sys.fn_dblog(null,null) t "
+                 + $" where [Current LSN]<N'{ls.Current_LSN}' "
+                 + $" and [Current LSN]>=(select max([Current LSN]) from sys.fn_dblog(null,null) b where b.[Current LSN]<N'{ls.Current_LSN}' and b.[Page ID]=t.[Page ID] and b.[Slot ID]=t.[Slot ID] and b.Operation=N'LOP_INSERT_ROWS') "
+                 + $" and [Page ID]=N'{ls.Page_ID}' "
+                 + $" and [Slot ID]={ls.Slot_ID} "
+                 + "  and Operation in(N'LOP_INSERT_ROWS',N'LOP_MODIFY_ROW') "
+                 + "  order by [Current LSN] ";
+            prevlogs = DB.Query<FLOG>(tsql, false);
+
+            tmpstr = "";
+            foreach (FLOG log in prevlogs.OrderBy(p => p.Current_LSN))
+            {
+                switch (log.Operation)
+                {
+                    case "LOP_INSERT_ROWS":
+                        tmpstr = log.RowLog_Contents_0.ToText();
+                        break;
+                    case "LOP_MODIFY_ROW":
+                        if (prevlogs.Any(p => string.Compare(p.Current_LSN, log.Current_LSN) == -1
+                                              && p.Operation == "LOP_INSERT_ROWS") == true)
+                        {
+                            tmpstr = tmpstr.Stuff(Convert.ToInt32(log.Offset_in_Row) * 2,
+                                                  log.RowLog_Contents_0.Length * 2,
+                                                  log.RowLog_Contents_1.ToText());
+                        }
+                        break;
+                }
+            }
+            r = tmpstr.ToByteArray();
+
+            return r;
         }
 
     }

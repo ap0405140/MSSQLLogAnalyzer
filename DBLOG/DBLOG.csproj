@@ -53,6 +53,7 @@
   <ItemGroup>
     <Compile Include="Common\CollationHelper.cs" />
     <Compile Include="Common\DatabaseLog.cs" />
+    <Compile Include="Common\DiffColumn.cs" />
     <Compile Include="Common\FLOG.cs" />
     <Compile Include="Common\FPageInfo.cs" />
     <Compile Include="Common\FVarColumnInfo.cs" />

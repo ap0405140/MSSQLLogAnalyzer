@@ -46,8 +46,17 @@ namespace DBLOG.Common
 
         public DatabaseOperation(string pconnectionstring)
         {
+            SqlConnectionStringBuilder builder;
+
             ConnectString = pconnectionstring;
             GetDatabaseInfo();
+
+            builder = new System.Data.SqlClient.SqlConnectionStringBuilder(pconnectionstring);
+            ServerName = builder.DataSource;
+            DatabaseName = builder.InitialCatalog;
+            LoginName = builder.UserID;
+            Password = builder.Password;
+
         }
 
         private void GetDatabaseInfo()
@@ -58,8 +67,12 @@ namespace DBLOG.Common
             runresult = Query11(tsql, false);
             Vesion = Convert.ToInt32(runresult.Substring(21, 4));
 
-            tsql = "select db_name(); ";
-            DatabaseName = Query11(tsql, false);
+            //tsql = "select db_name(); ";
+            //DatabaseName = Query11(tsql, false);
+
+            //tsql = "select @@servername; ";
+            //ServerName = Query11(tsql, false);
+
         }
 
         public void RefreshConnect()

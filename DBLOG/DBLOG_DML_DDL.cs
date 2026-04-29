@@ -21,7 +21,7 @@ namespace DBLOG
         private static string DatabaseName, tsql, LogFile;
         private static List<string> RowCompressionAffectsStorage;
         private static List<(string pageid, string lsn)> PrevPages; // fileid+pageid 
-        private static DatabaseOperation DB;
+        private static DatabaseOperation DB, DB_DAC;
 
         private string TableName,
                        SchemaName,
@@ -99,6 +99,7 @@ namespace DBLOG
         {
             DatabaseName = PDatabaseName;
             DB = PDB;
+            //DB_DAC = new DatabaseOperation($"ADMIN:{PDB.ServerName}", PDB.DatabaseName, PDB.LoginName, PDB.Password);
             LogFile = PLogFile;
 
             #region RowCompressionAffectsStorage
@@ -911,70 +912,12 @@ namespace DBLOG
             int i, j, m_slotCnt;
             string tmpstr, slotarray;
             (string pageid, string lsn) pp;
-            List<FLOG> prevlogs;
 
             pageid = pageid.ToLower();
             pp = (PrevPages == null ? (null,null) : PrevPages.FirstOrDefault(p => p.pageid == pageid));
             if (pp.pageid != null)
             {
-                tsql = "set transaction isolation level read uncommitted; " 
-                       + "select * "
-                       + "  from sys.fn_dblog(null,null) t "
-                       + $" where [Current LSN]<N'{pp.lsn}' "
-                       + $" and [Current LSN]>=(select max([Current LSN]) from sys.fn_dblog(null,null) b where b.[Current LSN]<N'{pp.lsn}' and b.[Page ID]=t.[Page ID] and b.Operation=N'LOP_FORMAT_PAGE') "
-                       + $" and [Page ID]=N'{pp.pageid}' "
-                       + "  and Operation in(N'LOP_FORMAT_PAGE',N'LOP_INSERT_ROWS',N'LOP_MODIFY_ROW') "
-                       + "  order by [Current LSN] ";
-                prevlogs = DB.Query<FLOG>(tsql, false);
-
-                r = new FPageInfo();
-                r.SlotCnt = (prevlogs.Count > 0 ? prevlogs.Where(p => p.Slot_ID != -1).Max(p => p.Slot_ID ?? 0) + 1 : 0);
-                r.SlotBeginIndex = new List<int>();
-                r.SlotData = new Dictionary<int, string>();
-                for (i = 0; i <= r.SlotCnt - 1; i = i + 1) { r.SlotBeginIndex.Add(0); r.SlotData.Add(i, ""); }
-                foreach (FLOG log in prevlogs
-                                     .OrderBy(p => (p.Slot_ID ?? 0).ToString().PadLeft(5, '0') + p.Current_LSN)
-                        )
-                {
-                    i = (log.Slot_ID ?? 0);
-
-                    switch (log.Operation)
-                    {
-                        case "LOP_FORMAT_PAGE":
-                            r.PageType = log.PageFormat_PageType.ToString();
-                            break;
-                        case "LOP_INSERT_ROWS":
-                            r.SlotData[i] = log.RowLog_Contents_0.ToText();
-                            break;
-                        case "LOP_MODIFY_ROW":
-                            if (prevlogs.Any(p => string.Compare(p.Current_LSN, log.Current_LSN) == -1
-                                                  && p.Operation == "LOP_INSERT_ROWS" 
-                                                  && p.Page_ID == log.Page_ID 
-                                                  && p.Slot_ID == log.Slot_ID) == true)
-                            {
-                                r.SlotData[i] = r.SlotData[i].Stuff(Convert.ToInt32(log.Offset_in_Row) * 2,
-                                                                    log.RowLog_Contents_0.Length * 2,
-                                                                    log.RowLog_Contents_1.ToText());
-                            }
-                            
-                            break;
-                    }
-
-                    if (i >= 0)
-                    {
-                        r.SlotBeginIndex[i] = 96 + r.SlotData.Where(p => p.Key < i).Sum(p => p.Value.Length / 2);
-                    }
-                }
-
-                tmpstr = new string(' ', 96 * 2);
-                for (i = 0; i <= r.SlotCnt - 1; i = i + 1) 
-                { 
-                    tmpstr = tmpstr + r.SlotData[i];
-                }
-                tmpstr = tmpstr 
-                         + "78".Replicate(1024 * 8 - 96 - 42 - r.SlotData.Sum(p => p.Value.Length / 2))
-                         + new string(' ', 42 * 2);
-                r.PageData = tmpstr;
+                r = GetPrevPageInfo(pp.lsn, pp.pageid);
 
                 if (lobpagedata.ContainsKey(pageid) == true)
                 {
@@ -1062,6 +1005,75 @@ namespace DBLOG
                     lobpagedata.Add(pageid, r);
                 }
             }
+
+            return r;
+        }
+
+        private FPageInfo GetPrevPageInfo(string lsn, string pageid)
+        {
+            FPageInfo r;
+            List<FLOG> prevlogs;
+            int i;
+            string tmpstr;
+
+            tsql = "set transaction isolation level read uncommitted; "
+                 + "select * "
+                 + "  from sys.fn_dblog(null,null) t "
+                 + $" where [Current LSN]<N'{lsn}' "
+                 + $" and [Current LSN]>=(select max([Current LSN]) from sys.fn_dblog(null,null) b where b.[Current LSN]<N'{lsn}' and b.[Page ID]=t.[Page ID] and b.Operation=N'LOP_FORMAT_PAGE') "
+                 + $" and [Page ID]=N'{pageid}' "
+                 + "  and Operation in(N'LOP_FORMAT_PAGE',N'LOP_INSERT_ROWS',N'LOP_MODIFY_ROW') "
+                 + "  order by [Current LSN] ";
+            prevlogs = DB.Query<FLOG>(tsql, false);
+
+            r = new FPageInfo();
+            r.SlotCnt = (prevlogs.Count > 0 ? prevlogs.Where(p => p.Slot_ID != -1).Max(p => p.Slot_ID ?? 0) + 1 : 0);
+            r.SlotBeginIndex = new List<int>();
+            r.SlotData = new Dictionary<int, string>();
+            for (i = 0; i <= r.SlotCnt - 1; i = i + 1) { r.SlotBeginIndex.Add(0); r.SlotData.Add(i, ""); }
+            foreach (FLOG log in prevlogs
+                                 .OrderBy(p => (p.Slot_ID ?? 0).ToString().PadLeft(5, '0') + p.Current_LSN)
+                    )
+            {
+                i = (log.Slot_ID ?? 0);
+
+                switch (log.Operation)
+                {
+                    case "LOP_FORMAT_PAGE":
+                        r.PageType = log.PageFormat_PageType.ToString();
+                        break;
+                    case "LOP_INSERT_ROWS":
+                        r.SlotData[i] = log.RowLog_Contents_0.ToText();
+                        break;
+                    case "LOP_MODIFY_ROW":
+                        if (prevlogs.Any(p => string.Compare(p.Current_LSN, log.Current_LSN) == -1
+                                              && p.Operation == "LOP_INSERT_ROWS"
+                                              && p.Page_ID == log.Page_ID
+                                              && p.Slot_ID == log.Slot_ID) == true)
+                        {
+                            r.SlotData[i] = r.SlotData[i].Stuff(Convert.ToInt32(log.Offset_in_Row) * 2,
+                                                                log.RowLog_Contents_0.Length * 2,
+                                                                log.RowLog_Contents_1.ToText());
+                        }
+
+                        break;
+                }
+
+                if (i >= 0)
+                {
+                    r.SlotBeginIndex[i] = 96 + r.SlotData.Where(p => p.Key < i).Sum(p => p.Value.Length / 2);
+                }
+            }
+
+            tmpstr = new string(' ', 96 * 2);
+            for (i = 0; i <= r.SlotCnt - 1; i = i + 1)
+            {
+                tmpstr = tmpstr + r.SlotData[i];
+            }
+            tmpstr = tmpstr
+                     + "78".Replicate(1024 * 8 - 96 - 42 - r.SlotData.Sum(p => p.Value.Length / 2))
+                     + new string(' ', 42 * 2);
+            r.PageData = tmpstr;
 
             return r;
         }
@@ -2000,8 +2012,8 @@ namespace DBLOG
 
                 // TextInRow
                 tsql = "select textinrow=a.text_in_row_limit, "
-                        + $"    isnodetable={(DB.Vesion >= 2017 ? "a.is_node" : "0")}, "
-                        + $"    isedgetable={(DB.Vesion >= 2017 ? "a.is_edge" : "0")}"
+                        + $"   isnodetable={(DB.Vesion >= 2017 ? "a.is_node" : "0")}, "
+                        + $"   isedgetable={(DB.Vesion >= 2017 ? "a.is_edge" : "0")}"
                         + "  from sys.tables a "
                         + "  join sys.schemas s on a.schema_id=s.schema_id "
                         + $" where s.name=N'{PSchemaName}' "

@@ -18,15 +18,15 @@ namespace DBLOG
     [Serializable]
     public class DatabaseLogAnalyzer
     {
-        private string _objectname,    // 对象名
-                       _starttime, _endtime, // 开始时间 结束时间
-                       _MinLSN, // 开始LSN
+        private string _objectname,
+                       _starttime, _endtime,
+                       _MinLSN,
                        _tsql;
-        private DatabaseOperation DB;  // 数据库操作对象
+        private DatabaseOperation DB;
         /// <summary>
         /// Readed Percent (0-100).
         /// </summary>
-        public int ReadPercent;       // 读取进度百分比 1-100
+        public int ReadPercent;       // 读取进度百分比 1->100
         public string LogFile = "AnalysisLog.txt";
 
         /// <summary>
@@ -167,7 +167,7 @@ namespace DBLOG
                     + "  from sys.fn_dblog(null,null) t "
                     + $" where [Current LSN]>=N'{_MinLSN}' "
                     + "  and [Transaction ID]<>N'0000:00000000' "
-                    + "  and exists(select 1 from sys.fn_dblog(null,null) b where b.[Transaction ID]=t.[Transaction ID] and b.Operation=N'LOP_BEGIN_XACT' and b.[Transaction Name] in(N'CREATE TABLE',N'DROPOBJ',N'create-schema',N'DROP SCHEMA',N'CREATE INDEX',N'DROP INDEX')) "
+                    + "  and exists(select 1 from sys.fn_dblog(null,null) b where b.[Transaction ID]=t.[Transaction ID] and b.Operation=N'LOP_BEGIN_XACT' and b.[Transaction Name] in(N'CREATE TABLE',N'DROPOBJ',N'create-schema',N'DROP SCHEMA',N'CREATE INDEX',N'DROP INDEX',N'user_transaction')) "
                     + "  and exists(select 1 from sys.fn_dblog(null,null) b where b.[Transaction ID]=t.[Transaction ID] and b.Operation=N'LOP_COMMIT_XACT') "
                     + "  and exists(select 1 from sys.fn_dblog(null,null) b where b.[Transaction ID]=t.[Transaction ID] and b.AllocUnitName is not null); ";
             Loglist_DDL = DB.Query<FLOG>(_tsql, false);
