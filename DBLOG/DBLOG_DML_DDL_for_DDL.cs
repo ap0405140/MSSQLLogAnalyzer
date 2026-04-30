@@ -85,6 +85,9 @@ namespace DBLOG
                 case "user_transaction":
                     TUserTransaction(1, out objectname, out redosql, out undosql);
                     break;
+                 case "ALTER TABLE":
+                    TAlterTable(out objectname, out redosql, out undosql);
+                    break;
                     //case "CREATE INDEX":
                     //    TCreateIndex(1, out objectname, out redosql, out undosql);
                     //    break;
@@ -121,8 +124,10 @@ namespace DBLOG
         private void TCreateSchema(int d, out string objectname, out string redosql, out string undosql)
         {
             int schemaid;
+            List<Dictionary<string, string>> fsysclsobjs0;
 
-            fsysclsobjs = TranslateSystemTable("sys.sysclsobjs.clst", d, out _);
+            fsysclsobjs = TranslateSystemTable("sys.sysclsobjs.clst", d, out fsysclsobjs0);
+            if (d == -1) { fsysclsobjs = fsysclsobjs0; }
             dsysclsobjs = fsysclsobjs.First();
 
             objectname = dsysclsobjs["name"];
@@ -145,15 +150,14 @@ namespace DBLOG
 
         private void TCreateTable(int d, out string objectname, out string redosql, out string undosql)
         {
-            string schemaname, columndefinition, columnname, datatype, collationname, constraint, graphtype, others, stk;
-            short maxlength;
-            long seed, increment;
-            bool nullable, isidentity, iscomputed, isnode, isedge, ishidden;
-            List<string> lstemp1, lstemp2, lstemp3, lstemp4, lstemp5;
+            string schemaname, columndefinition, constraint, others, stk;
+            bool isnode, isedge;
+            List<string> lstemp1, lstemp2, lstemp3;
             string stemp1, stemp2, stemp3, stemp4, stemp5;
             TableInfo ftabinfo;
             TableColumn fcol;
             int i;
+            List<Dictionary<string, string>> fsysiscols0, fsysidxstats0, fsyscolpars0, fsysobjvalues0, fsysrscols0;
 
             ftabinfo = new TableInfo();
 
@@ -171,140 +175,32 @@ namespace DBLOG
             ftabinfo.IsEdgeTable = isedge;
 
             // sys.sysiscols
-            fsysiscols = TranslateSystemTable("sys.sysiscols.clst", d, out _);
+            fsysiscols = TranslateSystemTable("sys.sysiscols.clst", d, out fsysiscols0);
+            if (d == -1) { fsysiscols = fsysiscols0; }
 
             // sys.sysidxstats
-            fsysidxstats = TranslateSystemTable("sys.sysidxstats.clst", d, out _);
+            fsysidxstats = TranslateSystemTable("sys.sysidxstats.clst", d, out fsysidxstats0);
+            if (d == -1) { fsysidxstats = fsysidxstats0; }
 
             // sys.sysobjvalues
-            fsysobjvalues = TranslateSystemTable("sys.sysobjvalues.clst", d, out _);
+            fsysobjvalues = TranslateSystemTable("sys.sysobjvalues.clst", d, out fsysobjvalues0);
+            if (d == -1) { fsysobjvalues = fsysobjvalues0; }
 
             // sys.sysrscols
-            fsysrscols = TranslateSystemTable("sys.sysrscols.clst", d, out _);
+            fsysrscols = TranslateSystemTable("sys.sysrscols.clst", d, out fsysrscols0);
+            if (d == -1) { fsysrscols = fsysrscols0; }
 
             // sys.syscolpars
-            fsyscolpars = TranslateSystemTable("sys.syscolpars.clst", d, out _);
+            fsyscolpars = TranslateSystemTable("sys.syscolpars.clst", d, out fsyscolpars0);
+            if (d == -1) { fsyscolpars = fsyscolpars0; }
+
             lstemp1 = new List<string>();
             ftabinfo.Columns = new TableColumn[fsyscolpars.Count];
             i = 0;
             foreach (Dictionary<string, string> col in fsyscolpars.OrderBy(p => Convert.ToInt32(p["colid"])))
             {
-                ishidden = ((Convert.ToInt32(col["status"]) & 0x2000) != 0 ? true : false);
-
-                dsysobjvalues = fsysobjvalues.FirstOrDefault(p => p["objid"] == col["id"]
-                                                                  && p["subobjid"] == col["colid"]
-                                                                  && p["valclass"] == "128" // SVC_GRAPHDB_COLUMN_TYPE
-                                                                  && p["valnum"] == "0");
-                graphtype = (dsysobjvalues != null ? dsysobjvalues["value"] : "");
-
-                datatype = "";
-                nullable = true;
-                isidentity = false;
-                maxlength = 0;
-
-                columnname = col["name"];
-                iscomputed = (fsysobjvalues.Any(p => p["objid"] == col["id"]
-                                                     && p["subobjid"] == col["colid"]
-                                                     && p["valclass"] == "128"
-                                                     && p["valnum"] == "0") == false
-                              && ((Convert.ToInt32(col["status"]) & 0x16) / 16) == 1 ? true : false); // sys.syscolumns.iscomputed
-
-                if (iscomputed == false)
-                {
-                    datatype = Systypes[col["xtype"] + "_" + col["utype"]];
-                    maxlength = Convert.ToInt16(col["length"]);
-                    nullable = (1 - (Convert.ToInt32(col["status"]) & 0x1) == 0 ? false : true);
-
-                    stemp1 = $"[{columnname}] {datatype}";
-                    switch (datatype)
-                    {
-                        case "char":
-                        case "varchar":
-                        case "nchar":
-                        case "nvarchar":
-                            collationname = CollationHelper.GetCollationNameByID(Convert.ToInt32(col["collationid"]));
-                            stemp1 = stemp1
-                                     + $"({(maxlength == -1 ? "max" : (datatype.StartsWith("n") ? maxlength / 2 : maxlength).ToString())})"
-                                     + $" collate {collationname}";
-                            break;
-                        case "binary":
-                        case "varbinary":
-                            stemp1 = stemp1
-                                     + $"({(maxlength == -1 ? "max" : maxlength.ToString())})";
-                            break;
-                        case "time":
-                        case "datetime2":
-                        case "datetimeoffset":
-                            stemp1 = stemp1
-                                     + $"({col["scale"]})";
-                            break;
-                        case "int":
-                        case "tinyint":
-                        case "smallint":
-                        case "bigint":
-                            isidentity = ((Convert.ToInt32(col["status"]) & 0x4) == 0 ? false : true);
-                            if (isidentity == true)
-                            {
-                                seed = BitConverter.ToInt32(col["idtval"].Replace("0x", "").ToByteArray(),
-                                                            Convert.ToInt32(col["length"]) * 2);
-                                increment = BitConverter.ToInt32(col["idtval"].Replace("0x", "").ToByteArray(),
-                                                                 Convert.ToInt32(col["length"]));
-                                stemp1 = stemp1
-                                         + $" identity({seed.ToString()},{increment.ToString()})";
-                            }
-                            break;
-                        case "decimal":
-                        case "numeric":
-                            stemp1 = stemp1
-                                     + $"({col["prec"]},{col["scale"]})";
-                            break;
-                    }
-                    stemp1 = stemp1 + $"{(nullable ? " null" : " not null")}";
-                    if (col["dflt"] != "0")
-                    {
-                        stemp2 = fsysschobjs.First(p => p["type"] == "D" && p["id"] == col["dflt"])["name"];
-                        stemp3 = fsysobjvalues.First(p => p["objid"] == col["dflt"])["imageval"];
-                        stemp4 = System.Text.Encoding.Default.GetString(stemp3.Substring(2).ToByteArray());
-                        stemp1 = stemp1 + $" constraint [{stemp2}] default {stemp4}";
-                    }
-                }
-                else
-                {
-                    stemp3 = fsysobjvalues.First(p => p["objid"] == col["id"] && p["subobjid"] == col["colid"])["imageval"];
-                    stemp4 = System.Text.Encoding.Default.GetString(stemp3.Substring(2).ToByteArray());
-                    stemp1 = $"[{columnname}] as {stemp4}";
-                }
-
-                if (ishidden == false && graphtype == "")
-                {
-                    lstemp1.Add(stemp1);
-                }
-
-                fcol = new TableColumn();
-                fcol.ColumnID = Convert.ToInt16(col["colid"]);
-                fcol.ColumnName = columnname;
-                fcol.DataType = datatype;
-                fcol.PhysicalStorageType = GetPhysicalStorageType(datatype);
-                fcol.GraphType = (string.IsNullOrEmpty(graphtype) ? -1 : Convert.ToInt32(graphtype));
-                fcol.Length = maxlength;
-                fcol.Precision = Convert.ToInt16(col["prec"]);
-                fcol.Scale = Convert.ToInt16(col["scale"]);
-
-                if (fsysrscols.Any(p => p["rscolid"] == col["colid"]) == true)
-                {
-                    fcol.LeafOffset = (short)(Convert.ToInt32(fsysrscols.First(p => p["rscolid"] == col["colid"])["offset"]) & 0xFFFF); // convert(smallint, convert(binary(2), c.offset & 0xffff))    [sys.system_internals_partition_columns]
-                    fcol.LeafNullBit = (short)(Convert.ToInt32(fsysrscols.First(p => p["rscolid"] == col["colid"])["nullbit"]) & 0xFFFF); // convert(smallint, convert(binary(2), c.nullbit & 0xffff))  [sys.system_internals_partition_columns]
-                }
-                else
-                {
-                    fcol.LeafOffset = 0;
-                    fcol.LeafNullBit = 0;
-                }
-                
-                fcol.IsNullable = nullable;
-                fcol.IsIdentity = isidentity;
-                fcol.IsComputed = iscomputed;
-                fcol.IsHidden = ishidden;
+                (stemp1, fcol) = Tgetcolumn(col, ftabinfo, d);
+                if (string.IsNullOrEmpty(stemp1) == false) { lstemp1.Add(stemp1); }
                 ftabinfo.Columns[i] = fcol;
 
                 i = i + 1;
@@ -424,7 +320,80 @@ namespace DBLOG
                 }
             }
 
+        }
+
+        private void TAlterTable(out string objectname, out string redosql, out string undosql)
+        {
+            string coldef, schemaname;
+            List<Dictionary<string, string>> fsysschobjs0, fsyscolpars0;
+            List<DiffColumn> diff;
+            TableInfo tableinfo;
+            TableColumn tablecol;
+            int i;
+
+            redosql = "alter table ";
+            undosql = "alter table ";
+
+            // sys.sysschobjs
+            fsysschobjs = TranslateSystemTable("sys.sysschobjs.clst", 1, out fsysschobjs0);
+            dsysschobjs = fsysschobjs.First(p => p["type"] == "U");
+            schemaname = Schemas[Convert.ToInt32(dsysschobjs["nsid"])];
+            objectname = $"{dsysschobjs["name"]}";
+            tableinfo = GetTableInfo(schemaname, objectname, true);
+
+            redosql = redosql + $"[{schemaname}].[{objectname}] ";
+            undosql = undosql + $"[{schemaname}].[{objectname}] ";
+
+            // sys.syscolpars
+            fsyscolpars = TranslateSystemTable("sys.syscolpars.clst", 1, out fsyscolpars0);
+
+            if (fsyscolpars.Any() == true && fsyscolpars0.Any() == false)
+            {
+                redosql = redosql + "add ";
+                undosql = undosql + "drop column ";
+
+                for (i = 0; i <= fsyscolpars.Count - 1; i = i + 1)
+                {
+                    (coldef, tablecol) = Tgetcolumn(fsyscolpars[i], tableinfo, 1);
+                    redosql = redosql + coldef + (i < fsyscolpars.Count - 1 ? ", " : "; ");
+                    undosql = undosql + tablecol.ColumnName + (i < fsyscolpars.Count - 1 ? ", " : "; ");
+                }
+            }
+
+            if (fsyscolpars.Any() == false && fsyscolpars0.Any() == true)
+            {
+                redosql = redosql + "drop column ";
+                undosql = undosql + "add ";
+
+                for (i = 0; i <= fsyscolpars0.Count - 1; i = i + 1)
+                {
+                    (coldef, tablecol) = Tgetcolumn(fsyscolpars0[i], tableinfo, -1);
+                    redosql = redosql + tablecol.ColumnName + (i < fsyscolpars0.Count - 1 ? ", " : "; ");
+                    undosql = undosql + coldef + (i < fsyscolpars0.Count - 1 ? ", " : "; ");
+                }
+            }
+
+            if (fsyscolpars.Any() == true && fsyscolpars0.Any() == true)
+            {
+                redosql = redosql + "alter column ";
+                undosql = undosql + "alter column ";
+
+                for (i = 0; i <= fsyscolpars.Count - 1; i = i + 1)
+                {
+                    (coldef, tablecol) = Tgetcolumn(fsyscolpars[i], tableinfo, 1);
+                    redosql = redosql + coldef + (i < fsyscolpars.Count - 1 ? ", " : "; ");
+                }
+                for (i = 0; i <= fsyscolpars0.Count - 1; i = i + 1)
+                {
+                    (coldef, tablecol) = Tgetcolumn(fsyscolpars0[i], tableinfo, -1);
+                    undosql = undosql + coldef + (i < fsyscolpars0.Count - 1 ? ", " : "; ");
+                }
+            }
+
             
+
+            
+
 
         }
 
@@ -444,6 +413,145 @@ namespace DBLOG
             }
 
             return r;
+        }
+
+        private (string columndefin, TableColumn tabcol) Tgetcolumn
+            (
+                Dictionary<string, string> col, 
+                TableInfo ftabinfo, 
+                int d
+            )
+        {
+            string columndefin, columnname, datatype, graphtype, collationname, constraintname, defaultvalue, computedcolumndefin, temp;
+            short maxlength, colid;
+            long seed, increment;
+            bool nullable, isidentity, iscomputed, ishidden;
+            TableColumn fcol;
+
+            colid = Convert.ToInt16(col["colid"]);
+            columnname = col["name"];
+            datatype = "";
+            nullable = true;
+            isidentity = false;
+            maxlength = 0;
+
+            ishidden = ((Convert.ToInt32(col["status"]) & 0x2000) != 0 ? true : false);
+
+            // sys.syscolumns.iscomputed
+            dsysobjvalues = fsysobjvalues.FirstOrDefault(p => p["objid"] == col["id"]
+                                                              && p["subobjid"] == col["colid"]
+                                                              && p["valclass"] == "128" // SVC_GRAPHDB_COLUMN_TYPE
+                                                              && p["valnum"] == "0");
+            iscomputed = (dsysobjvalues == null
+                          && 
+                          ((Convert.ToInt32(col["status"]) & 0x16) / 16) == 1 ? true : false);
+
+            // sys.syscolumns.graph_type
+            graphtype = (dsysobjvalues != null ? dsysobjvalues["value"] : "");
+
+            if (iscomputed == false)
+            {
+                datatype = Systypes[col["xtype"] + "_" + col["utype"]];
+                maxlength = Convert.ToInt16(col["length"]);
+                nullable = (1 - (Convert.ToInt32(col["status"]) & 0x1) == 0 ? false : true);
+
+                columndefin = $"[{columnname}] {datatype}";
+                switch (datatype)
+                {
+                    case "char":
+                    case "varchar":
+                    case "nchar":
+                    case "nvarchar":
+                        collationname = CollationHelper.GetCollationNameByID(Convert.ToInt32(col["collationid"]));
+                        columndefin = columndefin
+                                      + $"({(maxlength == -1 ? "max" : (datatype.StartsWith("n") ? maxlength / 2 : maxlength).ToString())})"
+                                      + $" collate {collationname}";
+                        break;
+                    case "binary":
+                    case "varbinary":
+                        columndefin = columndefin
+                                      + $"({(maxlength == -1 ? "max" : maxlength.ToString())})";
+                        break;
+                    case "time":
+                    case "datetime2":
+                    case "datetimeoffset":
+                        columndefin = columndefin
+                                      + $"({col["scale"]})";
+                        break;
+                    case "int":
+                    case "tinyint":
+                    case "smallint":
+                    case "bigint":
+                        isidentity = ((Convert.ToInt32(col["status"]) & 0x4) == 0 ? false : true);
+                        if (isidentity == true)
+                        {
+                            seed = BitConverter.ToInt32(col["idtval"].Replace("0x", "").ToByteArray(),
+                                                        Convert.ToInt32(col["length"]) * 2);
+                            increment = BitConverter.ToInt32(col["idtval"].Replace("0x", "").ToByteArray(),
+                                                             Convert.ToInt32(col["length"]));
+                            columndefin = columndefin
+                                          + $" identity({seed.ToString()},{increment.ToString()})";
+                        }
+                        break;
+                    case "decimal":
+                    case "numeric":
+                        columndefin = columndefin
+                                      + $"({col["prec"]},{col["scale"]})";
+                        break;
+                }
+                columndefin = columndefin + $"{(nullable ? " null" : " not null")}";
+
+                if (col["dflt"] != "0")
+                {
+                    constraintname = fsysschobjs.First(p => p["type"] == "D" && p["id"] == col["dflt"])["name"]; // constraint name
+                    temp = fsysobjvalues.First(p => p["objid"] == col["dflt"])["imageval"];
+                    defaultvalue = System.Text.Encoding.Default.GetString(temp.Substring(2).ToByteArray()); // default value
+                    columndefin = columndefin + $" constraint [{constraintname}] default {defaultvalue}";
+                }
+            }
+            else
+            {
+                // computed column
+                temp = fsysobjvalues.First(p => p["objid"] == col["id"] && p["subobjid"] == col["colid"])["imageval"];
+                computedcolumndefin = System.Text.Encoding.Default.GetString(temp.Substring(2).ToByteArray()); // computed column definition
+                columndefin = $"[{columnname}] as {computedcolumndefin}";
+            }
+
+            if (ishidden == true 
+                || graphtype != ""
+                || (d == -1 && ((ftabinfo.IsEdgeTable == true && colid <= 8) || (ftabinfo.IsNodeTable == true && colid <= 2)))
+               )
+            {
+                columndefin = "";
+            }
+
+            fcol = new TableColumn();
+            fcol.ColumnID = Convert.ToInt16(col["colid"]);
+            fcol.ColumnName = columnname;
+            fcol.DataType = datatype;
+            fcol.PhysicalStorageType = GetPhysicalStorageType(datatype);
+            fcol.GraphType = (string.IsNullOrEmpty(graphtype) ? -1 : Convert.ToInt32(graphtype));
+            fcol.Length = maxlength;
+            fcol.Precision = Convert.ToInt16(col["prec"]);
+            fcol.Scale = Convert.ToInt16(col["scale"]);
+
+            if (fsysrscols.Any(p => p["rscolid"] == col["colid"]) == true)
+            {
+                fcol.LeafOffset = (short)(Convert.ToInt32(fsysrscols.First(p => p["rscolid"] == col["colid"])["offset"]) & 0xFFFF); // convert(smallint, convert(binary(2), c.offset & 0xffff))    [sys.system_internals_partition_columns]
+                fcol.LeafNullBit = (short)(Convert.ToInt32(fsysrscols.First(p => p["rscolid"] == col["colid"])["nullbit"]) & 0xFFFF); // convert(smallint, convert(binary(2), c.nullbit & 0xffff))  [sys.system_internals_partition_columns]
+            }
+            else
+            {
+                fcol.LeafOffset = 0;
+                fcol.LeafNullBit = 0;
+            }
+
+            fcol.IsNullable = nullable;
+            fcol.IsIdentity = isidentity;
+            fcol.IsComputed = iscomputed;
+            fcol.IsHidden = ishidden;
+
+            return (columndefin, fcol);
         }
 
         private (List<string> indextype, List<string> indexcolumns, List<string> includecolumns) Tcreateindex_0(string pindexname)
@@ -532,7 +640,17 @@ namespace DBLOG
                     case "LOP_INSERT_ROWS":
                     case "LOP_DELETE_ROWS":
                         tca = DDL_GetColumnValue(ls.AllocUnitName, ls.RowLog_Contents_0);
-                        r.Add((tca, ls.RowLog_Contents_0, ls));
+
+                        if (ls.Operation == "LOP_INSERT_ROWS")
+                        {
+                            r.Add((tca, ls.RowLog_Contents_0, ls));
+                        }
+
+                        if (ls.Operation == "LOP_DELETE_ROWS")
+                        {
+                            dr0 = tca.ToDict();
+                            DT0.Add(dr0);
+                        }
                         break;
                     case "LOP_MODIFY_ROW":
                         o = r.FirstOrDefault(p => p.Item3.Page_ID == ls.Page_ID && p.Item3.Slot_ID == ls.Slot_ID);
