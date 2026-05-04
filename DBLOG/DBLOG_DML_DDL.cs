@@ -29,7 +29,7 @@ namespace DBLOG
         private TableInfo FTableInfo;
         private Dictionary<string, FPageInfo> lobpagedata; // key:fileid+pageid value:FPageInfo
         public List<FLOG> DTLogs;     // original logs
-        private List<DatabaseLog> wslogs;
+        private List<DatabaseLog> DDL_LOG;
 
         public DBLOG_DML_DDL(string PSchemaName, string PTableName)
         {
@@ -42,47 +42,46 @@ namespace DBLOG
 
         public DBLOG_DML_DDL(long PAllocUnitId, string PMaxLsn)
         {
-            string wstranid;
+            List<string> wstrans;
             DatabaseLog tmplog;
             TransactionInfo traninfo;
 
             AllocUnitType = "UNKNOWN";
+            DDL_LOG = new List<DatabaseLog>();
             traninfo = DDLLogs_FTranID.FirstOrDefault(t => string.Compare(t.LSNList.Min(), PMaxLsn) == 1
                                                            && t.TransactionName == "DROPOBJ" 
+                                                           && t.AllocUnitId.Contains(PAllocUnitId.ToString()) == true
+                                                     );
+            if (traninfo == null)
+            {
+                wstrans = DDLLogs.Where(p => string.Compare(p.Current_LSN, PMaxLsn) == 1
+                                              && DDLLogs.Any(e => e.Transaction_ID == p.Transaction_ID && e.Transaction_Name == "DROPOBJ") == true
+                                              && DDLLogs_FTranID.Any(t => t.TransactionID == p.Transaction_ID) == false)
+                                 .Select(p => p.Transaction_ID)
+                                 .Distinct()
+                                 .ToList();
+                foreach (string tranid in wstrans.OrderByDescending(p => p))
+                {
+                    tmplog = AnalyzeDDLTran(tranid);
+                    DDL_LOG.Add(tmplog);
+                }
+            }
+
+            traninfo = DDLLogs_FTranID.FirstOrDefault(t => string.Compare(t.LSNList.Min(), PMaxLsn) == 1
+                                                           && t.TransactionName == "DROPOBJ"
                                                            && t.AllocUnitId.Contains(PAllocUnitId.ToString()) == true
                                                      );
             if (traninfo != null)
             {
                 TableName = traninfo.AllocUnitName.Split('.')[1].Replace("[", "").Replace("]", "");
                 SchemaName = traninfo.AllocUnitName.Split('.')[0].Replace("[", "").Replace("]", "");
-                FTableInfo = UserTables[$"{SchemaName}.{TableName}"];
+                FTableInfo = GetTableInfo(SchemaName, TableName);
             }
             else
             {
-                wstranid = DDLLogs.Where(p => string.Compare(p.Current_LSN, PMaxLsn) == 1
-                                              && p.AllocUnitId == PAllocUnitId
-                                              && DDLLogs.Any(e => e.Transaction_ID == p.Transaction_ID && e.Transaction_Name == "DROPOBJ") == true
-                                              && DDLLogs_FTranID.Any(t => t.TransactionID == p.Transaction_ID) == false)
-                                  .Select(p => p.Transaction_ID)
-                                  .FirstOrDefault();
-
-                if (string.IsNullOrEmpty(wstranid) == false)
-                {
-                    wslogs = new List<DatabaseLog>();
-
-                    tmplog = AnalyzeDDLTran(wstranid);
-                    wslogs.Add(tmplog);
-
-                    TableName = tmplog.ObjectName.Split('.')[1].Replace("[", "").Replace("]", "");
-                    SchemaName = tmplog.ObjectName.Split('.')[0].Replace("[", "").Replace("]", "");
-                    FTableInfo = GetTableInfo(SchemaName, TableName);
-                }
-                else
-                {
-                    TableName = "";
-                    SchemaName = "";
-                    FTableInfo = null;
-                }
+                TableName = "";
+                SchemaName = "";
+                FTableInfo = null;
             }
 
         }
@@ -124,8 +123,9 @@ namespace DBLOG
             #endregion RowCompressionAffectsStorage
 
             SystemTables = new Dictionary<string, TableInfo>();
-            UserTables = new Dictionary<string, TableInfo>();
+            UserTables = new Dictionary<string, List<TableInfo>>();
             DDLLogs_FTranID = new List<TransactionInfo>();
+            PrevPages = new List<(string pageid, string lsn)>();
 
             tsql = "select schema_id,name from sys.schemas; ";
             Schemas = DB.Query<(int schema_id, string name)>(tsql, false).ToDictionary(p => p.schema_id, p => p.name);
@@ -156,17 +156,10 @@ namespace DBLOG
             List<FLOG> wslog, vlog;
             FLOG llog, tlog;
             List<string> ddltranids;
-            TableInfo FTableInfo0;
 
             logs = new List<DatabaseLog>();
             if (DTLogs != null && FTableInfo != null)
             {
-                ColumnList = string.Join(",", FTableInfo.Columns
-                                                        .Where(p => p.PhysicalStorageType != SqlDbType.Timestamp
-                                                                    && p.IsComputed == false
-                                                                    && p.IsHidden == false)
-                                                        .Select(p => $"[{p.ColumnName}]"));
-
                 DTMRlist = new DataTable();
                 DTMRlist.Columns.Add("PAGEID", typeof(string));
                 DTMRlist.Columns.Add("SlotID", typeof(string));
@@ -204,38 +197,56 @@ namespace DBLOG
                 vlog = new List<FLOG>();
                 foreach (string tranid in DTLogs.Select(p => p.Transaction_ID).Distinct())
                 {
-                    wslog = DTLogs.Where(p => p.Transaction_ID == tranid).ToList();
+                    if (DTLogs.Any(p => p.Transaction_ID == tranid && p.AllocUnitName == "Unknown Alloc Unit") == false)
+                    {
+                        wslog = DTLogs.Where(p => p.Transaction_ID == tranid).OrderBy(p => p.Current_LSN).ToList();
+                    }
+                    else
+                    {
+                        tsql = $"select *,IsVirtual=cast(0 as bit),LogType=N'DML' "
+                             + $"from sys.fn_dblog(null,null) t "
+                             + $"where [Transaction ID]=N'{tranid}' "
+                             + $"and [Context] in(N'LCX_HEAP',N'LCX_CLUSTERED',N'LCX_MARK_AS_GHOST',N'LCX_TEXT_TREE',N'LCX_TEXT_MIX') "
+                             + $"and [Operation] in(N'LOP_INSERT_ROWS',N'LOP_DELETE_ROWS',N'LOP_MODIFY_ROW',N'LOP_MODIFY_COLUMNS',N'LOP_FORMAT_PAGE') "
+                             + $"and [AllocUnitName] not like N'sys.%' "
+                             + $"and [AllocUnitName] is not null ";
+                        wslog = DB.Query<FLOG>(tsql, false);
+                    }
+                    
                     if (wslog.Any(p => p.Context == "LCX_CLUSTERED" || p.Context == "LCX_HEAP" || p.Context == "LCX_MARK_AS_GHOST") == false)
                     {
-                        tlog = wslog.OrderBy(p => p.Current_LSN).FirstOrDefault();
-                        tsql = $"with b as "
-                                + $"(select top 1 b1.* "
-                                + $" from sys.fn_dblog(null,null) b1 "
-                                + $" where b1.[Current LSN]<N'{tlog.Current_LSN}' "
-                                + $" and b1.[Page ID]='{tlog.Page_ID}' "
-                                + $" and b1.[Slot ID]={tlog.Slot_ID} "
-                                + $" and exists(select 1 from sys.fn_dblog(null,null) b2 where b2.[Transaction ID]=b1.[Transaction ID] and b2.Context in(N'LCX_CLUSTERED',N'LCX_HEAP',N'LCX_MARK_AS_GHOST')) "
-                                + $" order by b1.[Current LSN] desc)"
-                                + $"select top 1 t.* "
-                                + $"from sys.fn_dblog(null,null) t "
-                                + $"join b on t.[Transaction ID]=b.[Transaction ID] and t.[Current LSN]>b.[Current LSN] "
-                                + $"where t.Context in(N'LCX_CLUSTERED',N'LCX_HEAP',N'LCX_MARK_AS_GHOST') "
-                                + $"order by t.[Current LSN] ";
-                        tlog = DB.Query<FLOG>(tsql, false).FirstOrDefault();
-
-                        if (tlog != null)
+                        foreach (FLOG alog in wslog)
                         {
-                            llog = new FLOG();
-                            llog.Current_LSN = wslog.OrderByDescending(p => p.Current_LSN).First().Current_LSN + "V";
-                            llog.Operation = "LOP_MODIFY_ROW";
-                            llog.Context = (FTableInfo.IsHeapTable ? "LCX_HEAP" : "LCX_CLUSTERED");
-                            llog.Transaction_ID = tranid;
-                            llog.IsVirtual = true;
-                            llog.AllocUnitName = stemp;
-                            llog.Page_ID = tlog.Page_ID;
-                            llog.Slot_ID = tlog.Slot_ID;
+                            tsql = $"with b as "
+                                 + $"(select top 1 b1.* "
+                                 + $" from sys.fn_dblog(null,null) b1 "
+                                 + $" where b1.[Current LSN]<N'{alog.Current_LSN}' "
+                                 + $" and b1.[Page ID]=N'{alog.Page_ID}' "
+                                 + $" and b1.[Slot ID]={alog.Slot_ID} "
+                                 + $" and exists(select 1 from sys.fn_dblog(null,null) b2 where b2.[Transaction ID]=b1.[Transaction ID] and b2.Context in(N'LCX_CLUSTERED',N'LCX_HEAP',N'LCX_MARK_AS_GHOST')) "
+                                 + $" and exists(select 1 from sys.fn_dblog(null,null) b3 where b3.[Transaction ID]=b1.[Transaction ID] and b3.Operation=N'LOP_COMMIT_XACT') "
+                                 + $" order by b1.[Current LSN] desc) "
+                                 + $"select top 1 t.* "
+                                 + $"from sys.fn_dblog(null,null) t "
+                                 + $"join b on t.[Transaction ID]=b.[Transaction ID] and t.[Current LSN]>b.[Current LSN] "
+                                 + $"where t.Context in(N'LCX_CLUSTERED',N'LCX_HEAP',N'LCX_MARK_AS_GHOST') "
+                                 + $"order by t.[Current LSN]; ";
+                            tlog = DB.Query<FLOG>(tsql, false).FirstOrDefault();
 
-                            vlog.Add(llog);
+                            if (tlog != null)
+                            {
+                                llog = new FLOG();
+                                llog.Current_LSN = alog.Current_LSN + "V"; // wslog.OrderByDescending(p => p.Current_LSN).First()
+                                llog.Operation = "LOP_MODIFY_ROW";
+                                llog.Context = (FTableInfo.IsHeapTable ? "LCX_HEAP" : "LCX_CLUSTERED");
+                                llog.Transaction_ID = tranid;
+                                llog.IsVirtual = true;
+                                llog.AllocUnitName = stemp;
+                                llog.Page_ID = tlog.Page_ID;
+                                llog.Slot_ID = tlog.Slot_ID;
+
+                                vlog.Add(llog);
+                            }
                         }
                     }
                 }
@@ -253,7 +264,6 @@ namespace DBLOG
                 {
                     try
                     {
-                        FTableInfo0 = FTableInfo;
                         ddltranids = DDLLogs.Where(p => string.Compare(p.Transaction_ID, log.Transaction_ID) == 1
                                                         && DDLLogs_FTranID.Any(t => t.TransactionID == p.Transaction_ID) == false)
                                             .Select(p => p.Transaction_ID)
@@ -264,7 +274,14 @@ namespace DBLOG
                             tmplog = AnalyzeDDLTran(tranid);
                             logs.Add(tmplog);
                         }
-                        FTableInfo = FTableInfo0;
+
+                        FTableInfo = GetTableInfo(SchemaName, TableName, log.Current_LSN);
+
+                        ColumnList = string.Join(",", FTableInfo.Columns
+                                                                .Where(p => p.PhysicalStorageType != SqlDbType.Timestamp
+                                                                            && p.IsComputed == false
+                                                                            && p.IsHidden == false)
+                                                                .Select(p => $"[{p.ColumnName}]"));
 
                         if (log.Operation == "LOP_MODIFY_ROW" || log.Operation == "LOP_MODIFY_COLUMNS")
                         {
@@ -281,6 +298,8 @@ namespace DBLOG
                                                 && string.Compare(p.Current_LSN, log.Current_LSN) == -1
                                                 && string.Compare(p.Current_LSN, stemp) == 1)
                                     .ToList();
+
+                            GetPrevPages(log.Current_LSN);
                         }
                         else
                         {
@@ -304,7 +323,7 @@ namespace DBLOG
                             isfound = false;
                             PrimaryKeyValue = "";
 
-                            DRTemp = DTMRlist.Select("PAGEID='" + log.Page_ID + "' and SlotID='" + log.Slot_ID.ToString() + "' and AllocUnitId='" + log.AllocUnitId.ToString() + "' ");
+                            DRTemp = DTMRlist.Select("PAGEID='" + log.Page_ID + "' and SlotID='" + (log.Slot_ID ?? -1).ToString() + "' and AllocUnitId='" + log.AllocUnitId.ToString() + "' ");
                             if (DRTemp.Length > 0
                                 && (
                                     (log.Operation == "LOP_MODIFY_COLUMNS")
@@ -342,8 +361,14 @@ namespace DBLOG
                                     PrimaryKeyValue = "";
                                 }
 
-                                DRTemp = DTMRlist.Select("PAGEID='" + log.Page_ID + "' and MR1TEXT like '%" + log.RowLog_Contents_1.ToText() + "%' and MR1TEXT like '%" + PrimaryKeyValue + "%' ");
+                                stemp = $"PAGEID='{log.Page_ID}' and MR1TEXT like '%{log.RowLog_Contents_1.ToText()}%' and MR1TEXT like '%{PrimaryKeyValue}%' ";
+                                if (log.RowLog_Contents_1 == null && string.IsNullOrEmpty(PrimaryKeyValue) == true)
+                                {
+                                    stemp = stemp + $"and SlotID='{(log.Slot_ID ?? -1).ToString()}' ";
+                                }
+                                DRTemp = DTMRlist.Select(stemp);
                                 isfound = (DRTemp.Length > 0 ? true : false);
+                               
                             }
 
                             if (isfound == false)
@@ -360,7 +385,7 @@ namespace DBLOG
 
                                     Mrtemp = DTMRlist.NewRow();
                                     Mrtemp["PAGEID"] = log.Page_ID;
-                                    Mrtemp["SlotID"] = log.Slot_ID;
+                                    Mrtemp["SlotID"] = (log.Slot_ID ?? -1).ToString();
                                     Mrtemp["AllocUnitId"] = log.AllocUnitId;
                                     Mrtemp["MR1"] = MR1;
                                     Mrtemp["MR1TEXT"] = MR1.ToText();
@@ -417,7 +442,7 @@ namespace DBLOG
                                             }
                                             catch (Exception ex)
                                             {
-                                                DRTemp = DTMRlist.Select("PAGEID='" + log.Page_ID + "' and SlotID='" + log.Slot_ID.ToString() + "' and AllocUnitId='" + log.AllocUnitId.ToString() + "' ");
+                                                DRTemp = DTMRlist.Select("PAGEID='" + log.Page_ID + "' and SlotID='" + (log.Slot_ID ?? -1).ToString() + "' and AllocUnitId='" + log.AllocUnitId.ToString() + "' ");
                                                 if (DRTemp.Length > 0)
                                                 {
                                                     MR0 = (byte[])DRTemp[0]["MR1"];
@@ -647,12 +672,47 @@ namespace DBLOG
                 }
             }
 
-            if (wslogs != null && wslogs.Count > 0)
+            if (DDL_LOG != null && DDL_LOG.Count > 0)
             {
-                logs.AddRange(wslogs);
+                logs.AddRange(DDL_LOG);
             }
 
             return logs;
+        }
+
+        private void GetPrevPages(string LSN)
+        {
+            List<(string pageid, string lsn)> pps;
+
+            PrevPages = new List<(string, string)>();
+            tsql = $"select [Page ID],lsn=N'{LSN}' " // min([Current LSN])
+                 + $"from sys.fn_dblog(null,null) t "
+                 + $"where t.[Current LSN]>N'{LSN}' "
+                 //+ $"and t.[Transaction ID]=N'{clog.Transaction_ID}' " // 不可限制于本事務内
+                 + $"and t.Operation=N'LOP_FORMAT_PAGE' "
+                 + $"and exists(select 1 from sys.fn_dblog(null,null) b where b.[Transaction ID]=t.[Transaction ID] and b.Operation=N'LOP_COMMIT_XACT') "
+                 + $"group by t.[Page ID] ";
+            pps = DB.Query<(string, string)>(tsql, false);
+            foreach ((string pageid, string lsn) in pps)
+            {
+                SetPrevPages(pageid, lsn);
+            }
+        }
+
+        private void SetPrevPages(string Page_ID, string Current_LSN)
+        {
+            if (PrevPages == null)
+            {
+                PrevPages = new List<(string, string)>();
+            }
+            else
+            {
+                if (PrevPages.Any(p => p.pageid == Page_ID) == true)
+                {
+                    PrevPages.RemoveAll(p => p.pageid == Page_ID);
+                }
+            }
+            PrevPages.Add((Page_ID, Current_LSN));
         }
 
         private void FRestoreLCXTEXT(FLOG clog, List<FLOG> wslog)
@@ -661,20 +721,7 @@ namespace DBLOG
             string stemp, pagetail;
             int slotid, slotbegin, modilen;
 
-            List<(string pageid, string lsn)> pps;
-
-            tsql = $"select [Page ID],lsn=N'{clog.Current_LSN}' " // min([Current LSN])
-                   + $"from sys.fn_dblog(null,null) t "
-                   + $"where t.[Current LSN]>N'{clog.Current_LSN}' "
-                   //+ $"and t.[Transaction ID]=N'{clog.Transaction_ID}' " // 不可限制于本事務内
-                   + $"and t.Operation=N'LOP_FORMAT_PAGE' "
-                   + $"and exists(select 1 from sys.fn_dblog(null,null) b where b.[Transaction ID]=t.[Transaction ID] and b.Operation=N'LOP_COMMIT_XACT') "
-                   + $"group by t.[Page ID] ";
-            pps = DB.Query<(string, string)>(tsql, false);
-            foreach ((string pageid, string lsn) in pps)
-            {
-                SetPrevPages(pageid, lsn);
-            }
+            GetPrevPages(clog.Current_LSN);
 
             foreach (FLOG log in wslog
                                  .OrderBy(p => p.Page_ID)
@@ -766,22 +813,6 @@ namespace DBLOG
 
         }
 
-        private void SetPrevPages(string Page_ID, string Current_LSN)
-        {
-            if (PrevPages == null)
-            {
-                PrevPages = new List<(string, string)>();
-            }
-            else
-            {
-                if (PrevPages.Any(p => p.pageid == Page_ID) == true)
-                {
-                    PrevPages.RemoveAll(p => p.pageid == Page_ID);
-                }
-            }
-            PrevPages.Add((Page_ID, Current_LSN));
-        }
-
         private bool IsLCXTEXT(FLOG log)
         {
             return
@@ -792,114 +823,130 @@ namespace DBLOG
               );
         }
 
-        private byte[] GetMR1(FLOG pLog, string pPrimaryKeyValue)
+        private byte[] GetMR1(FLOG PLog, string PrimaryKeyValue)
         {
             byte[] mr1;
-            string fileid_dec, pageid_dec, checkvalue1, checkvalue2;
+            string fileid_dec, pageid_dec, checkvalue1, checkvalue2, objectid;
             bool isfound;
-            
-            fileid_dec = Convert.ToInt16(pLog.Page_ID.Split(':')[0], 16).ToString();
-            pageid_dec = Convert.ToInt32(pLog.Page_ID.Split(':')[1], 16).ToString();
+            FPageInfo pageinfo;
+
+            tsql = "truncate table #temppagedata; ";
+            DB.ExecuteSQL(tsql, false);
+
+            fileid_dec = Convert.ToInt16(PLog.Page_ID.Split(':')[0], 16).ToString();
+            pageid_dec = Convert.ToInt32(PLog.Page_ID.Split(':')[1], 16).ToString();
+
             tsql = $"DBCC PAGE([{DatabaseName}],{fileid_dec},{pageid_dec},3) with tableresults,no_infomsgs; ";
             tsql = "set transaction isolation level read uncommitted; "
-                    + $"insert into #temppagedata(ParentObject,Object,Field,Value) exec('{tsql}'); ";
+                + $"insert into #temppagedata(ParentObject,Object,Field,Value) exec('{tsql}'); ";
             DB.ExecuteSQL(tsql, false);
 
-            tsql = $"update #temppagedata set LSN=N'{pLog.Current_LSN}' where LSN is null; ";
+            tsql = $"update #temppagedata set LSN=N'{PLog.Current_LSN}' where LSN is null; ";
             DB.ExecuteSQL(tsql, false);
 
-            switch (pLog.Operation)
+            tsql = $"select Value from #temppagedata where Field=N'Metadata: ObjectId'; ";
+            objectid = DB.Query11(tsql, false);
+
+            if (objectid != "0")
             {
-                case "LOP_MODIFY_ROW":
-                    checkvalue1 = pLog.RowLog_Contents_1.ToText();
-                    checkvalue2 = pPrimaryKeyValue;
-                    break;
-                case "LOP_MODIFY_COLUMNS":
-                    checkvalue1 = "";
-                    checkvalue2 = "";
-                    break;
-                case "LOP_INSERT_ROWS":
-                    checkvalue1 = pLog.RowLog_Contents_0.ToText().Substring(8, 4 * 2);
-                    checkvalue2 = "";
-                    break;
-                default:
-                    checkvalue1 = "";
-                    checkvalue2 = "";
-                    break;
-            }
-            
-            isfound = false;
+                switch (PLog.Operation)
+                {
+                    case "LOP_MODIFY_ROW":
+                        checkvalue1 = PLog.RowLog_Contents_1.ToText();
+                        checkvalue2 = PrimaryKeyValue;
+                        break;
+                    case "LOP_MODIFY_COLUMNS":
+                        checkvalue1 = "";
+                        checkvalue2 = "";
+                        break;
+                    case "LOP_INSERT_ROWS":
+                        checkvalue1 = PLog.RowLog_Contents_0.ToText().Substring(8, 4 * 2);
+                        checkvalue2 = "";
+                        break;
+                    default:
+                        checkvalue1 = "";
+                        checkvalue2 = "";
+                        break;
+                }
 
-            tsql = "truncate table #ModifiedRawData; ";
-            DB.ExecuteSQL(tsql, false);
+                isfound = false;
 
-            tsql = " insert into #ModifiedRawData([RowLog Contents 0_var]) "
-                    + " select [RowLog Contents 0_var]=upper(replace(stuff((select replace(substring(C.[Value],charindex(N':',[Value],1)+1,48),N'†',N'') "
-                    + "                                                     from #temppagedata C "
-                    + $"                                                    where C.[LSN]=N'{pLog.Current_LSN}' "
-                    + $"                                                    and C.[ParentObject] like N'Slot {pLog.Slot_ID.ToString()} Offset%' "
-                    + "                                                     and C.[Object] like N'%Memory Dump%' "
-                    + "                                                     order by C.[Value] "
-                    + "                                                     for xml path('')),1,1,N''),N' ',N'')); ";
-            DB.ExecuteSQL(tsql, false);
+                tsql = "truncate table #ModifiedRawData; ";
+                DB.ExecuteSQL(tsql, false);
 
-            if (FTableInfo.GetCompressionType(pLog.PartitionId) != CompressionType.NONE)
-            {
-                isfound = true;
-            }
-            else
-            {
-                tsql = "select count(1) from #ModifiedRawData where [RowLog Contents 0_var] like N'%" + (checkvalue1.Length <= 3998 ? checkvalue1 : checkvalue1.Substring(0, 3998)) + "%'; ";
-                if (Convert.ToInt32(DB.Query11(tsql, false)) > 0)
+                tsql = " insert into #ModifiedRawData([RowLog Contents 0_var]) "
+                        + " select [RowLog Contents 0_var]=upper(replace(stuff((select replace(substring(C.[Value],charindex(N':',[Value],1)+1,48),N'†',N'') "
+                        + "                                                     from #temppagedata C "
+                        + $"                                                    where C.[LSN]=N'{PLog.Current_LSN}' "
+                        + $"                                                    and C.[ParentObject] like N'Slot {PLog.Slot_ID.ToString()} Offset%' "
+                        + "                                                     and C.[Object] like N'%Memory Dump%' "
+                        + "                                                     order by C.[Value] "
+                        + "                                                     for xml path('')),1,1,N''),N' ',N'')); ";
+                DB.ExecuteSQL(tsql, false);
+
+                if (FTableInfo.GetCompressionType(PLog.PartitionId) != CompressionType.NONE)
                 {
                     isfound = true;
                 }
-
-                if (isfound == false && pLog.Operation == "LOP_MODIFY_ROW")
+                else
                 {
-                    tsql = "truncate table #ModifiedRawData; ";
-                    DB.ExecuteSQL(tsql, false);
-
-                    tsql = "with t as("
-                            + "select *,SlotID=replace(substring(ParentObject,5,charindex(N'Offset',ParentObject)-5),N' ',N'') "
-                            + " from #temppagedata "
-                            + " where LSN=N'" + pLog.Current_LSN + "' "
-                            + " and Object like N'%Memory Dump%'), "
-                            + "u as("
-                            + "select [SlotID]=a.SlotID, "
-                            + "       [RowLog Contents 0_var]=upper(replace(stuff((select replace(substring(b.Value,charindex(N':',b.Value,1)+1,48),N'†',N'') "
-                            + "                                                    from t b "
-                            + "                                                    where b.SlotID=a.SlotID "
-                            + "                                                    group by b.Value "
-                            + "                                                    for xml path('')),1,1,N''),N' ',N'')) "
-                            + " from t a "
-                            + " group by a.SlotID) "
-                            + "insert into #ModifiedRawData([SlotID],[RowLog Contents 0_var]) "
-                            + "select [SlotID],[RowLog Contents 0_var] "
-                            + " from u "
-                            + " where [RowLog Contents 0_var] like N'%" + (checkvalue1.Length <= 3998 ? checkvalue1 : checkvalue1.Substring(0, 3998)) + "%' "
-                            + " and substring([RowLog Contents 0_var],9,len([RowLog Contents 0_var])-8) like N'%" + (checkvalue2.Length <= 3998 ? checkvalue2 : checkvalue2.Substring(0, 3998)) + "%'; ";
-                    DB.ExecuteSQL(tsql, false);
-
                     tsql = "select count(1) from #ModifiedRawData where [RowLog Contents 0_var] like N'%" + (checkvalue1.Length <= 3998 ? checkvalue1 : checkvalue1.Substring(0, 3998)) + "%'; ";
                     if (Convert.ToInt32(DB.Query11(tsql, false)) > 0)
                     {
                         isfound = true;
                     }
+
+                    if (isfound == false && PLog.Operation == "LOP_MODIFY_ROW")
+                    {
+                        tsql = "truncate table #ModifiedRawData; ";
+                        DB.ExecuteSQL(tsql, false);
+
+                        tsql = "with t as("
+                                + "select *,SlotID=replace(substring(ParentObject,5,charindex(N'Offset',ParentObject)-5),N' ',N'') "
+                                + " from #temppagedata "
+                                + " where LSN=N'" + PLog.Current_LSN + "' "
+                                + " and Object like N'%Memory Dump%'), "
+                                + "u as("
+                                + "select [SlotID]=a.SlotID, "
+                                + "       [RowLog Contents 0_var]=upper(replace(stuff((select replace(substring(b.Value,charindex(N':',b.Value,1)+1,48),N'†',N'') "
+                                + "                                                    from t b "
+                                + "                                                    where b.SlotID=a.SlotID "
+                                + "                                                    group by b.Value "
+                                + "                                                    for xml path('')),1,1,N''),N' ',N'')) "
+                                + " from t a "
+                                + " group by a.SlotID) "
+                                + "insert into #ModifiedRawData([SlotID],[RowLog Contents 0_var]) "
+                                + "select [SlotID],[RowLog Contents 0_var] "
+                                + " from u "
+                                + " where [RowLog Contents 0_var] like N'%" + (checkvalue1.Length <= 3998 ? checkvalue1 : checkvalue1.Substring(0, 3998)) + "%' "
+                                + " and substring([RowLog Contents 0_var],9,len([RowLog Contents 0_var])-8) like N'%" + (checkvalue2.Length <= 3998 ? checkvalue2 : checkvalue2.Substring(0, 3998)) + "%'; ";
+                        DB.ExecuteSQL(tsql, false);
+
+                        tsql = "select count(1) from #ModifiedRawData where [RowLog Contents 0_var] like N'%" + (checkvalue1.Length <= 3998 ? checkvalue1 : checkvalue1.Substring(0, 3998)) + "%'; ";
+                        if (Convert.ToInt32(DB.Query11(tsql, false)) > 0)
+                        {
+                            isfound = true;
+                        }
+                    }
                 }
-            }
 
-            if (isfound == true)
-            {
-                tsql = @"update #ModifiedRawData set [RowLog Contents 0]=cast('' as xml).value('xs:hexBinary(substring(sql:column(""[RowLog Contents 0_var]""), 0) )', 'varbinary(max)'); ";
-                DB.ExecuteSQL(tsql, false);
+                if (isfound == true)
+                {
+                    tsql = @"update #ModifiedRawData set [RowLog Contents 0]=cast('' as xml).value('xs:hexBinary(substring(sql:column(""[RowLog Contents 0_var]""), 0) )', 'varbinary(max)'); ";
+                    DB.ExecuteSQL(tsql, false);
 
-                tsql = "select top 1 'MR1'=[RowLog Contents 0] from #ModifiedRawData; ";
-                mr1 = DB.Query<byte[]>(tsql, false).FirstOrDefault();
+                    tsql = "select top 1 'MR1'=[RowLog Contents 0] from #ModifiedRawData; ";
+                    mr1 = DB.Query<byte[]>(tsql, false).FirstOrDefault();
+                }
+                else
+                {
+                    mr1 = null;
+                }
             }
             else
             {
-                mr1 = null;
+                pageinfo = GetPageInfo(PLog.Page_ID);
+                mr1 = pageinfo.SlotData[PLog.Slot_ID ?? 0].ToByteArray();
             }
 
             return mr1;
@@ -1948,16 +1995,18 @@ namespace DBLOG
             }
         }
         
-        private TableInfo GetTableInfo(string PSchemaName, string PTablename, bool save = true)
+        private TableInfo GetTableInfo(string PSchemaName, string PTablename, string LSN = "", bool save = true)
         {
             string stemp;
             TableInfo tableinfo;
 
             if (UserTables.ContainsKey($"{PSchemaName}.{PTablename}") == true)
             {
-                tableinfo = UserTables[$"{PSchemaName}.{PTablename}"];
+                tableinfo = UserTables[$"{PSchemaName}.{PTablename}"].Where(p => string.Compare(p.Version, LSN) == 1)
+                                                                     .OrderBy(p => p.Version)
+                                                                     .FirstOrDefault();
             }
-            else 
+            else
             {
                 tableinfo = new TableInfo();
 
@@ -2078,15 +2127,12 @@ namespace DBLOG
                             + ") as nvarchar(max)); ";
                 stemp = DB.Query11(tsql, false);
                 tableinfo.Columns = AnalyzeTablelayout(stemp);
-                tableinfo.Version = "";
+
+                tableinfo.Version = "ZZZZZZZZ:ZZZZZZZZ:ZZZZ";
 
                 if (save == true)
                 {
-                    if (UserTables.ContainsKey($"{PSchemaName}.{PTablename}") == true)
-                    {
-                        UserTables.Remove($"{PSchemaName}.{PTablename}");
-                    }
-                    UserTables.Add($"{PSchemaName}.{PTablename}", tableinfo);
+                    UserTablesAdd($"{PSchemaName}.{PTablename}", tableinfo);
                 }
             }
 

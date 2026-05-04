@@ -17,10 +17,11 @@ namespace DBLOG
 {
     public partial class DBLOG_DML_DDL
     {
-        public static Dictionary<string, TableInfo> SystemTables, UserTables;
+        public static Dictionary<string, TableInfo> SystemTables;
+        public static Dictionary<string, List<TableInfo>> UserTables;
         public static Dictionary<int, string> Schemas;
         public static Dictionary<string, string> Systypes;
-        private static List<Dictionary<string, string>> fsysschobjs, fsysiscols, fsyscolpars, fsysidxstats, fsysobjvalues, fsysrscols, fsysclsobjs;
+        private static List<Dictionary<string, string>> fsysschobjs, fsysiscols, fsyscolpars, fsysidxstats, fsysobjvalues, fsysrscols, fsysclsobjs, fsysallocunits;
         private static Dictionary<string, string> dsysschobjs, dsysiscols, dsyscolpars, dsysidxstats, dsysobjvalues, dsysrscols, dsysclsobjs;
 
         public List<DatabaseLog> AnalyzeDDLLog()
@@ -46,6 +47,7 @@ namespace DBLOG
             DatabaseLog ddllog;
             TransactionInfo traninfo;
             string objectname, redosql, undosql, TransactionName, BeginTime, EndTime;
+            List<string> AllocUnitIds;
 
 #if DEBUG
             FCommon.WriteTextFile(LogFile, $"DDL TransactionID={TransactionID} ");
@@ -68,6 +70,7 @@ namespace DBLOG
             objectname = "";
             redosql = "";
             undosql = "";
+            AllocUnitIds = new List<string>();
             switch (TransactionName)
             {
                 case "create-schema":
@@ -77,16 +80,19 @@ namespace DBLOG
                     TCreateSchema(-1, out objectname, out redosql, out undosql);
                     break;
                 case "CREATE TABLE":
-                    TCreateTable(1, out objectname, out redosql, out undosql);
+                    TCreateTable(1, out objectname, out redosql, out undosql, out AllocUnitIds);
                     break;
                 case "DROPOBJ":
-                    TCreateTable(-1, out objectname, out redosql, out undosql);
+                    TCreateTable(-1, out objectname, out redosql, out undosql, out AllocUnitIds);
                     break;
                 case "user_transaction":
                     TUserTransaction(1, out objectname, out redosql, out undosql);
                     break;
                  case "ALTER TABLE":
                     TAlterTable(out objectname, out redosql, out undosql);
+                    break;
+                case "TRUNCATE TABLE":
+                    TTruncateTable(out objectname, out redosql, out undosql);
                     break;
                     //case "CREATE INDEX":
                     //    TCreateIndex(1, out objectname, out redosql, out undosql);
@@ -109,6 +115,11 @@ namespace DBLOG
                                                .Select(p => p.AllocUnitId.ToString())
                                                .Distinct()
                                                .ToList();
+            if (AllocUnitIds.Count > 0)
+            {
+                traninfo.AllocUnitId.AddRange(AllocUnitIds);
+            }
+
             traninfo.AllocUnitName = objectname;
             traninfo.LSNList = DDLLogs_Tran.Select(p => p.Current_LSN).ToList();
 
@@ -148,7 +159,7 @@ namespace DBLOG
             }
         }
 
-        private void TCreateTable(int d, out string objectname, out string redosql, out string undosql)
+        private void TCreateTable(int d, out string objectname, out string redosql, out string undosql, out List<string> AllocUnitIds)
         {
             string schemaname, columndefinition, constraint, others, stk;
             bool isnode, isedge;
@@ -157,9 +168,10 @@ namespace DBLOG
             TableInfo ftabinfo;
             TableColumn fcol;
             int i;
-            List<Dictionary<string, string>> fsysiscols0, fsysidxstats0, fsyscolpars0, fsysobjvalues0, fsysrscols0;
+            List<Dictionary<string, string>> fsysiscols0, fsysidxstats0, fsyscolpars0, fsysobjvalues0, fsysrscols0, fsysallocunits0;
 
             ftabinfo = new TableInfo();
+            AllocUnitIds = new List<string>();
 
             // sys.sysschobjs
             fsysschobjs = TranslateSystemTable("sys.sysschobjs.clst", d, out _);
@@ -173,6 +185,8 @@ namespace DBLOG
 
             isedge = ((Convert.ToInt32(dsysschobjs["status2"]) & 0x00000200) != 0 ? true : false);
             ftabinfo.IsEdgeTable = isedge;
+
+            ftabinfo.ObjectID = dsysschobjs["id"];
 
             // sys.sysiscols
             fsysiscols = TranslateSystemTable("sys.sysiscols.clst", d, out fsysiscols0);
@@ -193,6 +207,14 @@ namespace DBLOG
             // sys.syscolpars
             fsyscolpars = TranslateSystemTable("sys.syscolpars.clst", d, out fsyscolpars0);
             if (d == -1) { fsyscolpars = fsyscolpars0; }
+
+            // sys.sysallocunits
+            fsysallocunits = TranslateSystemTable("sys.sysallocunits.clust", d, out fsysallocunits0);
+            if (d == -1) { fsysallocunits = fsysallocunits0; }
+            foreach (Dictionary<string, string> dr in fsysallocunits)
+            {
+                AllocUnitIds.Add(dr["auid"]);
+            }
 
             lstemp1 = new List<string>();
             ftabinfo.Columns = new TableColumn[fsyscolpars.Count];
@@ -253,6 +275,7 @@ namespace DBLOG
                 ftabinfo.IsColumnStore = true;
             }
 
+            ftabinfo.Version = DDLLogs_Tran.Max(p => p.Current_LSN);
 
             objectname = $"[{schemaname}].[{objectname}]";
             others = "";
@@ -276,17 +299,28 @@ namespace DBLOG
                 undosql = $"create table {objectname}\r\n({columndefinition}\r\n{constraint}){others}; ";
 
                 stk = objectname.Replace("[", "").Replace("]", "");
-                if (UserTables.ContainsKey(stk)) { UserTables.Remove(stk); }
-                UserTables.Add(stk, ftabinfo);
+                UserTablesAdd(stk, ftabinfo);
             }
 
+        }
+
+        private void UserTablesAdd(string tablename, TableInfo tableinfo)
+        {
+            if (UserTables.ContainsKey(tablename) == false)
+            { 
+                UserTables.Add(tablename, new List<TableInfo>() { tableinfo });
+            }
+            else
+            {
+                UserTables[tablename].Add(tableinfo);
+            }
         }
 
         private void TUserTransaction(int d, out string objectname, out string redosql, out string undosql)
         {
             string optionname, val0, val1, schemaname;
-            Dictionary<string, string> sysidxstats0, sysidxstats1;
-            List<Dictionary<string, string>> fsysschobjs0, fsysidxstats0;
+            Dictionary<string, string> sysidxstats0, sysidxstats1, syscolpars0, syscolpars1;
+            List<Dictionary<string, string>> fsysschobjs0, fsysidxstats0, fsyscolpars0;
             List<DiffColumn> diff;
 
             objectname = "";
@@ -299,6 +333,11 @@ namespace DBLOG
             // sys.sysidxstats
             fsysidxstats = TranslateSystemTable("sys.sysidxstats.clst", d, out fsysidxstats0);
 
+            // sys.syscolpars
+            fsyscolpars = TranslateSystemTable("sys.syscolpars.clst", 1, out fsyscolpars0);
+
+
+            // set table option [text in row]
             if (fsysidxstats.Count(p => Convert.ToInt32(p["indid"]) <= 1) > 0
                 && fsysidxstats0.Count(p => Convert.ToInt32(p["indid"]) <= 1) > 0)
             {
@@ -320,6 +359,28 @@ namespace DBLOG
                 }
             }
 
+            // rename column
+            if (fsyscolpars.Count == 1 
+                && fsyscolpars0.Count == 1)
+            {
+                syscolpars0 = fsyscolpars0.First();
+                syscolpars1 = fsyscolpars.First();
+
+                diff = DDL_Compare(syscolpars0, syscolpars1);
+                if (diff.Any(p => p.ColumnName == "name") == true)
+                {
+                    dsysschobjs = fsysschobjs.First(p => p["id"] == syscolpars1["id"]);
+                    schemaname = Schemas[Convert.ToInt32(dsysschobjs["nsid"])];
+                    objectname = schemaname + "." + dsysschobjs["name"];
+                    val0 = diff.First(p => p.ColumnName == "name").OldValue;
+                    val1 = diff.First(p => p.ColumnName == "name").NewValue;
+
+                    redosql = $"exec sp_rename N'{objectname}.{val0}',N'{val1}','COLUMN'; ";
+                    undosql = $"exec sp_rename N'{objectname}.{val1}',N'{val0}','COLUMN'; ";
+                }
+            }
+
+
         }
 
         private void TAlterTable(out string objectname, out string redosql, out string undosql)
@@ -339,7 +400,7 @@ namespace DBLOG
             dsysschobjs = fsysschobjs.First(p => p["type"] == "U");
             schemaname = Schemas[Convert.ToInt32(dsysschobjs["nsid"])];
             objectname = $"{dsysschobjs["name"]}";
-            tableinfo = GetTableInfo(schemaname, objectname, true);
+            tableinfo = GetTableInfo(schemaname, objectname, "", true);
 
             redosql = redosql + $"[{schemaname}].[{objectname}] ";
             undosql = undosql + $"[{schemaname}].[{objectname}] ";
@@ -390,11 +451,35 @@ namespace DBLOG
                 }
             }
 
-            
+        }
 
-            
+        private void TTruncateTable(out string objectname, out string redosql, out string undosql)
+        {
+            string allocunitname, schemaname;
+            List<Dictionary<string, string>> fsyscolpars0;
 
+            allocunitname = DDLLogs_Tran.Select(p => p.AllocUnitName)
+                                        .Where(p => string.IsNullOrEmpty(p) == false && p != "Unknown Alloc Unit" && p.StartsWith("sys.") == false)
+                                        .Distinct()
+                                        .FirstOrDefault();
+            if (string.IsNullOrEmpty(allocunitname) == false)
+            {
+                schemaname = allocunitname.Split('.')[0];
+                objectname = allocunitname.Split('.')[1];
+            }
+            else
+            {
+                // sys.syscolpars
+                fsyscolpars = TranslateSystemTable("sys.syscolpars.clst", 1, out fsyscolpars0);
+                dsyscolpars = fsyscolpars.First();
 
+                objectname = UserTables.FirstOrDefault(p => p.Value.Any(x => x.ObjectID == dsyscolpars["id"]) == true).Key;
+                schemaname = objectname.Split('.')[0];
+                objectname = objectname.Split('.')[1];
+            }
+
+            redosql = $"truncate table [{schemaname}].[{objectname}]; ";
+            undosql = $"";
         }
 
         private List<DiffColumn> DDL_Compare(Dictionary<string, string> dr0, Dictionary<string, string> dr1)
@@ -618,7 +703,7 @@ namespace DBLOG
             tablename = PAllocUnitName.Split('.')[1];
             if (SystemTables.ContainsKey($"{schemaname}.{tablename}") == false)
             {
-                tableinfo = GetTableInfo(schemaname, tablename, false);
+                tableinfo = GetTableInfo(schemaname, tablename, "", false);
                 SystemTables.Add($"{schemaname}.{tablename}", tableinfo);
             }
 

@@ -24,6 +24,7 @@ namespace DBLOG.Common
         public bool IsEdgeTable;
         public Dictionary<long, CompressionType> DataCompressionType; // key:PartitionId value:CompressionType
         public TableColumn[] Columns;
+        public string ObjectID;
         public string Version;
 
         public TableInfo()

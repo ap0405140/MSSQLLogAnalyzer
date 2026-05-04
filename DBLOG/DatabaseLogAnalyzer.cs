@@ -167,7 +167,7 @@ namespace DBLOG
                     + "  from sys.fn_dblog(null,null) t "
                     + $" where [Current LSN]>=N'{_MinLSN}' "
                     + "  and [Transaction ID]<>N'0000:00000000' "
-                    + "  and exists(select 1 from sys.fn_dblog(null,null) b where b.[Transaction ID]=t.[Transaction ID] and b.Operation=N'LOP_BEGIN_XACT' and b.[Transaction Name] in(N'CREATE TABLE',N'DROPOBJ',N'create-schema',N'DROP SCHEMA',N'CREATE INDEX',N'DROP INDEX',N'user_transaction',N'ALTER TABLE')) "
+                    + "  and exists(select 1 from sys.fn_dblog(null,null) b where b.[Transaction ID]=t.[Transaction ID] and b.Operation=N'LOP_BEGIN_XACT' and b.[Transaction Name] in(N'CREATE TABLE',N'DROPOBJ',N'create-schema',N'DROP SCHEMA',N'CREATE INDEX',N'DROP INDEX',N'user_transaction',N'ALTER TABLE',N'TRUNCATE TABLE')) "
                     + "  and exists(select 1 from sys.fn_dblog(null,null) b where b.[Transaction ID]=t.[Transaction ID] and b.Operation=N'LOP_COMMIT_XACT') "
                     + "  and exists(select 1 from sys.fn_dblog(null,null) b where b.[Transaction ID]=t.[Transaction ID] and b.AllocUnitName is not null); ";
             Loglist_DDL = DB.Query<FLOG>(_tsql, false);
@@ -231,17 +231,17 @@ namespace DBLOG
                     }
 
 #if DEBUG
-                    FCommon.WriteTextFile(LogFile, $"Start Analysis Log for [{schemaname}].[{tablename}]. ");
+                    FCommon.WriteTextFile(LogFile, $"Start Analysis Log for [{schemaname}].[{tablename}]. ({allocunitid.ToString()},{maxlsn}) ");
 #endif
 
                     tmplog = tablelist[i].AnalyzeLog()
                                          .Where(p => IsInTimeRange(p.BeginTime, p.EndTime) == true)
                                          .ToList();
                     logs.AddRange(tmplog);
-                    ReadPercent = ReadPercent + Convert.ToInt32(Math.Floor((tablelist[i].DTLogs.Count * 1.0) / (Loglist.Count * 1.0) * 85.0));
+                    ReadPercent = ReadPercent + Convert.ToInt32(Math.Floor((tablelist[i].DTLogs.Count * 1.0) / (Loglist.Count * 1.0) * 50.0));
 
 #if DEBUG
-                    FCommon.WriteTextFile(LogFile, $"End Analysis Log for [{schemaname}].[{tablename}]. ");
+                    FCommon.WriteTextFile(LogFile, $"End Analysis Log for [{schemaname}].[{tablename}]. ({allocunitid.ToString()},{maxlsn}) ");
 #endif
 
                     i = i + 1;
