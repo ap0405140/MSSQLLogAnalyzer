@@ -215,7 +215,7 @@ namespace DBLOG
                     
                     if (wslog.Any(p => p.Context == "LCX_CLUSTERED" || p.Context == "LCX_HEAP" || p.Context == "LCX_MARK_AS_GHOST") == false)
                     {
-                        foreach (FLOG alog in wslog)
+                        foreach (FLOG alog in wslog.OrderByDescending(p => p.Current_LSN))
                         {
                             tsql = $"with b as "
                                  + $"(select top 1 b1.* "
@@ -233,7 +233,8 @@ namespace DBLOG
                                  + $"order by t.[Current LSN]; ";
                             tlog = DB.Query<FLOG>(tsql, false).FirstOrDefault();
 
-                            if (tlog != null)
+                            if (tlog != null
+                                && vlog.Any(ev => ev.Transaction_ID == tranid && ev.Page_ID == tlog.Page_ID && ev.Slot_ID == tlog.Slot_ID) == false)
                             {
                                 llog = new FLOG();
                                 llog.Current_LSN = alog.Current_LSN + "V"; // wslog.OrderByDescending(p => p.Current_LSN).First()
