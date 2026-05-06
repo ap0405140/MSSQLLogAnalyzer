@@ -265,7 +265,7 @@ namespace DBLOG
                 {
                     try
                     {
-                        ddltranids = DDLLogs.Where(p => string.Compare(p.Transaction_ID, log.Transaction_ID) == 1
+                        ddltranids = DDLLogs.Where(p => string.Compare(p.Transaction_ID, log.Transaction_ID) >= 0
                                                         && DDLLogs_FTranID.Any(t => t.TransactionID == p.Transaction_ID) == false)
                                             .Select(p => p.Transaction_ID)
                                             .Distinct()
@@ -2003,7 +2003,7 @@ namespace DBLOG
 
             if (UserTables.ContainsKey($"{PSchemaName}.{PTablename}") == true)
             {
-                tableinfo = UserTables[$"{PSchemaName}.{PTablename}"].Where(p => string.Compare(p.Version, LSN) == 1)
+                tableinfo = UserTables[$"{PSchemaName}.{PTablename}"].Where(p => string.Compare(p.Version, LSN) >= 0)
                                                                      .OrderBy(p => p.Version)
                                                                      .FirstOrDefault();
             }

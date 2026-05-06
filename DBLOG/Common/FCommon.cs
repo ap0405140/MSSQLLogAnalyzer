@@ -9,6 +9,7 @@ using System.Reflection;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using Newtonsoft.Json;
 
 namespace DBLOG.Common
 {
@@ -289,6 +290,30 @@ namespace DBLOG.Common
                 {
                     f.SetValue(y, f.GetValue(x));
                 }
+            }
+
+            return y;
+        }
+
+        public static T FCopy<T>(this T x)
+        {
+            T y;
+            string json;
+            JsonSerializerSettings settings;
+
+            if (ReferenceEquals(x, null))
+            {
+                y = default;
+            }
+            else
+            {
+                settings = new JsonSerializerSettings
+                {
+                    ReferenceLoopHandling = ReferenceLoopHandling.Ignore,
+                    ObjectCreationHandling = ObjectCreationHandling.Replace
+                };
+                json = JsonConvert.SerializeObject(x, settings);
+                y = JsonConvert.DeserializeObject<T>(json, settings);
             }
 
             return y;
