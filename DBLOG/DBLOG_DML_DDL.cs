@@ -55,7 +55,8 @@ namespace DBLOG
             if (traninfo == null)
             {
                 wstrans = DDLLogs.Where(p => string.Compare(p.Current_LSN, PMaxLsn) == 1
-                                              && DDLLogs.Any(e => e.Transaction_ID == p.Transaction_ID && e.Transaction_Name == "DROPOBJ") == true
+                                              && DDLLogs.Any(e => e.Transaction_ID == p.Transaction_ID 
+                                                                  && (e.Transaction_Name == "DROPOBJ" || e.Transaction_Name == "ALTER TABLE")) == true
                                               && DDLLogs_FTranID.Any(t => t.TransactionID == p.Transaction_ID) == false)
                                  .Select(p => p.Transaction_ID)
                                  .Distinct()
@@ -1195,7 +1196,8 @@ namespace DBLOG
                      && columns1[i].Value != null
                      && columns0[i].Value.ToString() != columns1[i].Value.ToString())
                     || (columns0[i].IsNull == true && columns1[i].IsNull == false)
-                    || (columns0[i].IsNull == false && columns1[i].IsNull == true))
+                    || (columns0[i].IsNull == false && columns1[i].IsNull == true)
+                    || (columns0[i].IsNull == true && columns1[i].IsNull == true))
                 {
                     ValueList0 = ValueList0 + (ValueList0.Length > 0 ? "," : "")
                                  + $"[{columns0[i].ColumnName}]="

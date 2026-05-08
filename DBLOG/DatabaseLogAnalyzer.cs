@@ -69,6 +69,7 @@ namespace DBLOG
             DBLOG_DML_DDL[] tablelist;
             List<FLOG> Loglist, Loglist_DDL;
             List<(string TableName, string SchemaName, long AllocUnitId, string MaxLSN)> tables, tablesUK;
+            List<string> DDLTranName;
 
             _objectname = pObjectName ?? string.Empty;
             _objectname = (_objectname.Length > 0 && _objectname.Contains(".") == false ? "dbo." : "") + _objectname;
@@ -138,6 +139,8 @@ namespace DBLOG
             _tsql = $"alter table #LogList add constraint pk#LogList{Guid.NewGuid().ToString().Replace("-", "")} primary key clustered ([Current LSN]); ";
             DB.ExecuteSQL(_tsql, false);
 
+            DDLTranName = new List<string>() { "CREATE TABLE", "DROPOBJ", "create-schema", "DROP SCHEMA", "CREATE INDEX", "DROP INDEX", "user_transaction", "ALTER TABLE", "TRUNCATE TABLE" };
+
             _tsql = "set transaction isolation level read uncommitted; "
                     + "insert into #LogList "
                     + "output inserted.* "
@@ -148,6 +151,7 @@ namespace DBLOG
                     + "  and [Operation] in(N'LOP_INSERT_ROWS',N'LOP_DELETE_ROWS',N'LOP_MODIFY_ROW',N'LOP_MODIFY_COLUMNS',N'LOP_FORMAT_PAGE') "
                     + "  and [AllocUnitName] not like N'sys.%' "
                     + "  and [AllocUnitName] is not null "
+                    + $" and not exists(select 1 from sys.fn_dblog(null,null) b where b.[Transaction ID]=t.[Transaction ID] and b.Operation=N'LOP_BEGIN_XACT' and b.[Transaction Name] in({string.Join(",", DDLTranName.Select(n => $"N'{n}'"))})) "
                     + "  [FDMLFILTER]; ";
 
             if (_objectname.Length > 0)
@@ -167,7 +171,7 @@ namespace DBLOG
                     + "  from sys.fn_dblog(null,null) t "
                     + $" where [Current LSN]>=N'{_MinLSN}' "
                     + "  and [Transaction ID]<>N'0000:00000000' "
-                    + "  and exists(select 1 from sys.fn_dblog(null,null) b where b.[Transaction ID]=t.[Transaction ID] and b.Operation=N'LOP_BEGIN_XACT' and b.[Transaction Name] in(N'CREATE TABLE',N'DROPOBJ',N'create-schema',N'DROP SCHEMA',N'CREATE INDEX',N'DROP INDEX',N'user_transaction',N'ALTER TABLE',N'TRUNCATE TABLE')) "
+                    + $"  and exists(select 1 from sys.fn_dblog(null,null) b where b.[Transaction ID]=t.[Transaction ID] and b.Operation=N'LOP_BEGIN_XACT' and b.[Transaction Name] in({string.Join(",", DDLTranName.Select(n => $"N'{n}'"))})) "
                     + "  and exists(select 1 from sys.fn_dblog(null,null) b where b.[Transaction ID]=t.[Transaction ID] and b.Operation=N'LOP_COMMIT_XACT') "
                     + "  and exists(select 1 from sys.fn_dblog(null,null) b where b.[Transaction ID]=t.[Transaction ID] and b.AllocUnitName is not null); ";
             Loglist_DDL = DB.Query<FLOG>(_tsql, false);

@@ -1,4 +1,8 @@
-﻿using System;
+﻿using DBLOG.Common;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
 using System.Data;
@@ -10,8 +14,6 @@ using System.Runtime.CompilerServices;
 using System.Security.Principal;
 using System.Text;
 using System.Xml;
-using Newtonsoft.Json;
-using DBLOG.Common;
 
 namespace DBLOG
 {
@@ -21,7 +23,7 @@ namespace DBLOG
         public static Dictionary<string, List<TableInfo>> UserTables;
         public static Dictionary<int, string> Schemas;
         public static Dictionary<string, string> Systypes;
-        private static List<Dictionary<string, string>> fsysschobjs, fsysiscols, fsyscolpars, fsysidxstats, fsysobjvalues, fsysrscols, fsysclsobjs, fsysallocunits;
+        private static List<Dictionary<string, string>> fsysschobjs, fsysiscols, fsyscolpars, fsysidxstats, fsysobjvalues, fsysrscols, fsysclsobjs, fsysallocunits, fsysrowsets;
         private static Dictionary<string, string> dsysschobjs, dsysiscols, dsyscolpars, dsysidxstats, dsysobjvalues, dsysrscols, dsysclsobjs;
 
         public List<DatabaseLog> AnalyzeDDLLog()
@@ -45,7 +47,7 @@ namespace DBLOG
         private DatabaseLog AnalyzeDDLTran(string TransactionID)
         {
             DatabaseLog ddllog;
-            TransactionInfo traninfo;
+            TransactionInfo traninfo, rtran;
             string objectname, redosql, undosql, TransactionName, BeginTime, EndTime;
             List<string> AllocUnitIds;
 
@@ -89,17 +91,28 @@ namespace DBLOG
                     TUserTransaction(1, out objectname, out redosql, out undosql);
                     break;
                  case "ALTER TABLE":
-                    TAlterTable(out objectname, out redosql, out undosql);
+                    TAlterTable(out objectname, out redosql, out undosql, out AllocUnitIds);
+
+                    rtran = DDLLogs_FTranID.Where(p => string.Compare(p.TransactionID, TransactionID) == 1 && p.TransactionName == "DROPOBJ")
+                                           .OrderBy(p => p.TransactionID)
+                                           .FirstOrDefault();
+                    if (redosql.Contains(" rebuild with(data_compression=") == true 
+                        && AllocUnitIds.Count > 0
+                        && rtran != null)
+                    {
+                        rtran.AllocUnitId = rtran.AllocUnitId.Union(AllocUnitIds).ToList();
+                    }
+
                     break;
                 case "TRUNCATE TABLE":
                     TTruncateTable(out objectname, out redosql, out undosql);
                     break;
-                    //case "CREATE INDEX":
-                    //    TCreateIndex(1, out objectname, out redosql, out undosql);
-                    //    break;
-                    //case "DROP INDEX":
-                    //    TCreateIndex(-1, out objectname, out redosql, out undosql);
-                    //    break;
+                 //case "CREATE INDEX":
+                 //    TCreateIndex(1, out objectname, out redosql, out undosql);
+                 //    break;
+                 //case "DROP INDEX":
+                 //    TCreateIndex(-1, out objectname, out redosql, out undosql);
+                 //    break;
 
             }
             ddllog.ObjectName = objectname;
@@ -170,7 +183,8 @@ namespace DBLOG
             TableInfo ftabinfo;
             TableColumn fcol;
             int i;
-            List<Dictionary<string, string>> fsysiscols0, fsysidxstats0, fsyscolpars0, fsysobjvalues0, fsysrscols0, fsysallocunits0;
+            List<Dictionary<string, string>> fsysiscols0, fsysidxstats0, fsyscolpars0, fsysobjvalues0, fsysrscols0, fsysallocunits0, fsysrowsets0;
+            long partitionid;
 
             ftabinfo = new TableInfo();
             AllocUnitIds = new List<string>();
@@ -218,6 +232,10 @@ namespace DBLOG
                 AllocUnitIds.Add(dr["auid"]);
             }
 
+            // sys.sysrowsets.clust
+            fsysrowsets = TranslateSystemTable("sys.sysrowsets.clust", 1, out fsysrowsets0);
+            if (d == -1) { fsysrowsets = fsysrowsets0; }
+
             lstemp1 = new List<string>();
             ftabinfo.Columns = new TableColumn[fsyscolpars.Count];
             i = 0;
@@ -259,13 +277,8 @@ namespace DBLOG
                 if (stemp1 == "clustered")
                 {
                     ftabinfo.ClusteredIndexColumns = stemp2.Split(',').Select(p => p.Split(' ')[0].Replace("[", "").Replace("]", "")).ToList();
-                    ftabinfo.IsHeapTable = false;
                 }
-                else
-                {
-                    ftabinfo.IsHeapTable = true;
-                }
-
+                
             }
 
             // clustered columnstore
@@ -276,6 +289,16 @@ namespace DBLOG
 
                 ftabinfo.IsColumnStore = true;
             }
+
+            foreach (Dictionary<string, string> dsysrowsets in fsysrowsets.Where(p => p["ownertype"] == "1"))
+            {
+                partitionid = Convert.ToInt64(dsysrowsets["rowsetid"]);
+                Enum.TryParse<CompressionType>(dsysrowsets["cmprlevel"], out CompressionType enumval);
+                ftabinfo.DataCompressionType.Add(partitionid, enumval);
+            }
+
+            ftabinfo.IsHeapTable = fsysidxstats.Any(p => p["indid"] == "0");
+            ftabinfo.TextInRow = Convert.ToInt32(fsysidxstats.First(p => Convert.ToInt32(p["indid"]) <= 1)["intprop"]);
 
             ftabinfo.Version = DDLLogs_Tran.Max(p => p.Current_LSN);
 
@@ -320,12 +343,12 @@ namespace DBLOG
 
         private void TUserTransaction(int d, out string objectname, out string redosql, out string undosql)
         {
-            string optionname, val0, val1, schemaname, fobjectname;
+            string optionname, val0, val1, schemaname, curlsn;
             Dictionary<string, string> sysidxstats0, sysidxstats1, syscolpars0, syscolpars1;
             List<Dictionary<string, string>> fsysschobjs0, fsysidxstats0, fsyscolpars0;
             List<DiffColumn> diff;
+            TableInfo tableinfo, tableinfo0;
 
-            fobjectname = "";
             objectname = "";
             redosql = "";
             undosql = "";
@@ -339,6 +362,7 @@ namespace DBLOG
             // sys.syscolpars
             fsyscolpars = TranslateSystemTable("sys.syscolpars.clst", 1, out fsyscolpars0);
 
+            curlsn = DDLLogs_Tran.Max(p => p.Current_LSN);
 
             // set table option [text in row]
             if (fsysidxstats.Count(p => Convert.ToInt32(p["indid"]) <= 1) > 0
@@ -352,14 +376,22 @@ namespace DBLOG
                 {
                     dsysschobjs = fsysschobjs.First(p => p["id"] == sysidxstats1["id"]);
                     schemaname = Schemas[Convert.ToInt32(dsysschobjs["nsid"])];
-                    objectname = schemaname + "." + dsysschobjs["name"];
+                    objectname = dsysschobjs["name"];
+                    tableinfo = GetTableInfo(schemaname, objectname, curlsn, true);
+
                     optionname = "text in row";
                     val0 = diff.First(p => p.ColumnName == "intprop").OldValue;
                     val1 = diff.First(p => p.ColumnName == "intprop").NewValue;
+                    
+                    redosql = $"exec sp_tableoption N'{schemaname}.{objectname}','{optionname}','{val1}'; ";
+                    undosql = $"exec sp_tableoption N'{schemaname}.{objectname}','{optionname}','{val0}'; ";
 
-                    fobjectname = $"[{schemaname}].[{dsysschobjs["name"]}]";
-                    redosql = $"exec sp_tableoption N'{objectname}','{optionname}','{val1}'; ";
-                    undosql = $"exec sp_tableoption N'{objectname}','{optionname}','{val0}'; ";
+                    tableinfo0 = tableinfo.FCopy();
+                    tableinfo0.TextInRow = Convert.ToInt32(val0);
+                    tableinfo0.Version = curlsn;
+                    UserTablesAdd($"{schemaname}.{objectname}", tableinfo0);
+
+                    objectname = $"[{schemaname}].[{objectname}]";
                 }
             }
 
@@ -375,31 +407,49 @@ namespace DBLOG
                 {
                     dsysschobjs = fsysschobjs.First(p => p["id"] == syscolpars1["id"]);
                     schemaname = Schemas[Convert.ToInt32(dsysschobjs["nsid"])];
-                    objectname = schemaname + "." + dsysschobjs["name"];
+                    objectname = dsysschobjs["name"];
+                    tableinfo = GetTableInfo(schemaname, objectname, curlsn, true);
+
                     val0 = diff.First(p => p.ColumnName == "name").OldValue;
                     val1 = diff.First(p => p.ColumnName == "name").NewValue;
+                    
+                    redosql = $"exec sp_rename N'{schemaname}.{objectname}.{val0}',N'{val1}','COLUMN'; ";
+                    undosql = $"exec sp_rename N'{schemaname}.{objectname}.{val1}',N'{val0}','COLUMN'; ";
 
-                    fobjectname = $"[{schemaname}].[{dsysschobjs["name"]}]";
-                    redosql = $"exec sp_rename N'{objectname}.{val0}',N'{val1}','COLUMN'; ";
-                    undosql = $"exec sp_rename N'{objectname}.{val1}',N'{val0}','COLUMN'; ";
+                    tableinfo0 = tableinfo.FCopy();
+                    foreach (TableColumn col in tableinfo0.Columns)
+                    {
+                        if (col.ColumnName == val1)
+                        {
+                            col.ColumnName = val0;
+                            break;
+                        }
+                    }
+                    tableinfo0.Version = curlsn;
+                    UserTablesAdd($"{schemaname}.{objectname}", tableinfo0);
+
+                    objectname = $"[{schemaname}].[{objectname}]";
                 }
             }
 
-            objectname = fobjectname;
         }
 
-        private void TAlterTable(out string objectname, out string redosql, out string undosql)
+        private void TAlterTable(out string objectname, out string redosql, out string undosql, out List<string> AllocUnitIds)
         {
-            string coldef, schemaname, curlsn;
-            List<Dictionary<string, string>> fsysschobjs0, fsyscolpars0, fsysobjvalues0, fsysrscols0;
+            string coldef, schemaname, curlsn, val0, val1;
+            List<Dictionary<string, string>> fsysschobjs0, fsyscolpars0, fsysobjvalues0, fsysrscols0, fsysrowsets0;
             List<DiffColumn> diff;
-            TableInfo tableinfo, tableinfo1;
+            TableInfo tableinfo, tableinfo0;
             TableColumn tablecol;
             int i;
-            List<TableColumn> dtcols, cols1;
+            List<TableColumn> dtcols, cols0;
+            Dictionary<string, string> sysrowsets0, sysrowsets1;
+            List<string> allocunitids;
+            long partitionid;
 
             redosql = "alter table ";
             undosql = "alter table ";
+            AllocUnitIds = new List<string>();
             dtcols = new List<TableColumn>();
             curlsn = DDLLogs_Tran.Max(p => p.Current_LSN);
 
@@ -422,6 +472,9 @@ namespace DBLOG
             // sys.sysrscols
             fsysrscols = TranslateSystemTable("sys.sysrscols.clst", 1, out fsysrscols0);
 
+            // sys.sysrowsets.clust
+            fsysrowsets = TranslateSystemTable("sys.sysrowsets.clust", 1, out fsysrowsets0);
+
 
             // add column
             if (fsyscolpars.Any() == true && fsyscolpars0.Any() == false)
@@ -437,21 +490,21 @@ namespace DBLOG
                     dtcols.Add(tablecol);
                 }
 
-                tableinfo1 = tableinfo.FCopy();
-                cols1 = new List<TableColumn>();
+                tableinfo0 = tableinfo.FCopy();
+                cols0 = new List<TableColumn>();
                 i = 1;
                 foreach(TableColumn col in tableinfo.Columns.OrderBy(p => p.ColumnID))
                 {
                     if (dtcols.Any(dc => dc.ColumnName == col.ColumnName) == false)
                     {
                         col.ColumnID = Convert.ToInt16(i);
-                        cols1.Add(col);
+                        cols0.Add(col);
                         i = i + 1;
                     }
                 }
-                tableinfo1.Columns = cols1.ToArray();
-                tableinfo1.Version = curlsn;
-                UserTablesAdd($"{schemaname}.{objectname}", tableinfo1);
+                tableinfo0.Columns = cols0.ToArray();
+                tableinfo0.Version = curlsn;
+                UserTablesAdd($"{schemaname}.{objectname}", tableinfo0);
 
             }
 
@@ -471,15 +524,15 @@ namespace DBLOG
                     dtcols.Add(tablecol);
                 }
 
-                tableinfo1 = tableinfo.FCopy();
-                cols1 = tableinfo1.Columns.ToList();
+                tableinfo0 = tableinfo.FCopy();
+                cols0 = tableinfo0.Columns.ToList();
                 foreach (TableColumn col in dtcols)
                 {
-                    cols1.Add(col);
+                    cols0.Add(col);
                 }
-                tableinfo1.Columns = cols1.OrderBy(p => p.ColumnID).ToArray();
-                tableinfo1.Version = DDLLogs_Tran.Max(p => p.Current_LSN);
-                UserTablesAdd($"{schemaname}.{objectname}", tableinfo1);
+                tableinfo0.Columns = cols0.OrderBy(p => p.ColumnID).ToArray();
+                tableinfo0.Version = curlsn;
+                UserTablesAdd($"{schemaname}.{objectname}", tableinfo0);
 
             }
 
@@ -501,20 +554,62 @@ namespace DBLOG
                     dtcols.Add(tablecol);
                 }
 
-                tableinfo1 = tableinfo.FCopy();
-                cols1 = tableinfo1.Columns.ToList();
-                cols1.RemoveAll(p => dtcols.Select(d => d.ColumnID).Contains(p.ColumnID) == true);
+                tableinfo0 = tableinfo.FCopy();
+                cols0 = tableinfo0.Columns.ToList();
+                cols0.RemoveAll(p => dtcols.Select(d => d.ColumnID).Contains(p.ColumnID) == true);
                 foreach (TableColumn col in dtcols)
                 {
-                    cols1.Add(col);
+                    cols0.Add(col);
                 }
-                tableinfo1.Columns = cols1.OrderBy(p => p.ColumnID).ToArray();
-                tableinfo1.Version = DDLLogs_Tran.Max(p => p.Current_LSN);
-                UserTablesAdd($"{schemaname}.{objectname}", tableinfo1);
+                tableinfo0.Columns = cols0.OrderBy(p => p.ColumnID).ToArray();
+                tableinfo0.Version = curlsn;
+                UserTablesAdd($"{schemaname}.{objectname}", tableinfo0);
 
             }
 
-            // TODO: rename column, set table option, add/dropping constraint/index, etc.
+            // rebuild with(data_compression=xxx)
+            if (fsysrowsets.Any() == true && fsysrowsets0.Any() == true)
+            {
+                sysrowsets0 = fsysrowsets0.First();
+                sysrowsets1 = fsysrowsets.First();
+                diff = DDL_Compare(sysrowsets0, sysrowsets1);
+                if (diff.Any(p => p.ColumnName == "cmprlevel") == true)
+                {
+                    val0 = Enum.GetName(typeof(CompressionType), Convert.ToInt32(diff.First(p => p.ColumnName == "cmprlevel").OldValue));
+                    val1 = Enum.GetName(typeof(CompressionType), Convert.ToInt32(diff.First(p => p.ColumnName == "cmprlevel").NewValue));
+             
+                    redosql = $"alter table {objectname} rebuild with(data_compression={val1}); ";
+                    undosql = $"alter table {objectname} rebuild with(data_compression={val0}); ";
+
+                    allocunitids = DDLLogs_Tran.Where(p => p.AllocUnitId != null).Select(p => p.AllocUnitId.ToString()).Distinct().ToList();
+                    AllocUnitIds.AddRange(allocunitids);
+
+                    tableinfo0 = tableinfo.FCopy();
+                    
+                    tableinfo0.DataCompressionType = new Dictionary<long, CompressionType>();
+                    foreach (Dictionary<string, string> dsysrowsets in fsysrowsets0.Where(p => p["ownertype"] == "1"))
+                    {
+                        partitionid = Convert.ToInt64(dsysrowsets["rowsetid"]);
+                        Enum.TryParse<CompressionType>(dsysrowsets["cmprlevel"], out CompressionType enumval);
+                        tableinfo0.DataCompressionType.Add(partitionid, enumval);
+                    }
+
+                    cols0 = tableinfo0.Columns.ToList();
+                    foreach (TableColumn col in cols0)
+                    {
+                        col.LeafOffset = (short)(Convert.ToInt32(fsysrscols0.First(p => p["rscolid"] == col.ColumnID.ToString())["offset"]) & 0xFFFF); // convert(smallint, convert(binary(2), c.offset & 0xffff))    [sys.system_internals_partition_columns]
+                        col.LeafNullBit = (short)(Convert.ToInt32(fsysrscols0.First(p => p["rscolid"] == col.ColumnID.ToString())["nullbit"]) & 0xFFFF); // convert(smallint, convert(binary(2), c.nullbit & 0xffff))  [sys.system_internals_partition_columns]
+                    }
+
+                    tableinfo0.Columns = cols0.OrderBy(p => p.ColumnID).ToArray();
+                    tableinfo0.Version = curlsn;
+                    UserTablesAdd($"{schemaname}.{objectname}", tableinfo0);
+                }
+
+            }
+
+            // TODO: set table option, add/dropping constraint/index, etc.
+
 
             objectname = $"[{schemaname}].[{objectname}]";
         }
