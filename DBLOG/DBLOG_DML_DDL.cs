@@ -285,6 +285,8 @@ namespace DBLOG
                                                                             && p.IsHidden == false)
                                                                 .Select(p => $"[{p.ColumnName}]"));
 
+                        GetPrevPages(log.Current_LSN);
+
                         if (log.Operation == "LOP_MODIFY_ROW" || log.Operation == "LOP_MODIFY_COLUMNS")
                         {
                             llog = DTLogs
@@ -300,8 +302,6 @@ namespace DBLOG
                                                 && string.Compare(p.Current_LSN, log.Current_LSN) == -1
                                                 && string.Compare(p.Current_LSN, stemp) == 1)
                                     .ToList();
-
-                            GetPrevPages(log.Current_LSN);
                         }
                         else
                         {
@@ -722,9 +722,7 @@ namespace DBLOG
             FPageInfo tpage;
             string stemp, pagetail;
             int slotid, slotbegin, modilen;
-
-            GetPrevPages(clog.Current_LSN);
-
+            
             foreach (FLOG log in wslog
                                  .OrderBy(p => p.Page_ID)
                                  .ThenBy(p => p.Slot_ID ?? 0)
