@@ -92,7 +92,7 @@ namespace DBLOG
                     TUserTransaction(1, out objectname, out redosql, out undosql);
                     break;
                  case "ALTER TABLE":
-                    TAlterTable(out objectname, out redosql, out undosql, out AllocUnitIds);
+                    TAlterTable(out objectname, out redosql, out undosql, out AllocUnitIds, out PartitionIds);
 
                     rtran = DDLLogs_FTranID.Where(p => string.Compare(p.TransactionID, TransactionID) == 1 && p.TransactionName == "DROPOBJ")
                                            .OrderBy(p => p.TransactionID)
@@ -101,6 +101,7 @@ namespace DBLOG
                         && AllocUnitIds.Count > 0
                         && rtran != null)
                     {
+                        rtran.PartitionID = rtran.PartitionID.Union(PartitionIds).ToList();
                         rtran.AllocUnitId = rtran.AllocUnitId.Union(AllocUnitIds).ToList();
                     }
 
@@ -437,7 +438,7 @@ namespace DBLOG
 
         }
 
-        private void TAlterTable(out string objectname, out string redosql, out string undosql, out List<string> AllocUnitIds)
+        private void TAlterTable(out string objectname, out string redosql, out string undosql, out List<string> AllocUnitIds, out List<string> PartitionIds)
         {
             string coldef, schemaname, curlsn, val0, val1;
             List<Dictionary<string, string>> fsysschobjs0, fsyscolpars0, fsysobjvalues0, fsysrscols0, fsysrowsets0;
@@ -453,6 +454,7 @@ namespace DBLOG
             redosql = "alter table ";
             undosql = "alter table ";
             AllocUnitIds = new List<string>();
+            PartitionIds = new List<string>();
             dtcols = new List<TableColumn>();
             curlsn = DDLLogs_Tran.Max(p => p.Current_LSN);
 
@@ -586,6 +588,8 @@ namespace DBLOG
 
                     allocunitids = DDLLogs_Tran.Where(p => p.AllocUnitId != null).Select(p => p.AllocUnitId.ToString()).Distinct().ToList();
                     AllocUnitIds.AddRange(allocunitids);
+
+                    PartitionIds = fsysrowsets0.Where(p => Convert.ToInt32(p["idminor"]) <= 1).Select(p => p["rowsetid"]).Distinct().ToList(); // index_id<=1 [sys.partitions]
 
                     tableinfo0 = tableinfo.FCopy();
                     
