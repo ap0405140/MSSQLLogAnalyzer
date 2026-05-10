@@ -49,7 +49,7 @@ namespace DBLOG
             DatabaseLog ddllog;
             TransactionInfo traninfo, rtran;
             string objectname, redosql, undosql, TransactionName, BeginTime, EndTime;
-            List<string> AllocUnitIds;
+            List<string> AllocUnitIds, PartitionIds;
 
             DDLLogs_Tran = DDLLogs.Where(p => p.Transaction_ID == TransactionID).OrderBy(p => p.Current_LSN).ToList();
             TransactionName = DDLLogs_Tran.First().Transaction_Name;
@@ -73,6 +73,7 @@ namespace DBLOG
             redosql = "";
             undosql = "";
             AllocUnitIds = new List<string>();
+            PartitionIds = new List<string>();
             switch (TransactionName)
             {
                 case "create-schema":
@@ -82,10 +83,10 @@ namespace DBLOG
                     TCreateSchema(-1, out objectname, out redosql, out undosql);
                     break;
                 case "CREATE TABLE":
-                    TCreateTable(1, out objectname, out redosql, out undosql, out AllocUnitIds);
+                    TCreateTable(1, out objectname, out redosql, out undosql, out AllocUnitIds, out PartitionIds);
                     break;
                 case "DROPOBJ":
-                    TCreateTable(-1, out objectname, out redosql, out undosql, out AllocUnitIds);
+                    TCreateTable(-1, out objectname, out redosql, out undosql, out AllocUnitIds, out PartitionIds);
                     break;
                 case "user_transaction":
                     TUserTransaction(1, out objectname, out redosql, out undosql);
@@ -124,6 +125,7 @@ namespace DBLOG
             traninfo.TransactionType = "DDL";
             traninfo.TransactionName = TransactionName.ToUpper();
             traninfo.FTime = DateTime.ParseExact(BeginTime, "yyyy/MM/dd HH:mm:ss:fff", CultureInfo.InvariantCulture);
+            traninfo.PartitionID = PartitionIds;
             traninfo.AllocUnitId = DDLLogs_Tran.Where(p => p.AllocUnitId != null)
                                                .Select(p => p.AllocUnitId.ToString())
                                                .Distinct()
@@ -174,7 +176,7 @@ namespace DBLOG
             objectname = $"[{dsysclsobjs["name"]}]";
         }
 
-        private void TCreateTable(int d, out string objectname, out string redosql, out string undosql, out List<string> AllocUnitIds)
+        private void TCreateTable(int d, out string objectname, out string redosql, out string undosql, out List<string> AllocUnitIds, out List<string> PartitionIds)
         {
             string schemaname, columndefinition, constraint, others, stk;
             bool isnode, isedge;
@@ -235,6 +237,8 @@ namespace DBLOG
             // sys.sysrowsets.clust
             fsysrowsets = TranslateSystemTable("sys.sysrowsets.clust", 1, out fsysrowsets0);
             if (d == -1) { fsysrowsets = fsysrowsets0; }
+
+            PartitionIds = fsysrowsets.Where(p => Convert.ToInt32(p["idminor"]) <= 1).Select(p => p["rowsetid"]).Distinct().ToList(); // index_id<=1 [sys.partitions]
 
             lstemp1 = new List<string>();
             ftabinfo.Columns = new TableColumn[fsyscolpars.Count];
@@ -299,7 +303,6 @@ namespace DBLOG
 
             ftabinfo.IsHeapTable = fsysidxstats.Any(p => p["indid"] == "0");
             ftabinfo.TextInRow = Convert.ToInt32(fsysidxstats.First(p => Convert.ToInt32(p["indid"]) <= 1)["intprop"]);
-
             ftabinfo.Version = DDLLogs_Tran.Max(p => p.Current_LSN);
 
             objectname = $"[{schemaname}].[{objectname}]";
@@ -616,8 +619,16 @@ namespace DBLOG
 
         private void TTruncateTable(out string objectname, out string redosql, out string undosql)
         {
-            string allocunitname, schemaname;
+            string allocunitname, schemaname, tabname, objectid;
             List<Dictionary<string, string>> fsyscolpars0;
+            KeyValuePair<string, List<TableInfo>> tab;
+            TransactionInfo rtran;
+            List<string> allocunitids;
+
+            schemaname = "";
+            objectname = "";
+            redosql = "";
+            undosql = "";
 
             allocunitname = DDLLogs_Tran.Select(p => p.AllocUnitName)
                                         .Where(p => string.IsNullOrEmpty(p) == false && p != "Unknown Alloc Unit" && p.StartsWith("sys.") == false)
@@ -628,20 +639,49 @@ namespace DBLOG
                 schemaname = allocunitname.Split('.')[0];
                 objectname = allocunitname.Split('.')[1];
             }
-            else
+
+            if (string.IsNullOrEmpty(schemaname) == true && string.IsNullOrEmpty(objectname) == true)
             {
                 // sys.syscolpars
                 fsyscolpars = TranslateSystemTable("sys.syscolpars.clst", 1, out fsyscolpars0);
-                dsyscolpars = fsyscolpars.First();
-
-                objectname = UserTables.FirstOrDefault(p => p.Value.Any(x => x.ObjectID == dsyscolpars["id"]) == true).Key;
-                schemaname = objectname.Split('.')[0];
-                objectname = objectname.Split('.')[1];
+                if (fsyscolpars.Any() == true)
+                {
+                    objectid = fsyscolpars.First()["id"];
+                    tab = UserTables.FirstOrDefault(p => p.Value.Any(x => x.ObjectID == objectid) == true);
+                    if (tab.Key != null)
+                    {
+                        tabname = tab.Key;
+                        schemaname = tabname.Split('.')[0];
+                        objectname = tabname.Split('.')[1];
+                    }
+                }
             }
 
-            redosql = $"truncate table [{schemaname}].[{objectname}]; ";
-            undosql = $"";
-            objectname = $"[{schemaname}].[{objectname}]";
+            if (string.IsNullOrEmpty(schemaname) == true && string.IsNullOrEmpty(objectname) == true)
+            {
+                allocunitids = DDLLogs_Tran.Where(p => p.AllocUnitName == "Unknown Alloc Unit" && p.AllocUnitId != null)
+                                           .Select(p =>(p.AllocUnitId ?? 0).ToString())
+                                           .ToList();
+                rtran = DDLLogs_FTranID.Where(p => string.Compare(p.TransactionID, DDLLogs_Tran.First().Transaction_ID) == 1
+                                                   && p.TransactionName == "DROPOBJ"
+                                                   && p.AllocUnitId.Intersect(allocunitids).Any() == true)
+                                       .OrderBy(p => p.TransactionID)
+                                       .FirstOrDefault();
+                if (rtran != null)
+                {
+                    tabname = rtran.AllocUnitName;
+                    schemaname = tabname.Split('.')[0].Replace("[", "").Replace("]", "");
+                    objectname = tabname.Split('.')[1].Replace("[", "").Replace("]", "");
+                }
+            }
+
+            if (string.IsNullOrEmpty(schemaname) == false && string.IsNullOrEmpty(objectname) == false)
+            {
+                redosql = $"truncate table [{schemaname}].[{objectname}]; ";
+                undosql = $"";
+                objectname = $"[{schemaname}].[{objectname}]";
+            }
+
         }
 
         private List<DiffColumn> DDL_Compare(Dictionary<string, string> dr0, Dictionary<string, string> dr1)
@@ -669,11 +709,12 @@ namespace DBLOG
                 int d
             )
         {
-            string columndefin, columnname, datatype, graphtype, collationname, constraintname, defaultvalue, computedcolumndefin, temp;
+            string columndefin, columnname, datatype, graphtype, collationname, constraintname, defaultvalue, computedcolumndefin, temp, partitionid;
             short maxlength, colid;
             long seed, increment;
             bool nullable, isidentity, iscomputed, ishidden;
             TableColumn fcol;
+            Dictionary<string, string> dsysrscols, dsysrowsets;
 
             colid = Convert.ToInt16(col["colid"]);
             columnname = col["name"];
@@ -782,10 +823,20 @@ namespace DBLOG
             fcol.Precision = Convert.ToInt16(col["prec"]);
             fcol.Scale = Convert.ToInt16(col["scale"]);
 
-            if (fsysrscols.Any(p => p["rscolid"] == col["colid"]) == true)
+            dsysrowsets = fsysrowsets.FirstOrDefault(p => Convert.ToInt32(p["idminor"]) <= 1); // index_id<=1 [sys.partitions.index_id]
+            if (dsysrowsets != null)
             {
-                fcol.LeafOffset = (short)(Convert.ToInt32(fsysrscols.First(p => p["rscolid"] == col["colid"])["offset"]) & 0xFFFF); // convert(smallint, convert(binary(2), c.offset & 0xffff))    [sys.system_internals_partition_columns]
-                fcol.LeafNullBit = (short)(Convert.ToInt32(fsysrscols.First(p => p["rscolid"] == col["colid"])["nullbit"]) & 0xFFFF); // convert(smallint, convert(binary(2), c.nullbit & 0xffff))  [sys.system_internals_partition_columns]
+                partitionid = dsysrowsets["rowsetid"]; 
+            }
+            else
+            {
+                partitionid = "";
+            }
+            dsysrscols = fsysrscols.FirstOrDefault(p => p["rscolid"] == col["colid"] && (p["rsid"] == partitionid || dsysrowsets == null)); // [sys.system_internals_partition_columns]
+            if (dsysrscols != null)
+            {
+                fcol.LeafOffset = (short)(Convert.ToInt32(dsysrscols["offset"]) & 0xFFFF); // convert(smallint, convert(binary(2), c.offset & 0xffff))    [sys.system_internals_partition_columns]
+                fcol.LeafNullBit = (short)(Convert.ToInt32(dsysrscols["nullbit"]) & 0xFFFF); // convert(smallint, convert(binary(2), c.nullbit & 0xffff))  [sys.system_internals_partition_columns]
             }
             else
             {

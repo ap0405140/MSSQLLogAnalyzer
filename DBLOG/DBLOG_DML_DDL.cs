@@ -40,7 +40,7 @@ namespace DBLOG
             FTableInfo = GetTableInfo(SchemaName, TableName);
         }
 
-        public DBLOG_DML_DDL(long PAllocUnitId, string PMaxLsn)
+        public DBLOG_DML_DDL(long PPartitionId, long PAllocUnitId, string PMaxLsn)
         {
             List<string> wstrans;
             DatabaseLog tmplog;
@@ -51,6 +51,7 @@ namespace DBLOG
             traninfo = DDLLogs_FTranID.FirstOrDefault(t => string.Compare(t.LSNList.Min(), PMaxLsn) == 1
                                                            && t.TransactionName == "DROPOBJ" 
                                                            && t.AllocUnitId.Contains(PAllocUnitId.ToString()) == true
+                                                           && t.PartitionID.Contains(PPartitionId.ToString()) == true
                                                      );
             if (traninfo == null)
             {
@@ -66,12 +67,14 @@ namespace DBLOG
                     tmplog = AnalyzeDDLTran(tranid);
                     DDL_LOG.Add(tmplog);
                 }
-            }
 
-            traninfo = DDLLogs_FTranID.FirstOrDefault(t => string.Compare(t.LSNList.Min(), PMaxLsn) == 1
-                                                           && t.TransactionName == "DROPOBJ"
-                                                           && t.AllocUnitId.Contains(PAllocUnitId.ToString()) == true
-                                                     );
+                traninfo = DDLLogs_FTranID.FirstOrDefault(t => string.Compare(t.LSNList.Min(), PMaxLsn) == 1
+                                                               && t.TransactionName == "DROPOBJ"
+                                                               && t.AllocUnitId.Contains(PAllocUnitId.ToString()) == true
+                                                               && t.PartitionID.Contains(PPartitionId.ToString()) == true
+                                                         );
+            }
+            
             if (traninfo != null)
             {
                 TableName = traninfo.AllocUnitName.Split('.')[1].Replace("[", "").Replace("]", "");

@@ -64,11 +64,11 @@ namespace DBLOG
             List<DatabaseLog> logs, tmplog, ddllogs;
             int i;
             string databasename, schemaname, tablename, maxlsn;
-            long allocunitid;
+            long partitionid,allocunitid;
             DataTable dtTemp;
             DBLOG_DML_DDL[] tablelist;
             List<FLOG> Loglist, Loglist_DDL;
-            List<(string TableName, string SchemaName, long AllocUnitId, string MaxLSN)> tables, tablesUK;
+            List<(string TableName, string SchemaName, long PartitionId, long AllocUnitId, string MaxLSN)> tables, tablesUK;
             List<string> DDLTranName;
 
             _objectname = pObjectName ?? string.Empty;
@@ -179,6 +179,7 @@ namespace DBLOG
             // get dml table list
             _tsql = "select TableName=case when parsename([AllocUnitName],3) is not null then parsename([AllocUnitName],2) else parsename([AllocUnitName],1) end, "
                     + "     SchemaName=case when parsename([AllocUnitName],3) is not null then parsename([AllocUnitName],3) else parsename([AllocUnitName],2) end, "
+                    + "     PartitionId=0,"
                     + "     AllocUnitId=0, "
                     + "     MaxLSN=max([Current LSN]) "
                     + " from #LogList "
@@ -188,10 +189,11 @@ namespace DBLOG
                     + " group by case when parsename([AllocUnitName],3) is not null then parsename([AllocUnitName],2) else parsename([AllocUnitName],1) end, "
                     + "          case when parsename([AllocUnitName],3) is not null then parsename([AllocUnitName],3) else parsename([AllocUnitName],2) end "
                     + " order by max([Current LSN]) desc; ";
-            tables = DB.Query<(string TableName, string SchemaName, long AllocUnitId, string MaxLSN)>(_tsql, false).ToList();
+            tables = DB.Query<(string TableName, string SchemaName, long PartitionId, long AllocUnitId, string MaxLSN)>(_tsql, false).ToList();
 
             _tsql = "select TableName=N'', "
                     + "     SchemaName=N'', "
+                    + "     PartitionId=[PartitionId], "
                     + "     AllocUnitId=[AllocUnitId], "
                     + "     MaxLSN=max([Current LSN]) "
                     + " from #LogList "
@@ -199,9 +201,9 @@ namespace DBLOG
                     + " and LogType=N'DML' "
                     + " and [AllocUnitName]=N'Unknown Alloc Unit' "
                     + " and [AllocUnitId] is not null "
-                    + " group by [AllocUnitId] "
+                    + " group by [PartitionId],[AllocUnitId] "
                     + " order by max([Current LSN]) desc; ";
-            tablesUK = DB.Query<(string TableName, string SchemaName, long AllocUnitId, string MaxLSN)>(_tsql, false).ToList();
+            tablesUK = DB.Query<(string TableName, string SchemaName, long PartitionId, long AllocUnitId, string MaxLSN)>(_tsql, false).ToList();
             tables.AddRange(tablesUK);
 
             ReadPercent = ReadPercent + 5;
@@ -213,10 +215,11 @@ namespace DBLOG
             {
                 tablelist = new DBLOG_DML_DDL[tables.Count];
                 i = 0;
-                foreach ((string TableName, string SchemaName, long AllocUnitId, string MaxLSN) dr in tables)
+                foreach ((string TableName, string SchemaName, long PartitionId, long AllocUnitId, string MaxLSN) dr in tables)
                 {
                     tablename = dr.TableName;
                     schemaname = dr.SchemaName;
+                    partitionid = dr.PartitionId;
                     allocunitid = dr.AllocUnitId;
                     maxlsn = dr.MaxLSN;
 
@@ -229,8 +232,9 @@ namespace DBLOG
                     }
                     else
                     {
-                        tablelist[i] = new DBLOG_DML_DDL(allocunitid, maxlsn);
-                        tablelist[i].DTLogs = Loglist.Where(p => p.AllocUnitId == Convert.ToInt64(allocunitid))
+                        tablelist[i] = new DBLOG_DML_DDL(partitionid, allocunitid, maxlsn);
+                        tablelist[i].DTLogs = Loglist.Where(p => p.PartitionId == partitionid
+                                                                 && p.AllocUnitId == allocunitid)
                                                      .ToList();
                     }
 

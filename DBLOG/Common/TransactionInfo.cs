@@ -13,6 +13,7 @@ namespace DBLOG.Common
         public string TransactionName { get; set; }
         public DateTime FTime { get; set; }
 
+        public List<string> PartitionID;
         public List<string> AllocUnitId { get; set; }
         public string AllocUnitName { get; set; }
 
