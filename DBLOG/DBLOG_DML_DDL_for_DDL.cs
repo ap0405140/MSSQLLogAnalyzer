@@ -109,12 +109,12 @@ namespace DBLOG
                 case "TRUNCATE TABLE":
                     TTruncateTable(out objectname, out redosql, out undosql);
                     break;
-                 //case "CREATE INDEX":
-                 //    TCreateIndex(1, out objectname, out redosql, out undosql);
-                 //    break;
-                 //case "DROP INDEX":
-                 //    TCreateIndex(-1, out objectname, out redosql, out undosql);
-                 //    break;
+                case "CREATE INDEX":
+                    TCreateIndex(out objectname, out redosql, out undosql);
+                    break;
+                case "DROP INDEX":
+                    TDropIndex(out objectname, out redosql, out undosql);
+                    break;
 
             }
             ddllog.ObjectName = objectname;
@@ -263,7 +263,7 @@ namespace DBLOG
                 stemp4 = dsysschobjs["name"]; // constraint name
                 stemp5 = (dsysschobjs["type"] == "PK" ? "primary key" : "unique"); // constraint type
 
-                (lstemp1, lstemp2, lstemp3) = Tcreateindex_0(stemp4);
+                (lstemp1, lstemp2, lstemp3) = Tcreateindex_0(stemp4, "CREATE TABLE");
                 stemp1 = string.Join(" ", lstemp1); // index type   (clustered/nonclustered)
                 stemp2 = string.Join(",", lstemp2); // index columns
                 stemp3 = string.Join(",", lstemp3); // include columns
@@ -688,6 +688,86 @@ namespace DBLOG
 
         }
 
+        private void TCreateIndex(out string objectname, out string redosql, out string undosql)
+        {
+            string schemaname, indexname, indextype, indexcolumns, includecolumns, curlsn;
+            List<string> findextype, findexcolumns, fincludecolumns;
+
+            // sys.sysschobjs
+            fsysschobjs = TranslateSystemTable("sys.sysschobjs.clst", 1, out _);
+
+            // sys.sysidxstats
+            fsysidxstats = TranslateSystemTable("sys.sysidxstats.clst", 1, out _);
+
+            // sys.sysiscols
+            fsysiscols = TranslateSystemTable("sys.sysiscols.clst", 1, out _);
+
+            // sys.syscolpars
+            fsyscolpars = TranslateSystemTable("sys.syscolpars.clst", 1, out _);
+
+
+            curlsn = DDLLogs_Tran.Max(p => p.Current_LSN);
+            dsysschobjs = fsysschobjs.First(p => p["type"] == "U");
+            schemaname = Schemas[Convert.ToInt32(dsysschobjs["nsid"])];
+            objectname = dsysschobjs["name"];
+            FTableInfo = GetTableInfo(schemaname, objectname, curlsn);
+
+            dsysidxstats = fsysidxstats.First();
+            indexname = dsysidxstats["name"];
+
+            (findextype, findexcolumns, fincludecolumns) = Tcreateindex_0(indexname, "CREATE INDEX");
+            indextype = string.Join(" ", findextype);
+            indexcolumns = string.Join(",", findexcolumns);
+            includecolumns = string.Join(",", fincludecolumns);
+            
+            redosql = $"create {indextype} index [{indexname}] on [{schemaname}].[{objectname}]({indexcolumns}){(fincludecolumns.Count > 0 ? $" include({includecolumns})" : "")}; ";
+            undosql = $"drop index [{indexname}] on [{schemaname}].[{objectname}]; ";
+            objectname = $"[{schemaname}].[{objectname}].[{indexname}]";
+
+        }
+
+        private void TDropIndex(out string objectname, out string redosql, out string undosql)
+        {
+            string schemaname, indexname, indextype, indexcolumns, includecolumns, curlsn;
+            List<string> findextype, findexcolumns, fincludecolumns;
+            List<Dictionary<string, string>> fsysiscols0, fsysidxstats0, fsyscolpars0;
+
+            // sys.sysschobjs
+            fsysschobjs = TranslateSystemTable("sys.sysschobjs.clst", 1, out _);
+
+            // sys.sysidxstats
+            fsysidxstats = TranslateSystemTable("sys.sysidxstats.clst", 1, out fsysidxstats0);
+            fsysidxstats = fsysidxstats0;
+
+            // sys.sysiscols
+            fsysiscols = TranslateSystemTable("sys.sysiscols.clst", 1, out fsysiscols0);
+            fsysiscols = fsysiscols0;
+
+            // sys.syscolpars
+            fsyscolpars = TranslateSystemTable("sys.syscolpars.clst", 1, out fsyscolpars0);
+            fsyscolpars = fsyscolpars0;
+
+
+            curlsn = DDLLogs_Tran.Max(p => p.Current_LSN);
+            dsysschobjs = fsysschobjs.First(p => p["type"] == "U");
+            schemaname = Schemas[Convert.ToInt32(dsysschobjs["nsid"])];
+            objectname = dsysschobjs["name"];
+            FTableInfo = GetTableInfo(schemaname, objectname, curlsn);
+
+            dsysidxstats = fsysidxstats.First();
+            indexname = dsysidxstats["name"];
+
+            (findextype, findexcolumns, fincludecolumns) = Tcreateindex_0(indexname, "DROP INDEX");
+            indextype = string.Join(" ", findextype);
+            indexcolumns = string.Join(",", findexcolumns);
+            includecolumns = string.Join(",", fincludecolumns);
+
+            redosql = $"drop index [{indexname}] on [{schemaname}].[{objectname}]; ";
+            undosql = $"create {indextype} index [{indexname}] on [{schemaname}].[{objectname}]({indexcolumns}){(fincludecolumns.Count > 0 ? $" include({includecolumns})" : "")}; ";
+            objectname = $"[{schemaname}].[{objectname}].[{indexname}]";
+
+        }
+
         private List<DiffColumn> DDL_Compare(Dictionary<string, string> dr0, Dictionary<string, string> dr1)
         {
             List<DiffColumn> r;
@@ -856,7 +936,7 @@ namespace DBLOG
             return (columndefin, fcol);
         }
 
-        private (List<string> indextype, List<string> indexcolumns, List<string> includecolumns) Tcreateindex_0(string pindexname)
+        private (List<string> indextype, List<string> indexcolumns, List<string> includecolumns) Tcreateindex_0(string pindexname, string ptrantype)
         {
             List<string> indextype, indexcolumns, includecolumns;
             string columnname, sorttype;
@@ -864,6 +944,13 @@ namespace DBLOG
             // type of index
             indextype = new List<string>();
             dsysidxstats = fsysidxstats.First(p => p["name"] == pindexname);
+
+            if ((ptrantype == "CREATE INDEX" || ptrantype == "DROP INDEX")
+                && (Convert.ToInt32(dsysidxstats["status"]) & 0x8) != 0) // sys.indexes.is_unique
+            {
+                indextype.Add("unique");
+            }
+
             switch (dsysidxstats["type"]) // sys.indexes.type
             {
                 case "1":
@@ -872,6 +959,7 @@ namespace DBLOG
                 case "2":
                     indextype.Add("nonclustered");
                     break;
+                // TODO: other index types such as XML, spatial, columnstore, etc.
                 default:
                     break;
             }
@@ -883,12 +971,22 @@ namespace DBLOG
                                                      .Where(p => p["idminor"] == dsysidxstats["indid"])
                                                      .OrderBy(p => Convert.ToInt32(p["subid"])))
             {
-                columnname = fsyscolpars.First(p => p["colid"] == c["intprop"])["name"]; // GetUserTableInfo(dsysidxstats["id"]).Columns.First(p => p.ColumnID.ToString() == c["intprop"]).ColumnName;
+                columnname = "";
+                if (ptrantype == "CREATE TABLE")
+                {
+                    columnname = fsyscolpars.First(p => p["colid"] == c["intprop"])["name"];
+                }
+
+                if (ptrantype == "CREATE INDEX" || ptrantype == "DROP INDEX")
+                {
+                    columnname = FTableInfo.Columns.First(p => p.ColumnID == Convert.ToInt16(c["intprop"])).ColumnName;
+                }
+                
                 sorttype = ((Convert.ToInt32(c["status"]) & 0x4) != 0 ? "desc" : "asc");  // sys.index_columns.is_descending_key
 
                 if ((Convert.ToInt32(c["status"]) & 0x10) != 0)  // sys.index_columns.is_included_column
                 {
-                    includecolumns.Add(columnname);
+                    includecolumns.Add($"[{columnname}]");
                 }
                 else
                 {
