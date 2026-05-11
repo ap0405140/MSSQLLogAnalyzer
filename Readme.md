@@ -179,7 +179,7 @@ from dbo.DBAReadLog(N'server=[ServerName];database=[DatabaseName];uid=[LoginName
                     N'2026/05/11 15:47:00',  --StartTime
                     N'2026/05/11 15:47:59',  --EndTime
                     null) t  --TableName, Need include schema name(like dbo.Table1), When blank or null means query all tables logs.
-order by TransactionID,LSN
+order by TransactionID,LSN;
 ~~~~
 ![pic4](images/demo04.png)
 <br/>
