@@ -61,7 +61,7 @@ namespace DBLOG
 #endif
 
             ddllog = new DatabaseLog();
-            ddllog.LSN = "";
+            ddllog.LSN = DDLLogs_Tran.First().Current_LSN;
             ddllog.Type = "DDL";
             ddllog.TransactionID = TransactionID;
             ddllog.BeginTime = DateTime.ParseExact(BeginTime, "yyyy/MM/dd HH:mm:ss:fff", CultureInfo.InvariantCulture);
