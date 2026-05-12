@@ -213,3 +213,13 @@ step4: Call DatabaseLogAnalyzer.ReadLog() for read logs.
   // read logs, return a DatabaseLog array, include below properties:LSN,TransactionID,BeginTime,EndTime,ObjectName,Operation,RedoSQL,UndoSQL.
   logs = dbla.ReadLog(StartTime, EndTime, TableName); 
 ```
+
+## Star History
+
+<a href="https://www.star-history.com/?repos=ap0405140%2FMSSQLLogAnalyzer&type=date&logscale=&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=ap0405140/MSSQLLogAnalyzer&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=ap0405140/MSSQLLogAnalyzer&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=ap0405140/MSSQLLogAnalyzer&type=date&legend=top-left" />
+ </picture>
+</a>

@@ -1,7 +1,7 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
-VisualStudioVersion = 17.14.37216.2 d17.14
+VisualStudioVersion = 17.14.37216.2
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MSSQLLogAnalyzer", "MSSQLLogAnalyzer\MSSQLLogAnalyzer.csproj", "{49EA8C60-538F-484A-B5DB-2E3E214CCE07}"
 EndProject
@@ -18,6 +18,9 @@ EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "images", "images", "{02EA681E-C7D8-13C7-8484-4AC65E1B71E8}"
 	ProjectSection(SolutionItems) = preProject
 		images\demo01.png = images\demo01.png
+		images\demo02.png = images\demo02.png
+		images\demo03.png = images\demo03.png
+		images\demo04.png = images\demo04.png
 	EndProjectSection
 EndProject
 Global
