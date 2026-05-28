@@ -18,14 +18,12 @@ namespace DBLOG
     [Serializable]
     public class DatabaseLogAnalyzer
     {
+        private static DatabaseOperation DB;
+        private static List<string> DDLTranName;
         private string _objectname,
                        _starttime, _endtime,
                        _MinLSN,
                        _tsql;
-        private DatabaseOperation DB;
-        /// <summary>
-        /// Readed Percent (0-100).
-        /// </summary>
         public int ReadPercent;       // 读取进度百分比 1->100
         public string LogFile = "AnalysisLog.txt";
 
@@ -69,7 +67,6 @@ namespace DBLOG
             DBLOG_DML_DDL[] tablelist;
             List<FLOG> Loglist, Loglist_DDL;
             List<(string TableName, string SchemaName, long PartitionId, long AllocUnitId, string MaxLSN)> tables, tablesUK;
-            List<string> DDLTranName;
 
             _objectname = pObjectName ?? string.Empty;
             _objectname = (_objectname.Length > 0 && _objectname.Contains(".") == false ? "dbo." : "") + _objectname;
@@ -139,7 +136,7 @@ namespace DBLOG
             _tsql = $"alter table #LogList add constraint pk#LogList{Guid.NewGuid().ToString().Replace("-", "")} primary key clustered ([Current LSN]); ";
             DB.ExecuteSQL(_tsql, false);
 
-            DDLTranName = new List<string>() { "CREATE TABLE", "DROPOBJ", "create-schema", "DROP SCHEMA", "CREATE INDEX", "DROP INDEX", "user_transaction", "ALTER TABLE", "TRUNCATE TABLE" };
+            DDLTranName = new List<string>() { "CREATE TABLE", "DROPOBJ", "create-schema", "DROP SCHEMA", "CREATE INDEX", "DROP INDEX", "user_transaction", "ALTER TABLE", "TRUNCATE TABLE", "SELECT INTO" };
 
             _tsql = "set transaction isolation level read uncommitted; "
                     + "insert into #LogList "
@@ -165,16 +162,8 @@ namespace DBLOG
                 _tsql = _tsql.Replace("[FDMLFILTER]", "");
             }
             Loglist = DB.Query<FLOG>(_tsql, false);
-
-            _tsql = "set transaction isolation level read uncommitted; "
-                    + "select *,IsVirtual=cast(0 as bit),LogType=N'DDL' "
-                    + "  from sys.fn_dblog(null,null) t "
-                    + $" where [Current LSN]>=N'{_MinLSN}' "
-                    + "  and [Transaction ID]<>N'0000:00000000' "
-                    + $"  and exists(select 1 from sys.fn_dblog(null,null) b where b.[Transaction ID]=t.[Transaction ID] and b.Operation=N'LOP_BEGIN_XACT' and b.[Transaction Name] in({string.Join(",", DDLTranName.Select(n => $"N'{n}'"))})) "
-                    + "  and exists(select 1 from sys.fn_dblog(null,null) b where b.[Transaction ID]=t.[Transaction ID] and b.Operation=N'LOP_COMMIT_XACT') "
-                    + "  and exists(select 1 from sys.fn_dblog(null,null) b where b.[Transaction ID]=t.[Transaction ID] and b.AllocUnitName is not null); ";
-            Loglist_DDL = DB.Query<FLOG>(_tsql, false);
+            
+            Loglist_DDL = GetDDLLog(_MinLSN);
 
             // get dml table list
             _tsql = "select TableName=case when parsename([AllocUnitName],3) is not null then parsename([AllocUnitName],2) else parsename([AllocUnitName],1) end, "
@@ -268,6 +257,25 @@ namespace DBLOG
             ReadPercent = 100;
 
             return logs.ToArray();
+        }
+
+        public static List<FLOG> GetDDLLog(string minlsn = "", string maxlsn = "")
+        {
+            string _tsql;
+            List<FLOG> dt;
+
+            _tsql = "set transaction isolation level read uncommitted; "
+                    + "select *,IsVirtual=cast(0 as bit),LogType=N'DDL' "
+                    + "  from sys.fn_dblog(null,null) t "
+                    + $" where [Transaction ID]<>N'0000:00000000' "
+                    + $" and exists(select 1 from sys.fn_dblog(null,null) b where b.[Transaction ID]=t.[Transaction ID] and b.Operation=N'LOP_BEGIN_XACT' and b.[Transaction Name] in({string.Join(",", DDLTranName.Select(n => $"N'{n}'"))})) "
+                    + "  and exists(select 1 from sys.fn_dblog(null,null) b where b.[Transaction ID]=t.[Transaction ID] and b.Operation=N'LOP_COMMIT_XACT') "
+                    + "  and exists(select 1 from sys.fn_dblog(null,null) b where b.[Transaction ID]=t.[Transaction ID] and b.AllocUnitName is not null) "
+                    + (string.IsNullOrEmpty(minlsn) == false ? $"and [Current LSN]>=N'{minlsn}' " : "")
+                    + (string.IsNullOrEmpty(maxlsn) == false ? $"and [Current LSN]<=N'{maxlsn}' " : "");
+            dt = DB.Query<FLOG>(_tsql, false);
+
+            return dt;
         }
 
         private bool IsInTimeRange(DateTime begintime, DateTime endtime)

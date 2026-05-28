@@ -77,6 +77,6 @@
     <Compile Include="DBAReadLog.cs" />
   </ItemGroup>
   <ItemGroup>
-    <PostDeploy Include="Deployment to SQLServer.txt" />
+    <None Include="Deployment to SQLServer.txt" />
   </ItemGroup>
 </Project>

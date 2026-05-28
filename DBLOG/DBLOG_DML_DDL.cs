@@ -27,7 +27,7 @@ namespace DBLOG
                        SchemaName,
                        AllocUnitType;
         private TableInfo FTableInfo;
-        private Dictionary<string, FPageInfo> lobpagedata; // key:fileid+pageid value:FPageInfo
+        private static Dictionary<string, FPageInfo> FPageData; // key:fileid+pageid value:FPageInfo
         public List<FLOG> DTLogs;     // original logs
         private List<DatabaseLog> DDL_LOG;
 
@@ -37,13 +37,14 @@ namespace DBLOG
             SchemaName = PSchemaName;
             AllocUnitType = "NORMAL";
 
+            DDL_LOG = new List<DatabaseLog>();
             FTableInfo = GetTableInfo(SchemaName, TableName);
         }
 
         public DBLOG_DML_DDL(long PPartitionId, long PAllocUnitId, string PMaxLsn)
         {
             List<string> wstrans;
-            DatabaseLog tmplog;
+            List<DatabaseLog> tmplog;
             TransactionInfo traninfo;
 
             AllocUnitType = "UNKNOWN";
@@ -65,7 +66,7 @@ namespace DBLOG
                 foreach (string tranid in wstrans.OrderByDescending(p => p))
                 {
                     tmplog = AnalyzeDDLTran(tranid);
-                    DDL_LOG.Add(tmplog);
+                    DDL_LOG.AddRange(tmplog);
                 }
 
                 traninfo = DDLLogs_FTranID.FirstOrDefault(t => string.Compare(t.LSNList.Min(), PMaxLsn) == 1
@@ -129,7 +130,9 @@ namespace DBLOG
             SystemTables = new Dictionary<string, TableInfo>();
             UserTables = new Dictionary<string, List<TableInfo>>();
             DDLLogs_FTranID = new List<TransactionInfo>();
+            SELECTINTO_RS = new Dictionary<string, List<FLOG>>();
             PrevPages = new List<(string pageid, string lsn)>();
+            FPageData = new Dictionary<string, FPageInfo>();
 
             tsql = "select schema_id,name from sys.schemas; ";
             Schemas = DB.Query<(int schema_id, string name)>(tsql, false).ToDictionary(p => p.schema_id, p => p.name);
@@ -185,8 +188,6 @@ namespace DBLOG
                 tsql = @"if object_id('tempdb..#ModifiedRawData') is not null drop table #ModifiedRawData; 
                         create table #ModifiedRawData([SlotID] int,[RowLog Contents 0_var] nvarchar(max),[RowLog Contents 0] varbinary(max)); ";
                 DB.ExecuteSQL(tsql, false);
-
-                lobpagedata = new Dictionary<string, FPageInfo>();
 
                 stemp = "";
                 if (AllocUnitType == "NORMAL")
@@ -274,11 +275,7 @@ namespace DBLOG
                                             .Select(p => p.Transaction_ID)
                                             .Distinct()
                                             .ToList();
-                        foreach (string tranid in ddltranids.OrderByDescending(p => p))
-                        {
-                            tmplog = AnalyzeDDLTran(tranid);
-                            logs.Add(tmplog);
-                        }
+                        AnalyzeDDLTranList(ddltranids);
 
                         FTableInfo = GetTableInfo(SchemaName, TableName, log.Current_LSN);
 
@@ -743,7 +740,7 @@ namespace DBLOG
                 
                 if (log.Operation == "LOP_FORMAT_PAGE")
                 {
-                    lobpagedata.Remove(log.Page_ID);
+                    FPageData.Remove(log.Page_ID);
                     SetPrevPages(log.Page_ID, log.Current_LSN);
                 }
                 else
@@ -810,7 +807,7 @@ namespace DBLOG
                         tpage.SlotData[slotid] = log.RowLog_Contents_0.ToText();
                     }
 
-                    lobpagedata[log.Page_ID].PageData = stemp;
+                    FPageData[log.Page_ID].PageData = stemp;
                 }
             }
 
@@ -959,7 +956,7 @@ namespace DBLOG
         {
             FPageInfo r;
             List<string> ds;
-            int i, j, m_slotCnt;
+            int i, j, ns, m_slotCnt;
             string tmpstr, slotarray;
             (string pageid, string lsn) pp;
 
@@ -969,19 +966,19 @@ namespace DBLOG
             {
                 r = GetPrevPageInfo(pp.lsn, pp.pageid);
 
-                if (lobpagedata.ContainsKey(pageid) == true)
+                if (FPageData.ContainsKey(pageid) == true)
                 {
-                    lobpagedata.Remove(pageid);
+                    FPageData.Remove(pageid);
                 }
-                lobpagedata.Add(pageid, r);
+                FPageData.Add(pageid, r);
 
                 PrevPages.RemoveAll(p => p.pageid == pageid);
             }
             else
             {
-                if (lobpagedata.ContainsKey(pageid) == true)
+                if (FPageData.ContainsKey(pageid) == true)
                 {
-                    r = lobpagedata[pageid];
+                    r = FPageData[pageid];
                 }
                 else
                 {
@@ -1021,10 +1018,9 @@ namespace DBLOG
 
                     // SlotBeginIndex
                     r.SlotBeginIndex = new List<int>();
-                    slotarray = r
-                                .PageData
-                                .Replace("†", "")
-                                .Substring(r.PageData.Replace("†", "").Length - m_slotCnt * 2 * 2, m_slotCnt * 2 * 2);
+                    slotarray = r.PageData
+                                 .Replace("†", "")
+                                 .Substring(r.PageData.Replace("†", "").Length - m_slotCnt * 2 * 2, m_slotCnt * 2 * 2);
                     for (i = 0, j = slotarray.Length - 2;
                          i <= m_slotCnt - 1;
                          i = i + 1, j = j - 4)
@@ -1039,10 +1035,15 @@ namespace DBLOG
                     {
                         if (r.SlotBeginIndex[i] >= 96)
                         {
-                            j = (i < m_slotCnt - 1 ? 
-                                    (r.SlotBeginIndex[i + 1] - r.SlotBeginIndex[i]) * 2 
-                                    : (r.PageData.Length / 2 - m_slotCnt * 2 - r.SlotBeginIndex[i]) * 2
-                                );
+                            if (r.SlotBeginIndex.Any(p => p > r.SlotBeginIndex[i]) == true)
+                            {
+                                ns = r.SlotBeginIndex.Where(p => p > r.SlotBeginIndex[i]).Min();
+                                j = (ns - r.SlotBeginIndex[i]) * 2;
+                            }
+                            else
+                            {
+                                j = (r.PageData.Length / 2 - m_slotCnt * 2 - r.SlotBeginIndex[i]) * 2;
+                            }
                             tmpstr = r.PageData.Substring(r.SlotBeginIndex[i] * 2, j);
                         }
                         else
@@ -1052,7 +1053,7 @@ namespace DBLOG
                         r.SlotData.Add(i, tmpstr);
                     }
 
-                    lobpagedata.Add(pageid, r);
+                    FPageData.Add(pageid, r);
                 }
             }
 
@@ -1137,6 +1138,7 @@ namespace DBLOG
             string mr0_str;
             TableColumn[] columns0, columns1;
             CompressionType compressiontype;
+            TableColumn col_ori;
 
             columns0 = FTableInfo.Columns.CopyToNew().Cast<TableColumn>().ToArray();
             columns1 = FTableInfo.Columns.CopyToNew().Cast<TableColumn>().ToArray();
@@ -1160,7 +1162,7 @@ namespace DBLOG
                     mr0_str = RESTORE_LOP_MODIFY_ROW(curlog, mr1);
                     break;
                 case "LOP_MODIFY_COLUMNS":
-                    mr0_str = RESTORE_LOP_MODIFY_COLUMNS(curlog, mr1, columns0, columns1, compressiontype);
+                    mr0_str = RESTORE_LOP_MODIFY_COLUMNS(curlog, mr1, ref columns0, columns1, compressiontype);
                     break;
                 default:
                     mr0_str = mr1.ToText();
@@ -1187,22 +1189,32 @@ namespace DBLOG
             ValueList0 = "";
             WhereList1 = "";
             WhereList0 = "";
-            for (i = 0; i <= FTableInfo.Columns.Length - 1; i++)
+            for (i = 0; i <= FTableInfo.Columns.Length - 1; i = i + 1)
             {
                 if (FTableInfo.Columns[i].PhysicalStorageType == SqlDbType.Timestamp || FTableInfo.Columns[i].IsComputed == true) { continue; }
 
-                if ((columns0[i].IsNull == false
-                     && columns1[i].IsNull == false
-                     && columns0[i].Value != null
-                     && columns1[i].Value != null
-                     && columns0[i].Value.ToString() != columns1[i].Value.ToString())
-                    || (columns0[i].IsNull == true && columns1[i].IsNull == false)
-                    || (columns0[i].IsNull == false && columns1[i].IsNull == true)
-                    || (columns0[i].IsNull == true && columns1[i].IsNull == true))
+                col_ori = columns0.FirstOrDefault(p => p.ColumnName == FTableInfo.Columns[i].ColumnName);
+
+                if ((col_ori != null 
+                     && ((col_ori.IsNull == false
+                          && columns1[i].IsNull == false
+                          && col_ori.Value != null
+                          && columns1[i].Value != null
+                          && col_ori.Value.ToString() != columns1[i].Value.ToString())
+                         || (col_ori.IsNull == true && columns1[i].IsNull == false)
+                         || (col_ori.IsNull == false && columns1[i].IsNull == true)
+                         || (col_ori.IsNull == true && columns1[i].IsNull == true)
+                        )
+                    )
+                    ||
+                    (col_ori == null
+                    )
+                   )
                 {
                     ValueList0 = ValueList0 + (ValueList0.Length > 0 ? "," : "")
-                                 + $"[{columns0[i].ColumnName}]="
-                                 + ColumnValue2SQLValue(columns0[i]);
+                                 + (col_ori != null ? $"[{col_ori.ColumnName}]=" + ColumnValue2SQLValue(col_ori) 
+                                                      : $"[{FTableInfo.Columns[i].ColumnName}]=null");
+                    
                     ValueList1 = ValueList1 + (ValueList1.Length > 0 ? "," : "")
                                  + $"[{columns1[i].ColumnName}]="
                                  + ColumnValue2SQLValue(columns1[i]);
@@ -1212,15 +1224,18 @@ namespace DBLOG
                     || FTableInfo.PrimaryKeyColumns.Contains(FTableInfo.Columns[i].ColumnName))
                 {
                     WhereList0 = WhereList0 + (WhereList0.Length > 0 ? " and " : "")
-                                  + ColumnName2SQLName(FTableInfo.Columns[i]) 
-                                  + (columns1[i].IsNull ? " is " : "=")
-                                  + ColumnValue2SQLValue(columns1[i]);
+                                 + ColumnName2SQLName(FTableInfo.Columns[i]) 
+                                 + (columns1[i].IsNull ? " is " : "=")
+                                 + ColumnValue2SQLValue(columns1[i]);
+
                     WhereList1 = WhereList1 + (WhereList1.Length > 0 ? " and " : "")
-                                  + ColumnName2SQLName(FTableInfo.Columns[i]) 
-                                  + (columns0[i].IsNull ? " is " : "=")
-                                  + ColumnValue2SQLValue(columns0[i]);
+                                 + ColumnName2SQLName(FTableInfo.Columns[i])
+                                 + (col_ori != null ? (col_ori.IsNull ? " is " : "=") + ColumnValue2SQLValue(col_ori)
+                                                    : " is null");
                 }
+
             }
+
         }
 
         private string RESTORE_LOP_MODIFY_ROW(FLOG log, byte[] mr1)
@@ -1259,14 +1274,15 @@ namespace DBLOG
             return mr0_str;
         }
 
-        private string RESTORE_LOP_MODIFY_COLUMNS(FLOG log, byte[] mr1, TableColumn[] columns0, TableColumn[] columns1, CompressionType compressiontype)
+        private string RESTORE_LOP_MODIFY_COLUMNS(FLOG log, byte[] mr1, ref TableColumn[] columns0, TableColumn[] columns1, CompressionType compressiontype)
         {
-            string mr0_str, mr1_str, LogRecord_str, r3_str, rowlogdata, fvalue0, fvalue1, ts;
-            int i, j, k, n, m, fstart0, fstart1, flength0, flength0f4, flength1, flength1f4;
-            List<string> tls;
+            string mr0_str, mr1_str, LogRecord_str, r3_str, rowlogdata, fvalue0, fvalue1;
+            int i, j, k, fstart0, fstart1, flength0, flength0f4, flength1, flength1f4, st0, st1;
             byte[] mr0;
             bool bfinish;
-            TableColumn tmpcol;
+            List<int> startls0, startls1;
+            TableInfo tableinfo0, tableinfo_prev;
+            List<string> ddltranids;
 
             mr0_str = null;
             mr1_str = mr1.ToText();
@@ -1288,10 +1304,63 @@ namespace DBLOG
                     case CompressionType.PAGE:
                     case CompressionType.ROW:
                         mr0_str = mr1_str;
-                        for (i = 1, j = 0; i <= (log.RowLog_Contents_0.Length / 4); i++)
+
+                        startls0 = new List<int>();
+                        startls1 = new List<int>();
+                        for (i = 1; i <= (log.RowLog_Contents_0.Length / 4); i = i + 1)
                         {
                             fstart0 = Convert.ToInt32(log.RowLog_Contents_0[i * 4 - 3].ToString("X2") + log.RowLog_Contents_0[i * 4 - 4].ToString("X2"), 16);
+                            startls0.Add(fstart0);
+
                             fstart1 = Convert.ToInt32(log.RowLog_Contents_0[i * 4 - 1].ToString("X2") + log.RowLog_Contents_0[i * 4 - 2].ToString("X2"), 16);
+                            startls1.Add(fstart1);
+                        }
+
+                        if (startls0.Contains(2) == true)
+                        {
+                            tableinfo0 = FTableInfo;
+                            ddltranids = DDLLogs.Where(p => string.Compare(p.Transaction_ID, log.Transaction_ID) < 0
+                                                           && DDLLogs_FTranID.Any(t => t.TransactionID == p.Transaction_ID) == false)
+                                                .Select(p => p.Transaction_ID)
+                                                .Distinct()
+                                                .ToList();
+                            AnalyzeDDLTranList(ddltranids);
+
+                            tableinfo_prev = UserTables[$"{SchemaName}.{TableName}"]
+                                             .Where(p => string.Compare(p.Version, log.Current_LSN) < 0)
+                                             .OrderByDescending(p => p.Version)
+                                             .FirstOrDefault();
+                            if (tableinfo_prev != null)
+                            {
+                                columns0 = tableinfo_prev.Columns;
+                            }
+                            else
+                            {
+                                ddltranids = DatabaseLogAnalyzer.GetDDLLog("", log.Current_LSN)
+                                             .Where(p => string.Compare(p.Transaction_ID, log.Transaction_ID) < 0
+                                                         && DDLLogs_FTranID.Any(t => t.TransactionID == p.Transaction_ID) == false)
+                                             .Select(p => p.Transaction_ID)
+                                             .Distinct()
+                                             .ToList();
+                                AnalyzeDDLTranList(ddltranids);
+
+                                tableinfo_prev = UserTables[$"{SchemaName}.{TableName}"]
+                                                 .Where(p => string.Compare(p.Version, log.Current_LSN) < 0)
+                                                 .OrderByDescending(p => p.Version)
+                                                 .FirstOrDefault();
+                                if (tableinfo_prev != null)
+                                {
+                                    columns0 = tableinfo_prev.Columns;
+                                }
+                            }
+                            
+                            FTableInfo = tableinfo0;
+                        }
+                        
+                        for (i = 1, j = 0; i <= startls0.Count; i = i + 1)
+                        {
+                            st0 = startls0[i - 1];
+                            st1 = startls1[i - 1];
 
                             flength0 = Convert.ToInt32(log.RowLog_Contents_1[i * 2 - 1].ToString("X2") + log.RowLog_Contents_1[i * 2 - 2].ToString("X2"), 16);
                             flength0f4 = (flength0 % 4 == 0 ? flength0 : flength0 + (4 - flength0 % 4));
@@ -1309,28 +1378,21 @@ namespace DBLOG
                             //}
                             if (i < (log.RowLog_Contents_0.Length / 4))
                             {
-                                // 對於 1 到 N-1 個元素：利用下一個元素的偏移量變化(Shift)來精確計算當前元素的新長度
-                                int next_fstart0 = Convert.ToInt32(log.RowLog_Contents_0[(i + 1) * 4 - 3].ToString("X2") + log.RowLog_Contents_0[(i + 1) * 4 - 4].ToString("X2"), 16);
-                                int next_fstart1 = Convert.ToInt32(log.RowLog_Contents_0[(i + 1) * 4 - 1].ToString("X2") + log.RowLog_Contents_0[(i + 1) * 4 - 2].ToString("X2"), 16);
-
-                                int currentShift = fstart1 - fstart0;
-                                int nextShift = next_fstart1 - next_fstart0;
-
+                                int currentShift = st1 - st0;
+                                int nextShift = startls1[i] - startls0[i];
                                 flength1 = flength0 + (nextShift - currentShift);
                             }
                             else
                             {
-                                // 對於最後一個元素：因為沒有下一個偏移量可供參考，我們根據 rowlogdata 剩餘長度，與 mr1_str 進行精確比對以排除 Padding 補零位
                                 int max_flen1 = rowlogdata.Length / 2 - j;
                                 flength1 = 0;
 
-                                int max_check = Math.Min(max_flen1, mr1_str.Length / 2 - fstart1);
-                                for (k = 0; k < max_check; k++)
+                                int max_check = Math.Min(max_flen1, mr1_str.Length / 2 - st1);
+                                for (k = 0; k < max_check; k = k + 1)
                                 {
-                                    // 逐 Byte 比對 Payload 與實際的 After Image，精確算出有效長度
-                                    if (rowlogdata.Substring((j + k) * 2, 2) == mr1_str.Substring((fstart1 + k) * 2, 2))
+                                    if (rowlogdata.Substring((j + k) * 2, 2) == mr1_str.Substring((st1 + k) * 2, 2))
                                     {
-                                        flength1++;
+                                        flength1 = flength1 + 1;
                                     }
                                     else
                                     {
@@ -1343,7 +1405,7 @@ namespace DBLOG
                             fvalue1 = rowlogdata.Substring(j * 2, flength1 * 2);
                             j = j + flength1f4;
 
-                            mr0_str = mr0_str.Stuff(fstart0 * 2, flength1 * 2, fvalue0);
+                            mr0_str = mr0_str.Stuff(st0 * 2, flength1 * 2, fvalue0);
                         }
 
                         mr0 = mr0_str.ToByteArray();
@@ -1367,109 +1429,24 @@ namespace DBLOG
             {
                 bfinish = false;
             }
-
-            if (bfinish == false)
-            {
-                tls = new List<string>();
-                for (i = 0; i <= (int)(Math.Pow(2, (log.RowLog_Contents_0.Length / 4)) - 1); i++)
-                {
-                    ts = Convert.ToString(i, 2).PadLeft(log.RowLog_Contents_0.Length / 4, '0');
-                    tls.Add(ts);
-                }
-
-                foreach (string cc in tls)
-                {
-                    try
-                    {
-                        mr0_str = mr1_str;
-                        for (i = 1, j = 0; i <= (log.RowLog_Contents_0.Length / 4); i++)
-                        {
-                            fstart0 = Convert.ToInt32(log.RowLog_Contents_0[i * 4 - 3].ToString("X2") + log.RowLog_Contents_0[i * 4 - 4].ToString("X2"), 16);
-                            fstart1 = Convert.ToInt32(log.RowLog_Contents_0[i * 4 - 1].ToString("X2") + log.RowLog_Contents_0[i * 4 - 2].ToString("X2"), 16);
-
-                            flength0 = Convert.ToInt32(log.RowLog_Contents_1[i * 2 - 1].ToString("X2") + log.RowLog_Contents_1[i * 2 - 2].ToString("X2"), 16);
-                            flength0f4 = (flength0 % 4 == 0 ? flength0 : flength0 + (4 - flength0 % 4));
-
-                            fvalue0 = rowlogdata.Substring(j * 2, flength0 * 2);
-                            j = j + flength0f4;
-
-                            k = Convert.ToInt32(mr1[3].ToString("X2") + mr1[2].ToString("X2"), 16);
-                            if ((fstart1 + 1) >= 5
-                                 && (fstart1 + 1) <= k
-                                 && (fstart1 + flength0 + 1) >= 5
-                                 && (fstart1 + flength0 + 1) <= k)
-                            {
-                                flength1 = flength0;
-                            }
-                            else
-                            {
-                                if (fstart1 == k + 2
-                                    && columns1.Any(p => p.IsVarLenDataType == true))
-                                {
-                                    tmpcol = columns1.Where(p => p.IsVarLenDataType == true).OrderBy(p => p.ColumnID).FirstOrDefault();
-                                    m = tmpcol.LogContentsEndIndex - tmpcol.LogContents.Length / 2;
-                                }
-                                else
-                                {
-                                    m = 999999999;
-                                }
-
-                                if ((j * 2) <= (rowlogdata.Length - 2))
-                                {
-                                    flength1 = 0;
-                                    for (k = j, n = fstart1;
-                                         rowlogdata.Substring(k * 2, 2) == mr1_str.Substring(n * 2, 2)
-                                         && n <= m - 1;)
-                                    {
-                                        flength1 = flength1 + 1;
-                                        k = k + 1;
-                                        n = n + 1;
-
-                                        if ((k * 2) > (rowlogdata.Length - 2) || (n * 2) > (mr1_str.Length - 2))
-                                        {
-                                            break;
-                                        }
-                                    }
-                                    flength1 = flength1 - (cc.Substring(i - 1, 1) == "1" ? 1 : 0);
-                                }
-                                else
-                                {
-                                    flength1 = 0;
-                                }
-                            }
-                            flength1f4 = (flength1 % 4 == 0 ? flength1 : flength1 + (4 - flength1 % 4));
-
-                            fvalue1 = rowlogdata.Substring(j * 2, flength1 * 2);
-                            j = j + flength1f4;
-
-                            mr0_str = mr0_str.Stuff(fstart0 * 2, flength1 * 2, fvalue0);
-                        }
-
-                        mr0 = mr0_str.ToByteArray();
-                        if (compressiontype == CompressionType.NONE || compressiontype == CompressionType.COLUMNSTORE)
-                        {
-                            TranslateData(mr0, columns0);
-                        }
-                        if (compressiontype == CompressionType.PAGE || compressiontype == CompressionType.ROW)
-                        {
-                            TranslateData_Compression(mr0, columns0);
-                        }
-                        bfinish = true;
-                        break;
-                    }
-                    catch (Exception ex)
-                    {
-                        continue;
-                    }
-                }
-            }
-
+            
             if (bfinish == false || string.IsNullOrEmpty(mr0_str) == true)
             {
                 mr0_str = mr1_str;
             }
 
             return mr0_str;
+        }
+
+        private void AnalyzeDDLTranList(List<string> tranids)
+        {
+            List<DatabaseLog> ddllog;
+
+            foreach (string tranid in tranids.OrderByDescending(p => p))
+            {
+                ddllog = AnalyzeDDLTran(tranid);
+                DDL_LOG.AddRange(ddllog);
+            }
         }
 
         private void TranslateData(byte[] rowdata, TableColumn[] columns)

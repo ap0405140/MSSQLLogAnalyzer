@@ -14,6 +14,7 @@ using System.Runtime.CompilerServices;
 using System.Security.Principal;
 using System.Text;
 using System.Xml;
+using System.Xml.Linq;
 
 namespace DBLOG
 {
@@ -25,11 +26,11 @@ namespace DBLOG
         public static Dictionary<string, string> Systypes;
         private static List<Dictionary<string, string>> fsysschobjs, fsysiscols, fsyscolpars, fsysidxstats, fsysobjvalues, fsysrscols, fsysclsobjs, fsysallocunits, fsysrowsets;
         private static Dictionary<string, string> dsysschobjs, dsysiscols, dsyscolpars, dsysidxstats, dsysobjvalues, dsysrscols, dsysclsobjs;
+        private static Dictionary<string, List<FLOG>> SELECTINTO_RS; // key:[SELECT INTO_CREATE] tranid  value:[SELECT INTO_INSERT] tran list
 
         public List<DatabaseLog> AnalyzeDDLLog()
         {
-            List<DatabaseLog> r;
-            DatabaseLog dr;
+            List<DatabaseLog> r, dr;
 
             r = new List<DatabaseLog>();
             foreach (string TransactionID in DDLLogs.Where(p => DDLLogs_FTranID.Any(t => t.TransactionID == p.Transaction_ID) == false)
@@ -38,112 +39,152 @@ namespace DBLOG
                                                     .OrderByDescending(p => p))
             {
                 dr = AnalyzeDDLTran(TransactionID);
-                r.Add(dr);
+                r.AddRange(dr);
             }
 
             return r;
         }
 
-        private DatabaseLog AnalyzeDDLTran(string TransactionID)
+        private List<DatabaseLog> AnalyzeDDLTran(string TransactionID)
         {
-            DatabaseLog ddllog;
+            List<DatabaseLog> ddllog, sublog;
+            DatabaseLog dr;
             TransactionInfo traninfo, rtran;
-            string objectname, redosql, undosql, TransactionName, BeginTime, EndTime;
+            string objectname, redosql, undosql, TransactionName, BeginTime, EndTime, rtranid;
             List<string> AllocUnitIds, PartitionIds;
+            FLOG tlog;
 
             DDLLogs_Tran = DDLLogs.Where(p => p.Transaction_ID == TransactionID).OrderBy(p => p.Current_LSN).ToList();
+            
             TransactionName = DDLLogs_Tran.First().Transaction_Name;
+            if (TransactionName == "SELECT INTO")
+            {
+                if (DDLLogs_Tran.Any(p => string.IsNullOrEmpty(p.AllocUnitName) == false && p.AllocUnitName.StartsWith("sys.") == false) == true)
+                {
+                    TransactionName = "SELECT INTO_INSERT";
+                }
+                else
+                {
+                    TransactionName = "SELECT INTO_CREATE";
+                }
+            }
+
             BeginTime = DDLLogs_Tran.First().Begin_Time;
             EndTime = DDLLogs_Tran.Last().End_Time;
 
-#if DEBUG
-            FCommon.WriteTextFile(LogFile, $"DDL TransactionID={TransactionID} TransactionName={TransactionName}");
-#endif
-
-            ddllog = new DatabaseLog();
-            ddllog.LSN = DDLLogs_Tran.First().Current_LSN;
-            ddllog.Type = "DDL";
-            ddllog.TransactionID = TransactionID;
-            ddllog.BeginTime = DateTime.ParseExact(BeginTime, "yyyy/MM/dd HH:mm:ss:fff", CultureInfo.InvariantCulture);
-            ddllog.EndTime = DateTime.ParseExact(EndTime, "yyyy/MM/dd HH:mm:ss:fff", CultureInfo.InvariantCulture);
-            ddllog.Operation = TransactionName.ToUpper();
-            ddllog.Message = "";
-
-            objectname = "";
-            redosql = "";
-            undosql = "";
-            AllocUnitIds = new List<string>();
-            PartitionIds = new List<string>();
-            switch (TransactionName)
-            {
-                case "create-schema":
-                    TCreateSchema(1, out objectname, out redosql, out undosql);
-                    break;
-                case "DROP SCHEMA":
-                    TCreateSchema(-1, out objectname, out redosql, out undosql);
-                    break;
-                case "CREATE TABLE":
-                    TCreateTable(1, out objectname, out redosql, out undosql, out AllocUnitIds, out PartitionIds);
-                    break;
-                case "DROPOBJ":
-                    TCreateTable(-1, out objectname, out redosql, out undosql, out AllocUnitIds, out PartitionIds);
-                    break;
-                case "user_transaction":
-                    TUserTransaction(1, out objectname, out redosql, out undosql);
-                    break;
-                 case "ALTER TABLE":
-                    TAlterTable(out objectname, out redosql, out undosql, out AllocUnitIds, out PartitionIds);
-
-                    rtran = DDLLogs_FTranID.Where(p => string.Compare(p.TransactionID, TransactionID) == 1 && p.TransactionName == "DROPOBJ")
-                                           .OrderBy(p => p.TransactionID)
-                                           .FirstOrDefault();
-                    if (redosql.Contains(" rebuild with(data_compression=") == true 
-                        && AllocUnitIds.Count > 0
-                        && rtran != null)
-                    {
-                        rtran.PartitionID = rtran.PartitionID.Union(PartitionIds).ToList();
-                        rtran.AllocUnitId = rtran.AllocUnitId.Union(AllocUnitIds).ToList();
-                    }
-
-                    break;
-                case "TRUNCATE TABLE":
-                    TTruncateTable(out objectname, out redosql, out undosql);
-                    break;
-                case "CREATE INDEX":
-                    TCreateIndex(out objectname, out redosql, out undosql);
-                    break;
-                case "DROP INDEX":
-                    TDropIndex(out objectname, out redosql, out undosql);
-                    break;
-
-            }
-            ddllog.ObjectName = objectname;
-            ddllog.RedoSQL = redosql;
-            ddllog.UndoSQL = undosql;
+            ddllog = new List<DatabaseLog>();
 
             traninfo = new TransactionInfo();
             traninfo.TransactionID = TransactionID;
             traninfo.TransactionType = "DDL";
             traninfo.TransactionName = TransactionName.ToUpper();
             traninfo.FTime = DateTime.ParseExact(BeginTime, "yyyy/MM/dd HH:mm:ss:fff", CultureInfo.InvariantCulture);
-            traninfo.PartitionID = PartitionIds;
             traninfo.AllocUnitId = DDLLogs_Tran.Where(p => p.AllocUnitId != null)
                                                .Select(p => p.AllocUnitId.ToString())
                                                .Distinct()
                                                .ToList();
-            if (AllocUnitIds.Count > 0)
-            {
-                traninfo.AllocUnitId.AddRange(AllocUnitIds);
-            }
-
-            traninfo.AllocUnitName = objectname;
             traninfo.LSNList = DDLLogs_Tran.Select(p => p.Current_LSN).ToList();
 
-            DDLLogs_FTranID.Add(traninfo);
+            if (TransactionName != "SELECT INTO_INSERT")
+            {
+#if DEBUG
+                FCommon.WriteTextFile(LogFile, $"DDL TransactionID={TransactionID} TransactionName={TransactionName}");
+#endif
+
+                dr = new DatabaseLog();
+                dr.LSN = DDLLogs_Tran.First().Current_LSN;
+                dr.Type = "DDL";
+                dr.TransactionID = TransactionID;
+                dr.BeginTime = DateTime.ParseExact(BeginTime, "yyyy/MM/dd HH:mm:ss:fff", CultureInfo.InvariantCulture);
+                dr.EndTime = DateTime.ParseExact(EndTime, "yyyy/MM/dd HH:mm:ss:fff", CultureInfo.InvariantCulture);
+                dr.Operation = TransactionName.ToUpper();
+                dr.Message = "";
+
+                objectname = "";
+                redosql = "";
+                undosql = "";
+                AllocUnitIds = new List<string>();
+                PartitionIds = new List<string>();
+                switch (TransactionName)
+                {
+                    case "create-schema":
+                        TCreateSchema(1, out objectname, out redosql, out undosql);
+                        break;
+                    case "DROP SCHEMA":
+                        TCreateSchema(-1, out objectname, out redosql, out undosql);
+                        break;
+                    case "CREATE TABLE":
+                    case "SELECT INTO_CREATE":
+                        TCreateTable(1, out objectname, out redosql, out undosql, out AllocUnitIds, out PartitionIds);
+                        break;
+                    case "DROPOBJ":
+                        TCreateTable(-1, out objectname, out redosql, out undosql, out AllocUnitIds, out PartitionIds);
+                        break;
+                    case "user_transaction":
+                        TUserTransaction(1, out objectname, out redosql, out undosql);
+                        break;
+                    case "ALTER TABLE":
+                        TAlterTable(out objectname, out redosql, out undosql, out AllocUnitIds, out PartitionIds);
+
+                        rtran = DDLLogs_FTranID.Where(p => string.Compare(p.TransactionID, TransactionID) == 1 && p.TransactionName == "DROPOBJ")
+                                               .OrderBy(p => p.TransactionID)
+                                               .FirstOrDefault();
+                        if (redosql.Contains(" rebuild with(data_compression=") == true
+                            && AllocUnitIds.Count > 0
+                            && rtran != null)
+                        {
+                            rtran.PartitionID = rtran.PartitionID.Union(PartitionIds).ToList();
+                            rtran.AllocUnitId = rtran.AllocUnitId.Union(AllocUnitIds).ToList();
+                        }
+
+                        break;
+                    case "TRUNCATE TABLE":
+                        TTruncateTable(out objectname, out redosql, out undosql);
+                        break;
+                    case "CREATE INDEX":
+                        TCreateIndex(out objectname, out redosql, out undosql);
+                        break;
+                    case "DROP INDEX":
+                        TDropIndex(out objectname, out redosql, out undosql);
+                        break;
+                }
+                dr.ObjectName = objectname;
+                dr.RedoSQL = redosql;
+                dr.UndoSQL = undosql;
+
+                ddllog.Add(dr);
+
+                if (TransactionName == "SELECT INTO_CREATE"
+                    && SELECTINTO_RS.ContainsKey(TransactionID) == true)
+                {
+                    sublog = T_SELECT_INTO_INSERT(TransactionID, objectname);
+                    ddllog.AddRange(sublog);
+                }
+                
+                traninfo.PartitionID = PartitionIds;
+                traninfo.AllocUnitId.AddRange(AllocUnitIds);
+                traninfo.AllocUnitName = objectname;
 
 #if DEBUG
-            FCommon.WriteTextFile(LogFile, redosql);
+                FCommon.WriteTextFile(LogFile, redosql);
 #endif
+            }
+            else
+            {
+                // SELECT INTO_INSERT
+                tlog = DDLLogs_Tran.First(p => p.AllocUnitName == "sys.sysallocunits.clust");
+                rtranid = DDLLogs.Where(p => string.Compare(p.Transaction_ID, TransactionID) == -1
+                                             && DDLLogs.Any(x => x.Transaction_ID == p.Transaction_ID && x.Transaction_Name == "SELECT INTO") == true
+                                             && p.AllocUnitName == tlog.AllocUnitName 
+                                             && p.Page_ID == tlog.Page_ID 
+                                             && p.Slot_ID == tlog.Slot_ID)
+                                 .OrderByDescending(p => p.Current_LSN)
+                                 .First()
+                                 .Transaction_ID;
+                SELECTINTO_RS.Add(rtranid, DDLLogs_Tran);
+            }
+
+            DDLLogs_FTranID.Add(traninfo);
 
             return ddllog;
         }
@@ -766,6 +807,77 @@ namespace DBLOG
             undosql = $"create {indextype} index [{indexname}] on [{schemaname}].[{objectname}]({indexcolumns}){(fincludecolumns.Count > 0 ? $" include({includecolumns})" : "")}; ";
             objectname = $"[{schemaname}].[{objectname}].[{indexname}]";
 
+        }
+
+        private List<DatabaseLog> T_SELECT_INTO_INSERT(string TransactionID, string objectname)
+        {
+            List<DatabaseLog> r;
+            DatabaseLog dr;
+            string tranid, schemaname, tablename, BeginTime, EndTime, REDOSQL, UNDOSQL, ColumnList, ValueList1, WhereList0, Value;
+            FPageInfo fpage;
+            int i, j;
+            byte[] rc0;
+
+            tranid = SELECTINTO_RS[TransactionID].First().Transaction_ID;
+            BeginTime = SELECTINTO_RS[TransactionID].First().Begin_Time;
+            EndTime = SELECTINTO_RS[TransactionID].Last().End_Time;
+
+            schemaname = objectname.Split('.')[0].Replace("[", "").Replace("]", "");
+            tablename = objectname.Split('.')[1].Replace("[", "").Replace("]", "");
+            FTableInfo = GetTableInfo(schemaname, tablename, DDLLogs_Tran.Max(p => p.Current_LSN), false);
+            ColumnList = string.Join(",", FTableInfo.Columns
+                                          .Where(p => p.PhysicalStorageType != SqlDbType.Timestamp
+                                                      && p.IsComputed == false
+                                                      && p.IsHidden == false)
+                                          .Select(p => $"[{p.ColumnName}]"));
+
+            r = new List<DatabaseLog>();
+            foreach (FLOG fplog in SELECTINTO_RS[TransactionID].Where(p => p.Operation == "LOP_FORMAT_PAGE").OrderBy(p => p.Current_LSN))
+            {
+                fpage = GetPageInfo(fplog.Page_ID);
+                for (i = 0; i <= fpage.SlotCnt - 1; i = i + 1)
+                {
+                    rc0 = fpage.SlotData[i].ToByteArray();
+                    TranslateData(rc0, FTableInfo.Columns);
+                    ValueList1 = "";
+                    WhereList0 = "";
+                    for (j = 0; j <= FTableInfo.Columns.Length - 1; j++)
+                    {
+                        if (FTableInfo.Columns[j].PhysicalStorageType == SqlDbType.Timestamp
+                            || FTableInfo.Columns[j].IsComputed == true
+                            || FTableInfo.Columns[j].IsHidden == true)
+                        {
+                            continue;
+                        }
+
+                        Value = ColumnValue2SQLValue(FTableInfo.Columns[j]);
+                        ValueList1 = ValueList1 + (ValueList1.Length > 0 ? "," : "") + Value;
+                        WhereList0 = WhereList0
+                                     + (WhereList0.Length > 0 ? " and " : "")
+                                     + ColumnName2SQLName(FTableInfo.Columns[j])
+                                     + (FTableInfo.Columns[j].IsNull ? " is " : "=")
+                                     + Value;
+                    }
+                    REDOSQL = $"insert into {objectname}({ColumnList}) values({ValueList1}); ";
+                    UNDOSQL = $"delete top(1) from {objectname} where {WhereList0}; ";
+
+                    dr = new DatabaseLog();
+                    dr.LSN = DDLLogs_Tran.First().Current_LSN;
+                    dr.Type = "DML";
+                    dr.TransactionID = tranid;
+                    dr.BeginTime = DateTime.ParseExact(BeginTime, "yyyy/MM/dd HH:mm:ss:fff", CultureInfo.InvariantCulture);
+                    dr.EndTime = DateTime.ParseExact(EndTime, "yyyy/MM/dd HH:mm:ss:fff", CultureInfo.InvariantCulture);
+                    dr.Operation = "SELECT INTO_INSERT";
+                    dr.Message = "";
+                    dr.ObjectName = objectname;
+                    dr.RedoSQL = REDOSQL;
+                    dr.UndoSQL = UNDOSQL;
+
+                    r.Add(dr);
+                }
+            }
+
+            return r;
         }
 
         private List<DiffColumn> DDL_Compare(Dictionary<string, string> dr0, Dictionary<string, string> dr1)
