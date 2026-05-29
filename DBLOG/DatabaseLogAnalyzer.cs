@@ -19,7 +19,7 @@ namespace DBLOG
     public class DatabaseLogAnalyzer
     {
         private static DatabaseOperation DB;
-        private static List<string> DDLTranName;
+        private static List<string> DDLTranName, ExceptTranName;
         private string _objectname,
                        _starttime, _endtime,
                        _MinLSN,
@@ -48,6 +48,10 @@ namespace DBLOG
         {
             DB = new DatabaseOperation(pconnectstring);
             DB.RefreshConnect();
+
+            DDLTranName = new List<string>() { "CREATE TABLE", "DROPOBJ", "create-schema", "DROP SCHEMA", "CREATE INDEX", "DROP INDEX", "user_transaction", "ALTER TABLE", "TRUNCATE TABLE", "SELECT INTO" };
+            ExceptTranName = new List<string>() { "AllocHeapPageSimpleXactDML", "AllocFirstPage" };
+
         }
 
         /// <summary>
@@ -135,9 +139,7 @@ namespace DBLOG
 
             _tsql = $"alter table #LogList add constraint pk#LogList{Guid.NewGuid().ToString().Replace("-", "")} primary key clustered ([Current LSN]); ";
             DB.ExecuteSQL(_tsql, false);
-
-            DDLTranName = new List<string>() { "CREATE TABLE", "DROPOBJ", "create-schema", "DROP SCHEMA", "CREATE INDEX", "DROP INDEX", "user_transaction", "ALTER TABLE", "TRUNCATE TABLE", "SELECT INTO" };
-
+            
             _tsql = "set transaction isolation level read uncommitted; "
                     + "insert into #LogList "
                     + "output inserted.* "
@@ -149,6 +151,7 @@ namespace DBLOG
                     + "  and [AllocUnitName] not like N'sys.%' "
                     + "  and [AllocUnitName] is not null "
                     + $" and not exists(select 1 from sys.fn_dblog(null,null) b where b.[Transaction ID]=t.[Transaction ID] and b.Operation=N'LOP_BEGIN_XACT' and b.[Transaction Name] in({string.Join(",", DDLTranName.Select(n => $"N'{n}'"))})) "
+                    + $" and not exists(select 1 from sys.fn_dblog(null,null) b where b.[Transaction ID]=t.[Transaction ID] and b.Operation=N'LOP_BEGIN_XACT' and b.[Transaction Name] in({string.Join(",", ExceptTranName.Select(n => $"N'{n}'"))})) "
                     + "  [FDMLFILTER]; ";
 
             if (_objectname.Length > 0)

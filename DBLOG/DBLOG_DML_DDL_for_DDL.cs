@@ -13,6 +13,7 @@ using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Security.Principal;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Xml;
 using System.Xml.Linq;
 
@@ -53,6 +54,7 @@ namespace DBLOG
             string objectname, redosql, undosql, TransactionName, BeginTime, EndTime, rtranid;
             List<string> AllocUnitIds, PartitionIds;
             FLOG tlog;
+            bool ignoretran;
 
             DDLLogs_Tran = DDLLogs.Where(p => p.Transaction_ID == TransactionID).OrderBy(p => p.Current_LSN).ToList();
             
@@ -73,6 +75,7 @@ namespace DBLOG
             EndTime = DDLLogs_Tran.Last().End_Time;
 
             ddllog = new List<DatabaseLog>();
+            ignoretran = false;
 
             traninfo = new TransactionInfo();
             traninfo.TransactionID = TransactionID;
@@ -124,17 +127,21 @@ namespace DBLOG
                         TUserTransaction(1, out objectname, out redosql, out undosql);
                         break;
                     case "ALTER TABLE":
-                        TAlterTable(out objectname, out redosql, out undosql, out AllocUnitIds, out PartitionIds);
+                        TAlterTable(out objectname, out redosql, out undosql, out AllocUnitIds, out PartitionIds, out ignoretran);
 
-                        rtran = DDLLogs_FTranID.Where(p => string.Compare(p.TransactionID, TransactionID) == 1 && p.TransactionName == "DROPOBJ")
-                                               .OrderBy(p => p.TransactionID)
-                                               .FirstOrDefault();
-                        if (redosql.Contains(" rebuild with(data_compression=") == true
-                            && AllocUnitIds.Count > 0
-                            && rtran != null)
+                        if (ignoretran == false)
                         {
-                            rtran.PartitionID = rtran.PartitionID.Union(PartitionIds).ToList();
-                            rtran.AllocUnitId = rtran.AllocUnitId.Union(AllocUnitIds).ToList();
+                            rtran = DDLLogs_FTranID.Where(p => string.Compare(p.TransactionID, TransactionID) == 1 
+                                                               && p.TransactionName == "DROPOBJ")
+                                                   .OrderBy(p => p.TransactionID)
+                                                   .FirstOrDefault();
+                            if (redosql.Contains(" rebuild with(data_compression=") == true
+                                && AllocUnitIds.Count > 0
+                                && rtran != null)
+                            {
+                                rtran.PartitionID = rtran.PartitionID.Union(PartitionIds).ToList();
+                                rtran.AllocUnitId = rtran.AllocUnitId.Union(AllocUnitIds).ToList();
+                            }
                         }
 
                         break;
@@ -152,13 +159,16 @@ namespace DBLOG
                 dr.RedoSQL = redosql;
                 dr.UndoSQL = undosql;
 
-                ddllog.Add(dr);
-
-                if (TransactionName == "SELECT INTO_CREATE"
-                    && SELECTINTO_RS.ContainsKey(TransactionID) == true)
+                if (ignoretran == false)
                 {
-                    sublog = T_SELECT_INTO_INSERT(TransactionID, objectname);
-                    ddllog.AddRange(sublog);
+                    ddllog.Add(dr);
+
+                    if (TransactionName == "SELECT INTO_CREATE"
+                    && SELECTINTO_RS.ContainsKey(TransactionID) == true)
+                    {
+                        sublog = T_SELECT_INTO_INSERT(TransactionID, objectname);
+                        ddllog.AddRange(sublog);
+                    }
                 }
                 
                 traninfo.PartitionID = PartitionIds;
@@ -227,18 +237,21 @@ namespace DBLOG
             TableInfo ftabinfo;
             TableColumn fcol;
             int i;
-            List<Dictionary<string, string>> fsysiscols0, fsysidxstats0, fsyscolpars0, fsysobjvalues0, fsysrscols0, fsysallocunits0, fsysrowsets0;
+            List<Dictionary<string, string>> fsysschobjs0, fsysiscols0, fsysidxstats0, fsyscolpars0, fsysobjvalues0, fsysrscols0, fsysallocunits0, fsysrowsets0;
             long partitionid;
 
             ftabinfo = new TableInfo();
             AllocUnitIds = new List<string>();
 
             // sys.sysschobjs
-            fsysschobjs = TranslateSystemTable("sys.sysschobjs.clst", d, out _);
+            fsysschobjs = TranslateSystemTable("sys.sysschobjs.clst", d, out fsysschobjs0);
+            if (d == -1) { fsysschobjs = fsysschobjs0; }
 
             dsysschobjs = fsysschobjs.First(p => p["type"] == "U");
             schemaname = Schemas[Convert.ToInt32(dsysschobjs["nsid"])];
             objectname = dsysschobjs["name"];
+            ftabinfo.SchemaName = schemaname;
+            ftabinfo.TableName = objectname;
 
             isnode = ((Convert.ToInt32(dsysschobjs["status2"]) & 0x00000100) != 0 ? true : false);
             ftabinfo.IsNodeTable = isnode;
@@ -304,7 +317,7 @@ namespace DBLOG
                 stemp4 = dsysschobjs["name"]; // constraint name
                 stemp5 = (dsysschobjs["type"] == "PK" ? "primary key" : "unique"); // constraint type
 
-                (lstemp1, lstemp2, lstemp3) = Tcreateindex_0(stemp4, "CREATE TABLE");
+                (lstemp1, lstemp2, lstemp3) = Tcreateindex_0(stemp4, "CREATE TABLE", ftabinfo);
                 stemp1 = string.Join(" ", lstemp1); // index type   (clustered/nonclustered)
                 stemp2 = string.Join(",", lstemp2); // index columns
                 stemp3 = string.Join(",", lstemp3); // include columns
@@ -479,21 +492,20 @@ namespace DBLOG
 
         }
 
-        private void TAlterTable(out string objectname, out string redosql, out string undosql, out List<string> AllocUnitIds, out List<string> PartitionIds)
+        private void TAlterTable(out string objectname, out string redosql, out string undosql, out List<string> AllocUnitIds, out List<string> PartitionIds, out bool ignoretran)
         {
-            string coldef, schemaname, curlsn, val0, val1;
-            List<Dictionary<string, string>> fsysschobjs0, fsyscolpars0, fsysobjvalues0, fsysrscols0, fsysrowsets0;
+            string coldef, schemaname, curlsn, val0, val1, constraintname, indextype, indexcolumns, includecolumns, objectid;
+            List<Dictionary<string, string>> fsysschobjs0, fsyscolpars0, fsysobjvalues0, fsysrscols0, fsysrowsets0, fsysidxstats0, fsysiscols0;
             List<DiffColumn> diff;
             TableInfo tableinfo, tableinfo0;
             TableColumn tablecol;
             int i;
             List<TableColumn> dtcols, cols0;
             Dictionary<string, string> sysrowsets0, sysrowsets1;
-            List<string> allocunitids;
+            List<string> allocunitids, findextype, findexcolumns, fincludecolumns;
             long partitionid;
+            DiffColumn fd;
 
-            redosql = "alter table ";
-            undosql = "alter table ";
             AllocUnitIds = new List<string>();
             PartitionIds = new List<string>();
             dtcols = new List<TableColumn>();
@@ -501,165 +513,306 @@ namespace DBLOG
 
             // sys.sysschobjs
             fsysschobjs = TranslateSystemTable("sys.sysschobjs.clst", 1, out fsysschobjs0);
-            dsysschobjs = fsysschobjs.First(p => p["type"] == "U");
-            schemaname = Schemas[Convert.ToInt32(dsysschobjs["nsid"])];
-            objectname = $"{dsysschobjs["name"]}";
-            tableinfo = GetTableInfo(schemaname, objectname, curlsn, true);
 
-            redosql = redosql + $"[{schemaname}].[{objectname}] ";
-            undosql = undosql + $"[{schemaname}].[{objectname}] ";
-
-            // sys.syscolpars
-            fsyscolpars = TranslateSystemTable("sys.syscolpars.clst", 1, out fsyscolpars0);
-
-            // sys.sysobjvalues
-            fsysobjvalues = TranslateSystemTable("sys.sysobjvalues.clst", 1, out fsysobjvalues0);
-
-            // sys.sysrscols
-            fsysrscols = TranslateSystemTable("sys.sysrscols.clst", 1, out fsysrscols0);
-
-            // sys.sysrowsets.clust
-            fsysrowsets = TranslateSystemTable("sys.sysrowsets.clust", 1, out fsysrowsets0);
-
-
-            // add column
-            if (fsyscolpars.Any() == true && fsyscolpars0.Any() == false)
+            schemaname = "";
+            objectname = "";
+            tableinfo = new TableInfo();
+            dsysschobjs = fsysschobjs.First(p => p["type"] == "U" || p["type"] == "PK");
+            if (dsysschobjs["type"] == "U")
             {
-                redosql = redosql + "add ";
-                undosql = undosql + "drop column ";
+                schemaname = Schemas[Convert.ToInt32(dsysschobjs["nsid"])];
+                objectname = $"{dsysschobjs["name"]}";
+                tableinfo = GetTableInfo(schemaname, objectname, curlsn, true);
+            }
+            if (dsysschobjs["type"] == "PK")
+            {
+                objectid = dsysschobjs["pid"];
+                tableinfo = GetTableInfoByObjectID(objectid, curlsn);
+                schemaname = tableinfo.SchemaName;
+                objectname = tableinfo.TableName;
+            }
 
-                for (i = 0; i <= fsyscolpars.Count - 1; i = i + 1)
+            redosql = $"alter table [{schemaname}].[{objectname}] ";
+            undosql = $"alter table [{schemaname}].[{objectname}] ";
+
+            ignoretran = false;
+            if (fsysschobjs.Any(p => p["type"] == "U") == true && fsysschobjs0.Any(p => p["type"] == "U") == true)
+            {
+                diff = DDL_Compare(fsysschobjs0.First(p => p["type"] == "U"), fsysschobjs.First(p => p["type"] == "U"));
+                if (diff.Count == 1 
+                    && diff.Any(p => p.ColumnName == "modified")
+                    && DDLLogs_Tran.Any(p => p.AllocUnitName != null && (p.AllocUnitName ?? "") != "sys.sysschobjs.clst") == false)
                 {
-                    (coldef, tablecol) = Tgetcolumn(fsyscolpars[i], tableinfo, 1);
-                    redosql = redosql + coldef + (i < fsyscolpars.Count - 1 ? ", " : "; ");
-                    undosql = undosql + tablecol.ColumnName + (i < fsyscolpars.Count - 1 ? ", " : "; ");
-                    dtcols.Add(tablecol);
+                    ignoretran = true;
+                    redosql = "";
+                    undosql = "";
                 }
+            }
 
-                tableinfo0 = tableinfo.FCopy();
-                cols0 = new List<TableColumn>();
-                i = 1;
-                foreach(TableColumn col in tableinfo.Columns.OrderBy(p => p.ColumnID))
+            if (ignoretran == false)
+            {
+                // sys.syscolpars
+                fsyscolpars = TranslateSystemTable("sys.syscolpars.clst", 1, out fsyscolpars0);
+
+                // sys.sysobjvalues
+                fsysobjvalues = TranslateSystemTable("sys.sysobjvalues.clst", 1, out fsysobjvalues0);
+
+                // sys.sysrscols
+                fsysrscols = TranslateSystemTable("sys.sysrscols.clst", 1, out fsysrscols0);
+
+                // sys.sysrowsets.clust
+                fsysrowsets = TranslateSystemTable("sys.sysrowsets.clust", 1, out fsysrowsets0);
+
+                // sys.sysidxstats
+                fsysidxstats = TranslateSystemTable("sys.sysidxstats.clst", 1, out fsysidxstats0);
+
+                // sys.sysiscols
+                fsysiscols = TranslateSystemTable("sys.sysiscols.clst", 1, out fsysiscols0);
+
+
+                // add column
+                if (fsyscolpars.Any() == true && fsyscolpars0.Any() == false)
                 {
-                    if (dtcols.Any(dc => dc.ColumnName == col.ColumnName) == false)
+                    redosql = redosql + "add ";
+                    undosql = undosql + "drop column ";
+
+                    for (i = 0; i <= fsyscolpars.Count - 1; i = i + 1)
                     {
-                        col.ColumnID = Convert.ToInt16(i);
-                        cols0.Add(col);
-                        i = i + 1;
+                        (coldef, tablecol) = Tgetcolumn(fsyscolpars[i], tableinfo, 1);
+                        redosql = redosql + coldef + (i < fsyscolpars.Count - 1 ? ", " : "; ");
+                        undosql = undosql + tablecol.ColumnName + (i < fsyscolpars.Count - 1 ? ", " : "; ");
+                        dtcols.Add(tablecol);
                     }
-                }
-                tableinfo0.Columns = cols0.ToArray();
-                tableinfo0.Version = curlsn;
-                UserTablesAdd($"{schemaname}.{objectname}", tableinfo0);
-
-            }
-
-            // drop column
-            if (fsyscolpars.Any() == false && fsyscolpars0.Any() == true)
-            {
-                redosql = redosql + "drop column ";
-                undosql = undosql + "add ";
-
-                fsysobjvalues = fsysobjvalues0;
-                fsysrscols = fsysrscols0;
-                for (i = 0; i <= fsyscolpars0.Count - 1; i = i + 1)
-                {
-                    (coldef, tablecol) = Tgetcolumn(fsyscolpars0[i], tableinfo, -1);
-                    redosql = redosql + tablecol.ColumnName + (i < fsyscolpars0.Count - 1 ? ", " : "; ");
-                    undosql = undosql + coldef + (i < fsyscolpars0.Count - 1 ? ", " : "; ");
-                    dtcols.Add(tablecol);
-                }
-
-                tableinfo0 = tableinfo.FCopy();
-                cols0 = tableinfo0.Columns.ToList();
-                foreach (TableColumn col in dtcols)
-                {
-                    cols0.Add(col);
-                }
-                tableinfo0.Columns = cols0.OrderBy(p => p.ColumnID).ToArray();
-                tableinfo0.Version = curlsn;
-                UserTablesAdd($"{schemaname}.{objectname}", tableinfo0);
-
-            }
-
-            // alter column
-            if (fsyscolpars.Any() == true && fsyscolpars0.Any() == true)
-            {
-                redosql = redosql + "alter column ";
-                undosql = undosql + "alter column ";
-
-                for (i = 0; i <= fsyscolpars.Count - 1; i = i + 1)
-                {
-                    (coldef, tablecol) = Tgetcolumn(fsyscolpars[i], tableinfo, 1);
-                    redosql = redosql + coldef + (i < fsyscolpars.Count - 1 ? ", " : "; ");
-                }
-                for (i = 0; i <= fsyscolpars0.Count - 1; i = i + 1)
-                {
-                    (coldef, tablecol) = Tgetcolumn(fsyscolpars0[i], tableinfo, -1);
-                    undosql = undosql + coldef + (i < fsyscolpars0.Count - 1 ? ", " : "; ");
-                    dtcols.Add(tablecol);
-                }
-
-                tableinfo0 = tableinfo.FCopy();
-                cols0 = tableinfo0.Columns.ToList();
-                cols0.RemoveAll(p => dtcols.Select(d => d.ColumnID).Contains(p.ColumnID) == true);
-                foreach (TableColumn col in dtcols)
-                {
-                    cols0.Add(col);
-                }
-                tableinfo0.Columns = cols0.OrderBy(p => p.ColumnID).ToArray();
-                tableinfo0.Version = curlsn;
-                UserTablesAdd($"{schemaname}.{objectname}", tableinfo0);
-
-            }
-
-            // rebuild with(data_compression=xxx)
-            if (fsysrowsets.Any() == true && fsysrowsets0.Any() == true)
-            {
-                sysrowsets0 = fsysrowsets0.First();
-                sysrowsets1 = fsysrowsets.First();
-                diff = DDL_Compare(sysrowsets0, sysrowsets1);
-                if (diff.Any(p => p.ColumnName == "cmprlevel") == true)
-                {
-                    val0 = Enum.GetName(typeof(CompressionType), Convert.ToInt32(diff.First(p => p.ColumnName == "cmprlevel").OldValue));
-                    val1 = Enum.GetName(typeof(CompressionType), Convert.ToInt32(diff.First(p => p.ColumnName == "cmprlevel").NewValue));
-             
-                    redosql = $"alter table {objectname} rebuild with(data_compression={val1}); ";
-                    undosql = $"alter table {objectname} rebuild with(data_compression={val0}); ";
-
-                    allocunitids = DDLLogs_Tran.Where(p => p.AllocUnitId != null).Select(p => p.AllocUnitId.ToString()).Distinct().ToList();
-                    AllocUnitIds.AddRange(allocunitids);
-
-                    PartitionIds = fsysrowsets0.Where(p => Convert.ToInt32(p["idminor"]) <= 1).Select(p => p["rowsetid"]).Distinct().ToList(); // index_id<=1 [sys.partitions]
 
                     tableinfo0 = tableinfo.FCopy();
-                    
-                    tableinfo0.DataCompressionType = new Dictionary<long, CompressionType>();
-                    foreach (Dictionary<string, string> dsysrowsets in fsysrowsets0.Where(p => p["ownertype"] == "1"))
+                    cols0 = new List<TableColumn>();
+                    i = 1;
+                    foreach (TableColumn col in tableinfo.Columns.OrderBy(p => p.ColumnID))
                     {
-                        partitionid = Convert.ToInt64(dsysrowsets["rowsetid"]);
-                        Enum.TryParse<CompressionType>(dsysrowsets["cmprlevel"], out CompressionType enumval);
-                        tableinfo0.DataCompressionType.Add(partitionid, enumval);
+                        if (dtcols.Any(dc => dc.ColumnName == col.ColumnName) == false)
+                        {
+                            col.ColumnID = Convert.ToInt16(i);
+                            cols0.Add(col);
+                            i = i + 1;
+                        }
+                    }
+                    tableinfo0.Columns = cols0.ToArray();
+                    tableinfo0.Version = curlsn;
+                    UserTablesAdd($"{schemaname}.{objectname}", tableinfo0);
+
+                }
+
+                // drop column
+                if (fsyscolpars.Any() == false && fsyscolpars0.Any() == true)
+                {
+                    redosql = redosql + "drop column ";
+                    undosql = undosql + "add ";
+
+                    fsysobjvalues = fsysobjvalues0;
+                    fsysrscols = fsysrscols0;
+                    for (i = 0; i <= fsyscolpars0.Count - 1; i = i + 1)
+                    {
+                        (coldef, tablecol) = Tgetcolumn(fsyscolpars0[i], tableinfo, -1);
+                        redosql = redosql + tablecol.ColumnName + (i < fsyscolpars0.Count - 1 ? ", " : "; ");
+                        undosql = undosql + coldef + (i < fsyscolpars0.Count - 1 ? ", " : "; ");
+                        dtcols.Add(tablecol);
                     }
 
+                    tableinfo0 = tableinfo.FCopy();
                     cols0 = tableinfo0.Columns.ToList();
-                    foreach (TableColumn col in cols0)
+                    foreach (TableColumn col in dtcols)
                     {
-                        col.LeafOffset = (short)(Convert.ToInt32(fsysrscols0.First(p => p["rscolid"] == col.ColumnID.ToString())["offset"]) & 0xFFFF); // convert(smallint, convert(binary(2), c.offset & 0xffff))    [sys.system_internals_partition_columns]
-                        col.LeafNullBit = (short)(Convert.ToInt32(fsysrscols0.First(p => p["rscolid"] == col.ColumnID.ToString())["nullbit"]) & 0xFFFF); // convert(smallint, convert(binary(2), c.nullbit & 0xffff))  [sys.system_internals_partition_columns]
+                        cols0.Add(col);
                     }
-
                     tableinfo0.Columns = cols0.OrderBy(p => p.ColumnID).ToArray();
                     tableinfo0.Version = curlsn;
                     UserTablesAdd($"{schemaname}.{objectname}", tableinfo0);
+
+                }
+
+                // alter column
+                if (fsyscolpars.Any() == true && fsyscolpars0.Any() == true)
+                {
+                    redosql = redosql + "alter column ";
+                    undosql = undosql + "alter column ";
+
+                    for (i = 0; i <= fsyscolpars.Count - 1; i = i + 1)
+                    {
+                        (coldef, tablecol) = Tgetcolumn(fsyscolpars[i], tableinfo, 1);
+                        redosql = redosql + coldef + (i < fsyscolpars.Count - 1 ? ", " : "; ");
+                    }
+                    for (i = 0; i <= fsyscolpars0.Count - 1; i = i + 1)
+                    {
+                        (coldef, tablecol) = Tgetcolumn(fsyscolpars0[i], tableinfo, -1);
+                        undosql = undosql + coldef + (i < fsyscolpars0.Count - 1 ? ", " : "; ");
+                        dtcols.Add(tablecol);
+                    }
+
+                    tableinfo0 = tableinfo.FCopy();
+                    cols0 = tableinfo0.Columns.ToList();
+                    cols0.RemoveAll(p => dtcols.Select(d => d.ColumnID).Contains(p.ColumnID) == true);
+                    foreach (TableColumn col in dtcols)
+                    {
+                        cols0.Add(col);
+                    }
+                    tableinfo0.Columns = cols0.OrderBy(p => p.ColumnID).ToArray();
+                    tableinfo0.Version = curlsn;
+                    UserTablesAdd($"{schemaname}.{objectname}", tableinfo0);
+
+                }
+
+                // rebuild with(data_compression=xxx)
+                if (fsysrowsets.Any() == true && fsysrowsets0.Any() == true)
+                {
+                    sysrowsets0 = fsysrowsets0.First();
+                    sysrowsets1 = fsysrowsets.First();
+                    diff = DDL_Compare(sysrowsets0, sysrowsets1);
+                    if (diff.Any(p => p.ColumnName == "cmprlevel") == true)
+                    {
+                        val0 = Enum.GetName(typeof(CompressionType), Convert.ToInt32(diff.First(p => p.ColumnName == "cmprlevel").OldValue));
+                        val1 = Enum.GetName(typeof(CompressionType), Convert.ToInt32(diff.First(p => p.ColumnName == "cmprlevel").NewValue));
+
+                        redosql = redosql + $"rebuild with(data_compression={val1}); ";
+                        undosql = undosql + $"rebuild with(data_compression={val0}); ";
+
+                        allocunitids = DDLLogs_Tran.Where(p => p.AllocUnitId != null).Select(p => p.AllocUnitId.ToString()).Distinct().ToList();
+                        AllocUnitIds.AddRange(allocunitids);
+
+                        PartitionIds = fsysrowsets0.Where(p => Convert.ToInt32(p["idminor"]) <= 1).Select(p => p["rowsetid"]).Distinct().ToList(); // index_id<=1 [sys.partitions]
+
+                        tableinfo0 = tableinfo.FCopy();
+
+                        tableinfo0.DataCompressionType = new Dictionary<long, CompressionType>();
+                        foreach (Dictionary<string, string> dsysrowsets in fsysrowsets0.Where(p => p["ownertype"] == "1"))
+                        {
+                            partitionid = Convert.ToInt64(dsysrowsets["rowsetid"]);
+                            Enum.TryParse<CompressionType>(dsysrowsets["cmprlevel"], out CompressionType enumval);
+                            tableinfo0.DataCompressionType.Add(partitionid, enumval);
+                        }
+
+                        cols0 = tableinfo0.Columns.ToList();
+                        foreach (TableColumn col in cols0)
+                        {
+                            col.LeafOffset = (short)(Convert.ToInt32(fsysrscols0.First(p => p["rscolid"] == col.ColumnID.ToString())["offset"]) & 0xFFFF); // convert(smallint, convert(binary(2), c.offset & 0xffff))    [sys.system_internals_partition_columns]
+                            col.LeafNullBit = (short)(Convert.ToInt32(fsysrscols0.First(p => p["rscolid"] == col.ColumnID.ToString())["nullbit"]) & 0xFFFF); // convert(smallint, convert(binary(2), c.nullbit & 0xffff))  [sys.system_internals_partition_columns]
+                        }
+
+                        tableinfo0.Columns = cols0.OrderBy(p => p.ColumnID).ToArray();
+                        tableinfo0.Version = curlsn;
+                        UserTablesAdd($"{schemaname}.{objectname}", tableinfo0);
+                    }
+
+                }
+
+                // add/drop constraint
+                if (fsysidxstats.Any() == true || fsysidxstats0.Any() == true)
+                {
+                    diff = DDL_Compare((fsysidxstats0.Any() == true ? fsysidxstats0[0] : null),
+                                       (fsysidxstats.Any() == true ? fsysidxstats[0] : null)
+                                      );
+                    fd = diff.FirstOrDefault(p => p.ColumnName == "indid");
+
+                    // add constraint
+                    if (fd != null
+                        && (fd.OldValue == "0" || fd.OldValue == "") // sys.indexes.index_id =0(heap)
+                        && fd.NewValue != "0") // sys.indexes.index_id =1(clustered index) >1(nonclustered index)
+                    {
+                        dsysidxstats = fsysidxstats.First();
+                        constraintname = dsysidxstats["name"];
+
+                        (findextype, findexcolumns, fincludecolumns) = Tcreateindex_0(constraintname, "ALTER TABLE", tableinfo);
+                        if (fsysschobjs.Any(p => p["type"] == "PK" && p["name"] == constraintname) == true 
+                            && fsysschobjs0.Any(p => p["type"] == "PK" && p["name"] == constraintname) == false)
+                        {
+                            findextype.Insert(0, "primary key");
+                            if (findextype.Contains("unique") == true) { findextype.Remove("unique"); }
+                        }
+
+                        indextype = string.Join(" ", findextype);
+                        indexcolumns = string.Join(",", findexcolumns);
+                        includecolumns = string.Join(",", fincludecolumns);
+
+                        redosql = redosql + $"add constraint [{constraintname}] {indextype} ({indexcolumns}); ";
+                        undosql = undosql + $"drop constraint [{constraintname}]; ";
+
+                        tableinfo0 = tableinfo.FCopy();
+                        tableinfo0.IsHeapTable = true;
+                        tableinfo0.PrimaryKeyColumns = findextype.Contains("primary key") == true ? new List<string>() : tableinfo.PrimaryKeyColumns;
+                        tableinfo0.ClusteredIndexColumns = findextype.Contains("clustered") == true ? new List<string>() : tableinfo.ClusteredIndexColumns;
+                        tableinfo0.Version = curlsn;
+                        UserTablesAdd($"{schemaname}.{objectname}", tableinfo0);
+
+                    }
+
+                    // drop constraint
+                    if (fd != null
+                        && fd.OldValue != "0" // sys.indexes.index_id =0(heap)
+                        && (fd.NewValue == "0" || fd.NewValue == "")) // sys.indexes.index_id =1(clustered index) >1(nonclustered index)
+                    {
+                        dsysidxstats = fsysidxstats0.First();
+                        constraintname = dsysidxstats["name"];
+
+                        fsysidxstats = fsysidxstats0;
+                        fsysiscols = fsysiscols0;
+                        (findextype, findexcolumns, fincludecolumns) = Tcreateindex_0(constraintname, "ALTER TABLE", tableinfo);
+                        if (fsysschobjs0.Any(p => p["type"] == "PK" && p["name"] == constraintname) == true
+                            && fsysschobjs.Any(p => p["type"] == "PK" && p["name"] == constraintname) == false)
+                        {
+                            findextype.Insert(0, "primary key");
+                            if (findextype.Contains("unique") == true) { findextype.Remove("unique"); }
+                        }
+
+                        indextype = string.Join(" ", findextype);
+                        indexcolumns = string.Join(",", findexcolumns);
+                        includecolumns = string.Join(",", fincludecolumns);
+
+                        redosql = redosql + $"drop constraint [{constraintname}]; ";
+                        undosql = undosql + $"add constraint [{constraintname}] {indextype} ({indexcolumns}); ";
+
+                        tableinfo0 = tableinfo.FCopy();
+                        tableinfo0.IsHeapTable = false;
+                        tableinfo0.PrimaryKeyColumns = findextype.Contains("primary key") == true ? findexcolumns : new List<string>();
+                        tableinfo0.ClusteredIndexColumns = findextype.Contains("clustered") == true ? 
+                                                             findexcolumns.Select(p => Regex.Match(p, @"^\[([^\]]+)\]\s+(?:asc|desc)$", RegexOptions.IgnoreCase).Groups[1].Value).ToList()
+                                                             : new List<string>();
+                        tableinfo0.Version = curlsn;
+                        UserTablesAdd($"{schemaname}.{objectname}", tableinfo0);
+
+                    }
+
                 }
 
             }
 
-            // TODO: set table option, add/dropping constraint/index, etc.
-
-
             objectname = $"[{schemaname}].[{objectname}]";
+        }
+
+        private TableInfo GetTableInfoByObjectID(string objectid, string curlsn)
+        {
+            TableInfo tableinfo;
+            string schemaname, tablename;
+
+            tableinfo = UserTables.SelectMany(p => p.Value)
+                                  .Where(t => t.ObjectID == objectid
+                                              && string.Compare(t.Version, curlsn) == 1)
+                                  .OrderBy(t => t.Version)
+                                  .FirstOrDefault();
+            if (tableinfo == null 
+                && string.IsNullOrEmpty(objectid) == false)
+            {
+                tsql = $"select SchemaName=s.name,TableName=o.name "
+                       + $"from sys.objects o "
+                       + $"join sys.schemas s on o.schema_id=s.schema_id "
+                       + $"where o.type='U' "
+                       + $"and o.object_id={objectid}; ";
+                (schemaname, tablename) = DB.Query<(string, string)>(tsql, false).FirstOrDefault();
+                if (string.IsNullOrEmpty(schemaname) == false && string.IsNullOrEmpty(tablename) == false)
+                {
+                    tableinfo = GetTableInfo(schemaname, tablename);
+                }
+            }
+
+            return tableinfo;
         }
 
         private void TTruncateTable(out string objectname, out string redosql, out string undosql)
@@ -756,7 +909,7 @@ namespace DBLOG
             dsysidxstats = fsysidxstats.First();
             indexname = dsysidxstats["name"];
 
-            (findextype, findexcolumns, fincludecolumns) = Tcreateindex_0(indexname, "CREATE INDEX");
+            (findextype, findexcolumns, fincludecolumns) = Tcreateindex_0(indexname, "CREATE INDEX", FTableInfo);
             indextype = string.Join(" ", findextype);
             indexcolumns = string.Join(",", findexcolumns);
             includecolumns = string.Join(",", fincludecolumns);
@@ -798,7 +951,7 @@ namespace DBLOG
             dsysidxstats = fsysidxstats.First();
             indexname = dsysidxstats["name"];
 
-            (findextype, findexcolumns, fincludecolumns) = Tcreateindex_0(indexname, "DROP INDEX");
+            (findextype, findexcolumns, fincludecolumns) = Tcreateindex_0(indexname, "DROP INDEX", FTableInfo);
             indextype = string.Join(" ", findextype);
             indexcolumns = string.Join(",", findexcolumns);
             includecolumns = string.Join(",", fincludecolumns);
@@ -886,12 +1039,34 @@ namespace DBLOG
             DiffColumn f;
 
             r = new List<DiffColumn>();
-            foreach (string key in dr0.Keys)
+            if (dr0 != null && dr0.Count > 0)
             {
-                if (dr0[key] != dr1[key])
+                foreach (string key in dr0.Keys)
                 {
-                    f = new DiffColumn() { ColumnName = key, OldValue = dr0[key], NewValue = dr1[key] };
-                    r.Add(f);
+                    if (dr1 != null && dr1.ContainsKey(key) == true)
+                    {
+                        if (dr0[key] != dr1[key])
+                        {
+                            f = new DiffColumn() { ColumnName = key, OldValue = dr0[key], NewValue = dr1[key] };
+                            r.Add(f);
+                        }
+                    }
+                    else
+                    {
+                        f = new DiffColumn() { ColumnName = key, OldValue = dr0[key], NewValue = "" };
+                        r.Add(f);
+                    }
+                }
+            }
+            else
+            {
+                if (dr1 != null && dr1.Count > 0)
+                {
+                    foreach (string key in dr1.Keys)
+                    {
+                        f = new DiffColumn() { ColumnName = key, OldValue = "", NewValue = dr1[key] };
+                        r.Add(f);
+                    }
                 }
             }
 
@@ -1048,7 +1223,7 @@ namespace DBLOG
             return (columndefin, fcol);
         }
 
-        private (List<string> indextype, List<string> indexcolumns, List<string> includecolumns) Tcreateindex_0(string pindexname, string ptrantype)
+        private (List<string> indextype, List<string> indexcolumns, List<string> includecolumns) Tcreateindex_0(string pindexname, string ptrantype, TableInfo tableinfo)
         {
             List<string> indextype, indexcolumns, includecolumns;
             string columnname, sorttype;
@@ -1057,7 +1232,7 @@ namespace DBLOG
             indextype = new List<string>();
             dsysidxstats = fsysidxstats.First(p => p["name"] == pindexname);
 
-            if ((ptrantype == "CREATE INDEX" || ptrantype == "DROP INDEX")
+            if ((ptrantype == "CREATE INDEX" || ptrantype == "DROP INDEX" || ptrantype == "ALTER TABLE")
                 && (Convert.ToInt32(dsysidxstats["status"]) & 0x8) != 0) // sys.indexes.is_unique
             {
                 indextype.Add("unique");
@@ -1089,9 +1264,9 @@ namespace DBLOG
                     columnname = fsyscolpars.First(p => p["colid"] == c["intprop"])["name"];
                 }
 
-                if (ptrantype == "CREATE INDEX" || ptrantype == "DROP INDEX")
+                if (ptrantype == "CREATE INDEX" || ptrantype == "DROP INDEX" || ptrantype == "ALTER TABLE")
                 {
-                    columnname = FTableInfo.Columns.First(p => p.ColumnID == Convert.ToInt16(c["intprop"])).ColumnName;
+                    columnname = tableinfo.Columns.First(p => p.ColumnID == Convert.ToInt16(c["intprop"])).ColumnName;
                 }
                 
                 sorttype = ((Convert.ToInt32(c["status"]) & 0x4) != 0 ? "desc" : "asc");  // sys.index_columns.is_descending_key
@@ -1177,10 +1352,13 @@ namespace DBLOG
                         if (o.Item3 == null)
                         {
                             slotdata = DDL_GetPrevSlotData(ls);
-                            dr0 = DDL_GetColumnValue(ls.AllocUnitName, slotdata).ToDict();
-                            DT0.Add(dr0);
+                            if (plogs.Any(p => p.Operation == "LOP_DELETE_ROWS" && p.Page_ID == ls.Page_ID && p.Slot_ID == ls.Slot_ID) == false)
+                            {
+                                dr0 = DDL_GetColumnValue(ls.AllocUnitName, slotdata).ToDict();
+                                DT0.Add(dr0);
+                            }
                         }
-                        else                        
+                        else
                         {
                             slotdata = o.Item2;
                         }   
@@ -1188,7 +1366,10 @@ namespace DBLOG
                         mr = REDO_LOP_MODIFY_ROW(ls, slotdata).ToByteArray();
                         tca = DDL_GetColumnValue(ls.AllocUnitName, mr);
                         r.Remove(o);
-                        r.Add((tca, mr, ls));
+                        if (plogs.Any(p => p.Operation == "LOP_DELETE_ROWS" && p.Page_ID == ls.Page_ID && p.Slot_ID == ls.Slot_ID) == false)
+                        {
+                            r.Add((tca, mr, ls));
+                        }
                         break;
                 }
             }
@@ -1237,22 +1418,22 @@ namespace DBLOG
             byte[] r;
             List<FLOG> prevlogs;
             string tmpstr;
-            int deleteqty, tslotid;
+            int tslotid; // deleteqty
 
             tslotid = ls.Slot_ID ?? -1;
-            if (DDLLogs_Tran.First().Transaction_Name == "ALTER TABLE")
-            {
-                tsql = "set transaction isolation level read uncommitted; "
-                     + "select count(1) "
-                     + "  from sys.fn_dblog(null,null) t "
-                     + $" where [Current LSN]<N'{ls.Current_LSN}' "
-                     + $" and [Current LSN]>=(select max([Current LSN]) from sys.fn_dblog(null,null) b where b.[Current LSN]<N'{ls.Current_LSN}' and b.[Page ID]=N'{ls.Page_ID}' and b.[Slot ID]={ls.Slot_ID} and b.Operation=N'LOP_INSERT_ROWS') "
-                     + $" and [Page ID]=N'{ls.Page_ID}' "
-                     + $" and [Slot ID]>={ls.Slot_ID} "
-                     + "  and Operation in(N'LOP_DELETE_ROWS') ";
-                deleteqty = DB.Query<int>(tsql, false).First();
-                tslotid = tslotid + deleteqty;
-            }
+            //if (DDLLogs_Tran.First().Transaction_Name == "ALTER TABLE")
+            //{
+            //    tsql = "set transaction isolation level read uncommitted; "
+            //         + "select count(1) "
+            //         + "  from sys.fn_dblog(null,null) t "
+            //         + $" where [Current LSN]<N'{ls.Current_LSN}' "
+            //         + $" and [Current LSN]>=(select max([Current LSN]) from sys.fn_dblog(null,null) b where b.[Current LSN]<N'{ls.Current_LSN}' and b.[Page ID]=N'{ls.Page_ID}' and b.[Slot ID]={ls.Slot_ID} and b.Operation=N'LOP_INSERT_ROWS') "
+            //         + $" and [Page ID]=N'{ls.Page_ID}' "
+            //         + $" and [Slot ID]>={ls.Slot_ID} "
+            //         + "  and [Operation] in(N'LOP_DELETE_ROWS') ";
+            //    deleteqty = DB.Query<int>(tsql, false).First();
+            //    tslotid = tslotid + deleteqty;
+            //}
 
             tsql = "set transaction isolation level read uncommitted; "
                  + "select * "
@@ -1261,7 +1442,7 @@ namespace DBLOG
                  + $" and [Current LSN]>=(select max([Current LSN]) from sys.fn_dblog(null,null) b where b.[Current LSN]<N'{ls.Current_LSN}' and b.[Page ID]=t.[Page ID] and b.[Slot ID]=t.[Slot ID] and b.Operation=N'LOP_INSERT_ROWS') "
                  + $" and [Page ID]=N'{ls.Page_ID}' "
                  + $" and [Slot ID]={tslotid} "
-                 + "  and Operation in(N'LOP_INSERT_ROWS',N'LOP_MODIFY_ROW') "
+                 + "  and [Operation] in(N'LOP_INSERT_ROWS',N'LOP_MODIFY_ROW') "
                  + "  order by [Current LSN] ";
             prevlogs = DB.Query<FLOG>(tsql, false);
 

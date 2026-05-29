@@ -14,6 +14,9 @@ namespace DBLOG.Common
 {
     public class TableInfo
     {
+        public string SchemaName;
+        public string TableName;
+
         public List<string> PrimaryKeyColumns;
         public List<string> ClusteredIndexColumns;
         public bool IsHeapTable;

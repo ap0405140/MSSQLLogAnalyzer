@@ -44,16 +44,12 @@ namespace DBLOG
         public DBLOG_DML_DDL(long PPartitionId, long PAllocUnitId, string PMaxLsn)
         {
             List<string> wstrans;
-            List<DatabaseLog> tmplog;
             TransactionInfo traninfo;
 
             AllocUnitType = "UNKNOWN";
             DDL_LOG = new List<DatabaseLog>();
-            traninfo = DDLLogs_FTranID.FirstOrDefault(t => string.Compare(t.LSNList.Min(), PMaxLsn) == 1
-                                                           && t.TransactionName == "DROPOBJ" 
-                                                           && t.AllocUnitId.Contains(PAllocUnitId.ToString()) == true
-                                                           && t.PartitionID.Contains(PPartitionId.ToString()) == true
-                                                     );
+            traninfo = DDL_GetRelatedTransaction(PPartitionId, PAllocUnitId, PMaxLsn);
+
             if (traninfo == null)
             {
                 wstrans = DDLLogs.Where(p => string.Compare(p.Current_LSN, PMaxLsn) == 1
@@ -63,17 +59,9 @@ namespace DBLOG
                                  .Select(p => p.Transaction_ID)
                                  .Distinct()
                                  .ToList();
-                foreach (string tranid in wstrans.OrderByDescending(p => p))
-                {
-                    tmplog = AnalyzeDDLTran(tranid);
-                    DDL_LOG.AddRange(tmplog);
-                }
+                AnalyzeDDLTranList(wstrans);
 
-                traninfo = DDLLogs_FTranID.FirstOrDefault(t => string.Compare(t.LSNList.Min(), PMaxLsn) == 1
-                                                               && t.TransactionName == "DROPOBJ"
-                                                               && t.AllocUnitId.Contains(PAllocUnitId.ToString()) == true
-                                                               && t.PartitionID.Contains(PPartitionId.ToString()) == true
-                                                         );
+                traninfo = DDL_GetRelatedTransaction(PPartitionId, PAllocUnitId, PMaxLsn);
             }
             
             if (traninfo != null)
@@ -89,6 +77,19 @@ namespace DBLOG
                 FTableInfo = null;
             }
 
+        }
+
+        private TransactionInfo DDL_GetRelatedTransaction(long PPartitionId, long PAllocUnitId, string PMaxLsn)
+        {
+            TransactionInfo r;
+
+            r = DDLLogs_FTranID.FirstOrDefault(t => string.Compare(t.LSNList.Min(), PMaxLsn) == 1
+                                                    && (t.TransactionName == "DROPOBJ" || t.TransactionName == "ALTER TABLE")
+                                                    && t.AllocUnitId.Contains(PAllocUnitId.ToString()) == true
+                                                    && (t.PartitionID.Contains(PPartitionId.ToString()) == true || t.TransactionName == "ALTER TABLE")
+                                              );
+
+            return r;
         }
 
         public DBLOG_DML_DDL()
@@ -1990,6 +1991,8 @@ namespace DBLOG
             else
             {
                 tableinfo = new TableInfo();
+                tableinfo.SchemaName = PSchemaName;
+                tableinfo.TableName = PTablename;
 
                 // PrimaryKeyColumns
                 tsql = "select primarykeycolumn=c.name "
