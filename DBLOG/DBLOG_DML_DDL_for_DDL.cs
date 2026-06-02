@@ -771,7 +771,9 @@ namespace DBLOG
 
                         tableinfo0 = tableinfo.FCopy();
                         tableinfo0.IsHeapTable = false;
-                        tableinfo0.PrimaryKeyColumns = findextype.Contains("primary key") == true ? findexcolumns : new List<string>();
+                        tableinfo0.PrimaryKeyColumns = findextype.Contains("primary key") == true ? 
+                                                         findexcolumns.Select(p => Regex.Match(p, @"^\[([^\]]+)\]\s+(?:asc|desc)$", RegexOptions.IgnoreCase).Groups[1].Value).ToList()
+                                                         : new List<string>();
                         tableinfo0.ClusteredIndexColumns = findextype.Contains("clustered") == true ? 
                                                              findexcolumns.Select(p => Regex.Match(p, @"^\[([^\]]+)\]\s+(?:asc|desc)$", RegexOptions.IgnoreCase).Groups[1].Value).ToList()
                                                              : new List<string>();
