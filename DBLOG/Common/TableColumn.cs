@@ -31,6 +31,9 @@ namespace DBLOG.Common
         public bool IsNullable = false;   // 是否允许Null
         public bool IsIdentity;
         public bool IsComputed = false;   // 是否是计算列
+        public bool HasDefaultValue;
+        public string DefaultConstraintName;
+        public string DefaultValue;
         public bool IsHidden;
 
         public short LeafOffset;

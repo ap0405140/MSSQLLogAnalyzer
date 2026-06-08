@@ -2076,7 +2076,7 @@ namespace DBLOG
                 tableinfo.DataCompressionType = DB.Query<(long PartitionId, CompressionType CompressionType)>(tsql, false).ToDictionary(p => p.PartitionId, p => p.CompressionType);
 
                 tsql = "select cast(("
-                            + "select ColumnID,ColumnName,DataType,PhysicalStorageType,Length,Precision,IsNullable,Scale,IsIdentity,IsComputed,LeafOffset,LeafNullBit,IsHidden,GraphType "
+                            + "select ColumnID,ColumnName,DataType,PhysicalStorageType,Length,Precision,IsNullable,Scale,IsIdentity,IsComputed,HasDefaultValue,DefaultConstraintName,DefaultValue,LeafOffset,LeafNullBit,IsHidden,GraphType "
                             + " from (select 'ColumnID'=b.column_id, "
                             + "              'ColumnName'=b.name, "
                             + "              'DataType'=c.name, "
@@ -2087,6 +2087,9 @@ namespace DBLOG
                             + "              'Scale'=b.scale, "
                             + "              'IsIdentity'=b.is_identity, "
                             + "              'IsComputed'=b.is_computed, "
+                            + "              'HasDefaultValue'=case when dft.parent_column_id is not null then 1 else 0 end, "
+                            + "              'DefaultConstraintName'=isnull(dft.name,N''), "
+                            + "              'DefaultValue'=isnull(dft.definition,N''), "
                             + "              'LeafOffset'=isnull(d2.leaf_offset,0), "
                             + "              'LeafNullBit'=isnull(d2.leaf_null_bit,0), "
                             + $"             'IsHidden'={(DB.Vesion >= 2017 ? "b.is_hidden" : "0")}, "
@@ -2095,6 +2098,7 @@ namespace DBLOG
                             + "       join sys.schemas s on a.schema_id=s.schema_id "
                             + "       join sys.columns b on a.object_id=b.object_id "
                             + "       join sys.systypes c on b.system_type_id=c.xtype and b.user_type_id=c.xusertype "
+                            + "       left join sys.default_constraints dft on b.object_id=dft.parent_object_id and b.column_id=dft.parent_column_id "
                             + "       left join sys.systypes c2 on c.xtype=c2.xtype and c.xtype=c2.xusertype "
                             + "       outer apply (select d.leaf_offset,d.leaf_null_bit "
                             + "                    from sys.system_internals_partition_columns d "
@@ -2151,6 +2155,9 @@ namespace DBLOG
                 fcol.Scale = Convert.ToInt16(xmlNode.Attributes["Scale"].Value);
                 fcol.IsIdentity = (xmlNode.Attributes["IsIdentity"].Value.ToString() == "0" ? false : true);
                 fcol.IsComputed = (xmlNode.Attributes["IsComputed"].Value.ToString() == "0" ? false : true);
+                fcol.HasDefaultValue = (xmlNode.Attributes["HasDefaultValue"].Value.ToString() == "0" ? false : true);
+                fcol.DefaultConstraintName = xmlNode.Attributes["DefaultConstraintName"].Value;
+                fcol.DefaultValue = xmlNode.Attributes["DefaultValue"].Value;
                 fcol.LeafOffset = Convert.ToInt16(xmlNode.Attributes["LeafOffset"].Value);
                 fcol.LeafNullBit = Convert.ToInt16(xmlNode.Attributes["LeafNullBit"].Value);
                 fcol.IsNullable = (Convert.ToInt16(xmlNode.Attributes["IsNullable"].Value) == 1 ? true : false);

@@ -11,6 +11,7 @@ using System.Globalization;
 using System.Linq;
 using System.Numerics;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices.ComTypes;
 using System.Security.Principal;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -300,7 +301,7 @@ namespace DBLOG
             i = 0;
             foreach (Dictionary<string, string> col in fsyscolpars.OrderBy(p => Convert.ToInt32(p["colid"])))
             {
-                (stemp1, fcol) = Tgetcolumn(col, ftabinfo, d);
+                (stemp1, fcol) = Tgetcolumn(col, ftabinfo, fsysschobjs, fsysobjvalues, d);
                 if (string.IsNullOrEmpty(stemp1) == false) { lstemp1.Add(stemp1); }
                 ftabinfo.Columns[i] = fcol;
 
@@ -494,11 +495,11 @@ namespace DBLOG
 
         private void TAlterTable(out string objectname, out string redosql, out string undosql, out List<string> AllocUnitIds, out List<string> PartitionIds, out bool ignoretran)
         {
-            string coldef, schemaname, curlsn, val0, val1, constraintname, indextype, indexcolumns, includecolumns, objectid;
+            string coldef, coldef0, schemaname, curlsn, val0, val1, constraintname, indextype, indexcolumns, includecolumns, objectid;
             List<Dictionary<string, string>> fsysschobjs0, fsyscolpars0, fsysobjvalues0, fsysrscols0, fsysrowsets0, fsysidxstats0, fsysiscols0;
             List<DiffColumn> diff;
             TableInfo tableinfo, tableinfo0;
-            TableColumn tablecol;
+            TableColumn tablecol, tablecol0;
             int i;
             List<TableColumn> dtcols, cols0;
             Dictionary<string, string> sysrowsets0, sysrowsets1;
@@ -578,7 +579,7 @@ namespace DBLOG
 
                     for (i = 0; i <= fsyscolpars.Count - 1; i = i + 1)
                     {
-                        (coldef, tablecol) = Tgetcolumn(fsyscolpars[i], tableinfo, 1);
+                        (coldef, tablecol) = Tgetcolumn(fsyscolpars[i], tableinfo, fsysschobjs, fsysobjvalues, 1);
                         redosql = redosql + coldef + (i < fsyscolpars.Count - 1 ? ", " : "; ");
                         undosql = undosql + tablecol.ColumnName + (i < fsyscolpars.Count - 1 ? ", " : "; ");
                         dtcols.Add(tablecol);
@@ -608,11 +609,10 @@ namespace DBLOG
                     redosql = redosql + "drop column ";
                     undosql = undosql + "add ";
 
-                    fsysobjvalues = fsysobjvalues0;
                     fsysrscols = fsysrscols0;
                     for (i = 0; i <= fsyscolpars0.Count - 1; i = i + 1)
                     {
-                        (coldef, tablecol) = Tgetcolumn(fsyscolpars0[i], tableinfo, -1);
+                        (coldef, tablecol) = Tgetcolumn(fsyscolpars0[i], tableinfo, fsysschobjs0, fsysobjvalues0, -1);
                         redosql = redosql + tablecol.ColumnName + (i < fsyscolpars0.Count - 1 ? ", " : "; ");
                         undosql = undosql + coldef + (i < fsyscolpars0.Count - 1 ? ", " : "; ");
                         dtcols.Add(tablecol);
@@ -633,19 +633,43 @@ namespace DBLOG
                 // alter column
                 if (fsyscolpars.Any() == true && fsyscolpars0.Any() == true)
                 {
-                    redosql = redosql + "alter column ";
-                    undosql = undosql + "alter column ";
-
                     for (i = 0; i <= fsyscolpars.Count - 1; i = i + 1)
                     {
-                        (coldef, tablecol) = Tgetcolumn(fsyscolpars[i], tableinfo, 1);
-                        redosql = redosql + coldef + (i < fsyscolpars.Count - 1 ? ", " : "; ");
-                    }
-                    for (i = 0; i <= fsyscolpars0.Count - 1; i = i + 1)
-                    {
-                        (coldef, tablecol) = Tgetcolumn(fsyscolpars0[i], tableinfo, -1);
-                        undosql = undosql + coldef + (i < fsyscolpars0.Count - 1 ? ", " : "; ");
-                        dtcols.Add(tablecol);
+                        (coldef, tablecol) = Tgetcolumn(fsyscolpars[i], tableinfo, fsysschobjs, fsysobjvalues, 1);
+                        (coldef0, tablecol0) = Tgetcolumn(fsyscolpars0[i], tableinfo, fsysschobjs0, fsysobjvalues0, - 1);
+
+                        if (tablecol.HasDefaultValue != tablecol0.HasDefaultValue)
+                        {
+                            if (tablecol.HasDefaultValue == true)
+                            {
+                                redosql = redosql
+                                          + (i == 0 ? "add " : ", ")
+                                          + $"constraint [{tablecol.DefaultConstraintName}] default {tablecol.DefaultValue} for [{tablecol.ColumnName}]"
+                                          + (i == fsyscolpars.Count - 1 ? "; " : "");
+                                undosql = undosql
+                                          + (i == 0 ? "drop " : ", ")
+                                          + $"constraint [{tablecol.DefaultConstraintName}]"
+                                          + (i == fsyscolpars.Count - 1 ? "; " : "");
+                            }
+                            else
+                            {
+                                redosql = redosql
+                                          + (i == 0 ? "drop " : ", ")
+                                          + $"constraint [{tablecol0.DefaultConstraintName}]"
+                                          + (i == fsyscolpars.Count - 1 ? "; " : "");
+                                undosql = undosql
+                                          + (i == 0 ? "add " : ", ")
+                                          + $"constraint [{tablecol0.DefaultConstraintName}] default {tablecol0.DefaultValue} for [{tablecol0.ColumnName}]"
+                                          + (i == fsyscolpars.Count - 1 ? "; " : "");
+                            }
+                        }
+                        else
+                        {
+                            redosql = redosql + "alter column " + coldef + "; ";
+                            undosql = undosql + "alter column " + coldef0 + "; ";
+                        }
+
+                        dtcols.Add(tablecol0);
                     }
 
                     tableinfo0 = tableinfo.FCopy();
@@ -1078,7 +1102,9 @@ namespace DBLOG
         private (string columndefin, TableColumn tabcol) Tgetcolumn
             (
                 Dictionary<string, string> col, 
-                TableInfo ftabinfo, 
+                TableInfo ftabinfo,
+                List<Dictionary<string, string>> fsysschobjs,
+                List<Dictionary<string, string>> fsysobjvalues,
                 int d
             )
         {
@@ -1109,6 +1135,13 @@ namespace DBLOG
 
             // sys.syscolumns.graph_type
             graphtype = (dsysobjvalues != null ? dsysobjvalues["value"] : "");
+
+            fcol = new TableColumn();
+            fcol.ColumnID = Convert.ToInt16(col["colid"]);
+            fcol.ColumnName = columnname;
+            fcol.HasDefaultValue = false;
+            fcol.DefaultConstraintName = "";
+            fcol.DefaultValue = null;
 
             if (iscomputed == false)
             {
@@ -1168,6 +1201,10 @@ namespace DBLOG
                     temp = fsysobjvalues.First(p => p["objid"] == col["dflt"])["imageval"];
                     defaultvalue = System.Text.Encoding.Default.GetString(temp.Substring(2).ToByteArray()); // default value
                     columndefin = columndefin + $" constraint [{constraintname}] default {defaultvalue}";
+
+                    fcol.HasDefaultValue = true;
+                    fcol.DefaultConstraintName = constraintname;
+                    fcol.DefaultValue = defaultvalue;
                 }
             }
             else
@@ -1185,16 +1222,17 @@ namespace DBLOG
             {
                 columndefin = "";
             }
-
-            fcol = new TableColumn();
-            fcol.ColumnID = Convert.ToInt16(col["colid"]);
-            fcol.ColumnName = columnname;
+            
             fcol.DataType = datatype;
             fcol.PhysicalStorageType = GetPhysicalStorageType(datatype);
             fcol.GraphType = (string.IsNullOrEmpty(graphtype) ? -1 : Convert.ToInt32(graphtype));
             fcol.Length = maxlength;
             fcol.Precision = Convert.ToInt16(col["prec"]);
             fcol.Scale = Convert.ToInt16(col["scale"]);
+            fcol.IsNullable = nullable;
+            fcol.IsIdentity = isidentity;
+            fcol.IsComputed = iscomputed;
+            fcol.IsHidden = ishidden;
 
             dsysrowsets = fsysrowsets.FirstOrDefault(p => Convert.ToInt32(p["idminor"]) <= 1); // index_id<=1 [sys.partitions.index_id]
             if (dsysrowsets != null)
@@ -1216,11 +1254,6 @@ namespace DBLOG
                 fcol.LeafOffset = 0;
                 fcol.LeafNullBit = 0;
             }
-
-            fcol.IsNullable = nullable;
-            fcol.IsIdentity = isidentity;
-            fcol.IsComputed = iscomputed;
-            fcol.IsHidden = ishidden;
 
             return (columndefin, fcol);
         }
@@ -1328,7 +1361,7 @@ namespace DBLOG
                 {
                     case "LOP_INSERT_ROWS":
                     case "LOP_DELETE_ROWS":
-                        tca = DDL_GetColumnValue(ls.AllocUnitName, ls.RowLog_Contents_0);
+                        tca = DDL_GetColumnValue(schemaname, tablename, ls.RowLog_Contents_0);
 
                         if (ls.Operation == "LOP_INSERT_ROWS")
                         {
@@ -1356,7 +1389,7 @@ namespace DBLOG
                             slotdata = DDL_GetPrevSlotData(ls);
                             if (plogs.Any(p => p.Operation == "LOP_DELETE_ROWS" && p.Page_ID == ls.Page_ID && p.Slot_ID == ls.Slot_ID) == false)
                             {
-                                dr0 = DDL_GetColumnValue(ls.AllocUnitName, slotdata).ToDict();
+                                dr0 = DDL_GetColumnValue(schemaname, tablename, slotdata).ToDict();
                                 DT0.Add(dr0);
                             }
                         }
@@ -1366,7 +1399,7 @@ namespace DBLOG
                         }   
 
                         mr = REDO_LOP_MODIFY_ROW(ls, slotdata).ToByteArray();
-                        tca = DDL_GetColumnValue(ls.AllocUnitName, mr);
+                        tca = DDL_GetColumnValue(schemaname, tablename, mr);
                         r.Remove(o);
                         if (plogs.Any(p => p.Operation == "LOP_DELETE_ROWS" && p.Page_ID == ls.Page_ID && p.Slot_ID == ls.Slot_ID) == false)
                         {
@@ -1398,16 +1431,12 @@ namespace DBLOG
             return mr0_str;
         }
 
-        private TableColumn[] DDL_GetColumnValue(string PAllocUnitName, byte[] PRowLogContents0)
+        private TableColumn[] DDL_GetColumnValue(string schemaname, string tablename, byte[] PRowLogContents0)
         {
-            string schemaname, tablename;
             TableColumn[] tablecolumns2;
             TableInfo tableinfo;
-
-            schemaname = PAllocUnitName.Split('.')[0];
-            tablename = PAllocUnitName.Split('.')[1];
+            
             tableinfo = SystemTables[$"{schemaname}.{tablename}"];
-
             tablecolumns2 = tableinfo.Columns.CopyToNew().Cast<TableColumn>().ToArray();
             FTableInfo = tableinfo;
             TranslateData(PRowLogContents0, tablecolumns2);
@@ -1418,33 +1447,23 @@ namespace DBLOG
         private byte[] DDL_GetPrevSlotData(FLOG ls)
         {
             byte[] r;
+            Dictionary<string, string> dr0;
+            FPageInfo fpage;
+            int i;
+            bool found;
+            string slotid, tmpstr;
+            FLOG dlog;
             List<FLOG> prevlogs;
-            string tmpstr;
-            int tslotid; // deleteqty
 
-            tslotid = ls.Slot_ID ?? -1;
-            //if (DDLLogs_Tran.First().Transaction_Name == "ALTER TABLE")
-            //{
-            //    tsql = "set transaction isolation level read uncommitted; "
-            //         + "select count(1) "
-            //         + "  from sys.fn_dblog(null,null) t "
-            //         + $" where [Current LSN]<N'{ls.Current_LSN}' "
-            //         + $" and [Current LSN]>=(select max([Current LSN]) from sys.fn_dblog(null,null) b where b.[Current LSN]<N'{ls.Current_LSN}' and b.[Page ID]=N'{ls.Page_ID}' and b.[Slot ID]={ls.Slot_ID} and b.Operation=N'LOP_INSERT_ROWS') "
-            //         + $" and [Page ID]=N'{ls.Page_ID}' "
-            //         + $" and [Slot ID]>={ls.Slot_ID} "
-            //         + "  and [Operation] in(N'LOP_DELETE_ROWS') ";
-            //    deleteqty = DB.Query<int>(tsql, false).First();
-            //    tslotid = tslotid + deleteqty;
-            //}
-
+            slotid = ls.Slot_ID.ToString();
             tsql = "set transaction isolation level read uncommitted; "
                  + "select * "
                  + "  from sys.fn_dblog(null,null) t "
                  + $" where [Current LSN]<N'{ls.Current_LSN}' "
                  + $" and [Current LSN]>=(select max([Current LSN]) from sys.fn_dblog(null,null) b where b.[Current LSN]<N'{ls.Current_LSN}' and b.[Page ID]=t.[Page ID] and b.[Slot ID]=t.[Slot ID] and b.Operation=N'LOP_INSERT_ROWS') "
                  + $" and [Page ID]=N'{ls.Page_ID}' "
-                 + $" and [Slot ID]={tslotid} "
-                 + "  and [Operation] in(N'LOP_INSERT_ROWS',N'LOP_MODIFY_ROW') "
+                 + $" and [Slot ID]={slotid} "
+                 + "  and [Operation] in(N'LOP_INSERT_ROWS',N'LOP_MODIFY_ROW') " // ,N'LOP_DELETE_ROWS'
                  + "  order by [Current LSN] ";
             prevlogs = DB.Query<FLOG>(tsql, false);
 
@@ -1465,9 +1484,63 @@ namespace DBLOG
                                                   log.RowLog_Contents_1.ToText());
                         }
                         break;
+                    case "LOP_DELETE_ROWS":
+                        tmpstr = "";
+                        break;
                 }
             }
             r = tmpstr.ToByteArray();
+            
+            if (DDLLogs_Tran.First().Transaction_Name == "ALTER TABLE"
+                && ls.Operation == "LOP_MODIFY_ROW"
+                && ls.AllocUnitName == "sys.sysschobjs.clst"
+                && ls.Offset_in_Row == 36
+                && ls.Modify_Size == 1)
+            {
+                dr0 = DDL_GetColumnValue("sys", "sysschobjs", r).ToDict();
+                if (dr0["type"] != "U")
+                {
+                    found = false;
+                    
+                    fpage = GetPageInfo(ls.Page_ID);
+                    for (i = Convert.ToInt32(ls.Slot_ID); i >= 0; i = i - 1)
+                    {
+                        if (fpage.SlotData.ContainsKey(i) == true)
+                        {
+                            dr0 = DDL_GetColumnValue("sys", "sysschobjs", fpage.SlotData[i].ToByteArray()).ToDict();
+                            if (dr0["type"] == "U")
+                            {
+                                r = fpage.SlotData[i].ToByteArray();
+                                found = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (found == false)
+                    {
+                        tsql = "set transaction isolation level read uncommitted; "
+                             + "select top 1 t.* "
+                             + "  from sys.fn_dblog(null,null) t "
+                             + $" where [Current LSN]>N'{ls.Current_LSN}' "
+                             + $" and [Transaction ID]>N'{ls.Transaction_ID}' "
+                             + $" and [AllocUnitName]=N'{ls.AllocUnitName}' "
+                             + $" and [Page ID]=N'{ls.Page_ID}' "
+                             + $" and [Slot ID]={ls.Slot_ID.ToString()} "
+                             + "  and [Operation] in(N'LOP_DELETE_ROWS') "
+                             + "  and exists(select 1 from sys.fn_dblog(null,null) b where b.[Transaction ID]=t.[Transaction ID] and b.[Transaction Name]=N'DROPOBJ') "
+                             + "  and exists(select 1 from sys.fn_dblog(null,null) b where b.[Transaction ID]=t.[Transaction ID] and b.[Operation]=N'LOP_COMMIT_XACT') "
+                             + "  order by t.[Current LSN] ";
+                        dlog = DB.Query<FLOG>(tsql, false).FirstOrDefault();
+                        if (dlog != null)
+                        {
+                            r = dlog.RowLog_Contents_0;
+                            found = true;
+                        }
+
+                    }
+                }
+            }
 
             return r;
         }
