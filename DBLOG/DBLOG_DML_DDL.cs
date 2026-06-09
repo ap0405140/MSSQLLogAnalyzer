@@ -655,7 +655,6 @@ namespace DBLOG
                     {
 #if DEBUG
                         stemp = $"Message:{(ex.Message ?? "")}  StackTrace:{(ex.StackTrace ?? "")} ";
-
                         throw new Exception(stemp);
 #else
                         tmplog = new DatabaseLog();
@@ -831,123 +830,131 @@ namespace DBLOG
             bool isfound;
             FPageInfo pageinfo;
 
-            tsql = "truncate table #temppagedata; ";
-            DB.ExecuteSQL(tsql, false);
-
-            fileid_dec = Convert.ToInt16(PLog.Page_ID.Split(':')[0], 16).ToString();
-            pageid_dec = Convert.ToInt32(PLog.Page_ID.Split(':')[1], 16).ToString();
-
-            tsql = $"DBCC PAGE([{DatabaseName}],{fileid_dec},{pageid_dec},3) with tableresults,no_infomsgs; ";
-            tsql = "set transaction isolation level read uncommitted; "
-                + $"insert into #temppagedata(ParentObject,Object,Field,Value) exec('{tsql}'); ";
-            DB.ExecuteSQL(tsql, false);
-
-            tsql = $"update #temppagedata set LSN=N'{PLog.Current_LSN}' where LSN is null; ";
-            DB.ExecuteSQL(tsql, false);
-
-            tsql = $"select Value from #temppagedata where Field=N'Metadata: ObjectId'; ";
-            objectid = DB.Query11(tsql, false);
-
-            if (objectid != "0")
+            if (PrevPages.Any(p => p.pageid == PLog.Page_ID) == true)
             {
-                switch (PLog.Operation)
-                {
-                    case "LOP_MODIFY_ROW":
-                        checkvalue1 = PLog.RowLog_Contents_1.ToText();
-                        checkvalue2 = PrimaryKeyValue;
-                        break;
-                    case "LOP_MODIFY_COLUMNS":
-                        checkvalue1 = "";
-                        checkvalue2 = "";
-                        break;
-                    case "LOP_INSERT_ROWS":
-                        checkvalue1 = PLog.RowLog_Contents_0.ToText().Substring(8, 4 * 2);
-                        checkvalue2 = "";
-                        break;
-                    default:
-                        checkvalue1 = "";
-                        checkvalue2 = "";
-                        break;
-                }
-
-                isfound = false;
-
-                tsql = "truncate table #ModifiedRawData; ";
+                pageinfo = GetPageInfo(PLog.Page_ID);
+                mr1 = pageinfo.SlotData[PLog.Slot_ID ?? 0].ToByteArray();
+            }
+            else
+            {
+                tsql = "truncate table #temppagedata; ";
                 DB.ExecuteSQL(tsql, false);
 
-                tsql = " insert into #ModifiedRawData([RowLog Contents 0_var]) "
-                        + " select [RowLog Contents 0_var]=upper(replace(stuff((select replace(substring(C.[Value],charindex(N':',[Value],1)+1,48),N'†',N'') "
-                        + "                                                     from #temppagedata C "
-                        + $"                                                    where C.[LSN]=N'{PLog.Current_LSN}' "
-                        + $"                                                    and C.[ParentObject] like N'Slot {PLog.Slot_ID.ToString()} Offset%' "
-                        + "                                                     and C.[Object] like N'%Memory Dump%' "
-                        + "                                                     order by C.[Value] "
-                        + "                                                     for xml path('')),1,1,N''),N' ',N'')); ";
+                fileid_dec = Convert.ToInt16(PLog.Page_ID.Split(':')[0], 16).ToString();
+                pageid_dec = Convert.ToInt32(PLog.Page_ID.Split(':')[1], 16).ToString();
+
+                tsql = $"DBCC PAGE([{DatabaseName}],{fileid_dec},{pageid_dec},3) with tableresults,no_infomsgs; ";
+                tsql = "set transaction isolation level read uncommitted; "
+                     + $"insert into #temppagedata(ParentObject,Object,Field,Value) exec('{tsql}'); ";
                 DB.ExecuteSQL(tsql, false);
 
-                if (FTableInfo.GetCompressionType(PLog.PartitionId) != CompressionType.NONE)
+                tsql = $"update #temppagedata set LSN=N'{PLog.Current_LSN}' where LSN is null; ";
+                DB.ExecuteSQL(tsql, false);
+
+                tsql = $"select Value from #temppagedata where Field=N'Metadata: ObjectId'; ";
+                objectid = DB.Query11(tsql, false);
+
+                if (objectid != "0")
                 {
-                    isfound = true;
-                }
-                else
-                {
-                    tsql = "select count(1) from #ModifiedRawData where [RowLog Contents 0_var] like N'%" + (checkvalue1.Length <= 3998 ? checkvalue1 : checkvalue1.Substring(0, 3998)) + "%'; ";
-                    if (Convert.ToInt32(DB.Query11(tsql, false)) > 0)
+                    switch (PLog.Operation)
+                    {
+                        case "LOP_MODIFY_ROW":
+                            checkvalue1 = PLog.RowLog_Contents_1.ToText();
+                            checkvalue2 = PrimaryKeyValue;
+                            break;
+                        case "LOP_MODIFY_COLUMNS":
+                            checkvalue1 = "";
+                            checkvalue2 = "";
+                            break;
+                        case "LOP_INSERT_ROWS":
+                            checkvalue1 = PLog.RowLog_Contents_0.ToText().Substring(8, 4 * 2);
+                            checkvalue2 = "";
+                            break;
+                        default:
+                            checkvalue1 = "";
+                            checkvalue2 = "";
+                            break;
+                    }
+
+                    isfound = false;
+
+                    tsql = "truncate table #ModifiedRawData; ";
+                    DB.ExecuteSQL(tsql, false);
+
+                    tsql = " insert into #ModifiedRawData([RowLog Contents 0_var]) "
+                            + " select [RowLog Contents 0_var]=upper(replace(stuff((select replace(substring(C.[Value],charindex(N':',[Value],1)+1,48),N'†',N'') "
+                            + "                                                     from #temppagedata C "
+                            + $"                                                    where C.[LSN]=N'{PLog.Current_LSN}' "
+                            + $"                                                    and C.[ParentObject] like N'Slot {PLog.Slot_ID.ToString()} Offset%' "
+                            + "                                                     and C.[Object] like N'%Memory Dump%' "
+                            + "                                                     order by C.[Value] "
+                            + "                                                     for xml path('')),1,1,N''),N' ',N'')); ";
+                    DB.ExecuteSQL(tsql, false);
+
+                    if (FTableInfo.GetCompressionType(PLog.PartitionId) != CompressionType.NONE)
                     {
                         isfound = true;
                     }
-
-                    if (isfound == false && PLog.Operation == "LOP_MODIFY_ROW")
+                    else
                     {
-                        tsql = "truncate table #ModifiedRawData; ";
-                        DB.ExecuteSQL(tsql, false);
-
-                        tsql = "with t as("
-                                + "select *,SlotID=replace(substring(ParentObject,5,charindex(N'Offset',ParentObject)-5),N' ',N'') "
-                                + " from #temppagedata "
-                                + " where LSN=N'" + PLog.Current_LSN + "' "
-                                + " and Object like N'%Memory Dump%'), "
-                                + "u as("
-                                + "select [SlotID]=a.SlotID, "
-                                + "       [RowLog Contents 0_var]=upper(replace(stuff((select replace(substring(b.Value,charindex(N':',b.Value,1)+1,48),N'†',N'') "
-                                + "                                                    from t b "
-                                + "                                                    where b.SlotID=a.SlotID "
-                                + "                                                    group by b.Value "
-                                + "                                                    for xml path('')),1,1,N''),N' ',N'')) "
-                                + " from t a "
-                                + " group by a.SlotID) "
-                                + "insert into #ModifiedRawData([SlotID],[RowLog Contents 0_var]) "
-                                + "select [SlotID],[RowLog Contents 0_var] "
-                                + " from u "
-                                + " where [RowLog Contents 0_var] like N'%" + (checkvalue1.Length <= 3998 ? checkvalue1 : checkvalue1.Substring(0, 3998)) + "%' "
-                                + " and substring([RowLog Contents 0_var],9,len([RowLog Contents 0_var])-8) like N'%" + (checkvalue2.Length <= 3998 ? checkvalue2 : checkvalue2.Substring(0, 3998)) + "%'; ";
-                        DB.ExecuteSQL(tsql, false);
-
                         tsql = "select count(1) from #ModifiedRawData where [RowLog Contents 0_var] like N'%" + (checkvalue1.Length <= 3998 ? checkvalue1 : checkvalue1.Substring(0, 3998)) + "%'; ";
                         if (Convert.ToInt32(DB.Query11(tsql, false)) > 0)
                         {
                             isfound = true;
                         }
+
+                        if (isfound == false && PLog.Operation == "LOP_MODIFY_ROW")
+                        {
+                            tsql = "truncate table #ModifiedRawData; ";
+                            DB.ExecuteSQL(tsql, false);
+
+                            tsql = "with t as("
+                                    + "select *,SlotID=replace(substring(ParentObject,5,charindex(N'Offset',ParentObject)-5),N' ',N'') "
+                                    + " from #temppagedata "
+                                    + " where LSN=N'" + PLog.Current_LSN + "' "
+                                    + " and Object like N'%Memory Dump%'), "
+                                    + "u as("
+                                    + "select [SlotID]=a.SlotID, "
+                                    + "       [RowLog Contents 0_var]=upper(replace(stuff((select replace(substring(b.Value,charindex(N':',b.Value,1)+1,48),N'†',N'') "
+                                    + "                                                    from t b "
+                                    + "                                                    where b.SlotID=a.SlotID "
+                                    + "                                                    group by b.Value "
+                                    + "                                                    for xml path('')),1,1,N''),N' ',N'')) "
+                                    + " from t a "
+                                    + " group by a.SlotID) "
+                                    + "insert into #ModifiedRawData([SlotID],[RowLog Contents 0_var]) "
+                                    + "select [SlotID],[RowLog Contents 0_var] "
+                                    + " from u "
+                                    + " where [RowLog Contents 0_var] like N'%" + (checkvalue1.Length <= 3998 ? checkvalue1 : checkvalue1.Substring(0, 3998)) + "%' "
+                                    + " and substring([RowLog Contents 0_var],9,len([RowLog Contents 0_var])-8) like N'%" + (checkvalue2.Length <= 3998 ? checkvalue2 : checkvalue2.Substring(0, 3998)) + "%'; ";
+                            DB.ExecuteSQL(tsql, false);
+
+                            tsql = "select count(1) from #ModifiedRawData where [RowLog Contents 0_var] like N'%" + (checkvalue1.Length <= 3998 ? checkvalue1 : checkvalue1.Substring(0, 3998)) + "%'; ";
+                            if (Convert.ToInt32(DB.Query11(tsql, false)) > 0)
+                            {
+                                isfound = true;
+                            }
+                        }
                     }
-                }
 
-                if (isfound == true)
-                {
-                    tsql = @"update #ModifiedRawData set [RowLog Contents 0]=cast('' as xml).value('xs:hexBinary(substring(sql:column(""[RowLog Contents 0_var]""), 0) )', 'varbinary(max)'); ";
-                    DB.ExecuteSQL(tsql, false);
+                    if (isfound == true)
+                    {
+                        tsql = @"update #ModifiedRawData set [RowLog Contents 0]=cast('' as xml).value('xs:hexBinary(substring(sql:column(""[RowLog Contents 0_var]""), 0) )', 'varbinary(max)'); ";
+                        DB.ExecuteSQL(tsql, false);
 
-                    tsql = "select top 1 'MR1'=[RowLog Contents 0] from #ModifiedRawData; ";
-                    mr1 = DB.Query<byte[]>(tsql, false).FirstOrDefault();
+                        tsql = "select top 1 'MR1'=[RowLog Contents 0] from #ModifiedRawData; ";
+                        mr1 = DB.Query<byte[]>(tsql, false).FirstOrDefault();
+                    }
+                    else
+                    {
+                        mr1 = null;
+                    }
                 }
                 else
                 {
-                    mr1 = null;
+                    pageinfo = GetPageInfo(PLog.Page_ID);
+                    mr1 = pageinfo.SlotData[PLog.Slot_ID ?? 0].ToByteArray();
                 }
-            }
-            else
-            {
-                pageinfo = GetPageInfo(PLog.Page_ID);
-                mr1 = pageinfo.SlotData[PLog.Slot_ID ?? 0].ToByteArray();
             }
 
             return mr1;
@@ -992,8 +999,7 @@ namespace DBLOG
                     DB.ExecuteSQL(tsql, false);
 
                     tsql = $"DBCC PAGE([{DatabaseName}],{r.FileNum.ToString()},{r.PageNum.ToString()},2) with tableresults,no_infomsgs; ";
-                    tsql = "set transaction isolation level read uncommitted; "
-                            + $"insert into #temppagedatalob(ParentObject,Object,Field,Value) exec('{tsql}'); ";
+                    tsql = $"insert into #temppagedatalob(ParentObject,Object,Field,Value) exec('{tsql}'); ";
                     DB.ExecuteSQL(tsql, false);
 
                     // pagedata
@@ -1083,9 +1089,7 @@ namespace DBLOG
             r.SlotBeginIndex = new List<int>();
             r.SlotData = new Dictionary<int, string>();
             for (i = 0; i <= r.SlotCnt - 1; i = i + 1) { r.SlotBeginIndex.Add(0); r.SlotData.Add(i, ""); }
-            foreach (FLOG log in prevlogs
-                                 .OrderBy(p => (p.Slot_ID ?? 0).ToString().PadLeft(5, '0') + p.Current_LSN)
-                    )
+            foreach (FLOG log in prevlogs.OrderBy(p => (p.Slot_ID ?? 0).ToString().PadLeft(5, '0') + p.Current_LSN))
             {
                 i = (log.Slot_ID ?? 0);
 
