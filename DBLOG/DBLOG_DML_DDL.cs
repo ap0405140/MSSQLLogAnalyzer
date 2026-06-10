@@ -1998,33 +1998,41 @@ namespace DBLOG
                 tableinfo.SchemaName = PSchemaName;
                 tableinfo.TableName = PTablename;
 
+                // ObjectID
+                tsql = "select top 1 objectid=cast(a.object_id as varchar(20)) "
+                     + "from sys.tables a "
+                     + "join sys.schemas s on a.schema_id=s.schema_id "
+                     + $"where s.name=N'{PSchemaName}' "
+                     + $"and a.name=N'{PTablename}'; ";
+                tableinfo.ObjectID = DB.Query11(tsql, false);
+
                 // PrimaryKeyColumns
                 tsql = "select primarykeycolumn=c.name "
-                         + " from sys.indexes a "
-                         + " join sys.index_columns b on a.object_id=b.object_id and a.index_id=b.index_id "
-                         + " join sys.columns c on b.object_id=c.object_id and b.column_id=c.column_id "
-                         + " join sys.objects d on a.object_id=d.object_id "
-                         + " join sys.schemas s on d.schema_id=s.schema_id "
-                         + " where a.is_primary_key=1 "
-                         + $" and s.name=N'{PSchemaName}' "
-                         + "  and d.type='U' "
-                         + $" and d.name=N'{PTablename}' "
-                         + "  order by b.key_ordinal; ";
+                    + " from sys.indexes a "
+                    + " join sys.index_columns b on a.object_id=b.object_id and a.index_id=b.index_id "
+                    + " join sys.columns c on b.object_id=c.object_id and b.column_id=c.column_id "
+                    + " join sys.objects d on a.object_id=d.object_id "
+                    + " join sys.schemas s on d.schema_id=s.schema_id "
+                    + " where a.is_primary_key=1 "
+                    + $" and s.name=N'{PSchemaName}' "
+                    + "  and d.type='U' "
+                    + $" and d.name=N'{PTablename}' "
+                    + "  order by b.key_ordinal; ";
                 tableinfo.PrimaryKeyColumns = DB.Query<string>(tsql, false).ToList();
 
                 // ClusteredIndexColumns
                 tsql = "select clusteredindexcolumn=c.name "
-                        + "  from sys.indexes a "
-                        + "  join sys.index_columns b on a.object_id=b.object_id and a.index_id=b.index_id "
-                        + "  join sys.columns c on b.object_id=c.object_id and b.column_id=c.column_id "
-                        + "  join sys.objects d on a.object_id=d.object_id "
-                        + "  join sys.schemas s on d.schema_id=s.schema_id "
-                        + "  where a.index_id<=1 "
-                        + "  and a.type=1 "
-                        + $" and s.name=N'{PSchemaName}' "
-                        + "  and d.type='U' "
-                        + $" and d.name=N'{PTablename}' "
-                        + "  order by b.key_ordinal; ";
+                     + "from sys.indexes a "
+                     + "join sys.index_columns b on a.object_id=b.object_id and a.index_id=b.index_id "
+                     + "join sys.columns c on b.object_id=c.object_id and b.column_id=c.column_id "
+                     + "join sys.objects d on a.object_id=d.object_id "
+                     + "join sys.schemas s on d.schema_id=s.schema_id "
+                     + "where a.index_id<=1 "
+                     + "and a.type=1 "
+                     + $"and s.name=N'{PSchemaName}' "
+                     + " and d.type='U' "
+                     + $"and d.name=N'{PTablename}' "
+                     + " order by b.key_ordinal; ";
                 tableinfo.ClusteredIndexColumns = DB.Query<string>(tsql, false).ToList();
 
                 // IsHeapTable
@@ -2039,12 +2047,12 @@ namespace DBLOG
 
                 // AllocUnitName
                 tsql = "select allocunitname=isnull(d.name,N'') "
-                        + "  from sys.tables a "
-                        + "  join sys.schemas s on a.schema_id=s.schema_id "
-                        + "  join sys.indexes d on a.object_id=d.object_id "
-                        + "  where d.type in(0,1,5) "
-                        + $" and s.name=N'{PSchemaName}' "
-                        + $" and a.name=N'{PTablename}'; ";
+                     + "from sys.tables a "
+                     + "join sys.schemas s on a.schema_id=s.schema_id "
+                     + "join sys.indexes d on a.object_id=d.object_id "
+                     + "where d.type in(0,1,5) "
+                     + $"and s.name=N'{PSchemaName}' "
+                     + $"and a.name=N'{PTablename}'; ";
                 tableinfo.AllocUnitName = DB.Query<string>(tsql, false).FirstOrDefault();
 
                 // TextInRow

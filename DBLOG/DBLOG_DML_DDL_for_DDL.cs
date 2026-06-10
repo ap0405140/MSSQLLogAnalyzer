@@ -162,15 +162,28 @@ namespace DBLOG
                 dr.RedoSQL = redosql;
                 dr.UndoSQL = undosql;
 
+#if DEBUG
+                FCommon.WriteTextFile(LogFile, redosql);
+#endif
+
                 if (ignoretran == false)
                 {
                     ddllog.Add(dr);
 
                     if (TransactionName == "SELECT INTO_CREATE"
-                    && SELECTINTO_RS.ContainsKey(TransactionID) == true)
+                        && SELECTINTO_RS.ContainsKey(TransactionID) == true)
                     {
                         sublog = T_SELECT_INTO_INSERT(TransactionID, objectname);
                         ddllog.AddRange(sublog);
+
+#if DEBUG
+                        if (sublog.Count > 0)
+                        {
+                            redosql = sublog.First().TransactionID + " => \r\n" 
+                                      + string.Join("\r\n", sublog.Select(s => s.RedoSQL));
+                            FCommon.WriteTextFile(LogFile, redosql);
+                        }
+#endif
                     }
                 }
                 
@@ -178,9 +191,6 @@ namespace DBLOG
                 traninfo.AllocUnitId.AddRange(AllocUnitIds);
                 traninfo.AllocUnitName = objectname;
 
-#if DEBUG
-                FCommon.WriteTextFile(LogFile, redosql);
-#endif
             }
             else
             {
@@ -383,7 +393,10 @@ namespace DBLOG
                 AllocUnitIds.Add(dr["auid"]);
             }
             
-            PartitionIds = lsysrowsets.Where(p => Convert.ToInt32(p["idminor"]) <= 1).Select(p => p["rowsetid"]).Distinct().ToList(); // index_id<=1 [sys.partitions]
+            PartitionIds = lsysrowsets.Where(p => Convert.ToInt32(p["idminor"]) <= 1)  // index_id<=1 [sys.partitions]
+                                      .Select(p => p["rowsetid"])
+                                      .Distinct()
+                                      .ToList();
 
             lstemp1 = new List<string>();
             ftabinfo.Columns = new TableColumn[lsyscolpars.Count];
@@ -436,6 +449,10 @@ namespace DBLOG
                 dsysidxstats = lsysidxstats.First(p => p["type"] == "5");
                 constraint = $" index [{dsysidxstats["name"]}] clustered columnstore\r\n";
                 ftabinfo.IsColumnStore = true;
+            }
+            else
+            {
+                ftabinfo.IsColumnStore = false;
             }
 
             foreach (Dictionary<string, string> dsysrowsets in lsysrowsets.Where(p => p["ownertype"] == "1"))
@@ -494,6 +511,7 @@ namespace DBLOG
             Dictionary<string, string> sysidxstats0, sysidxstats1, syscolpars0, syscolpars1;
             List<DiffColumn> diff;
             TableInfo tableinfo, tableinfo0;
+            TableColumn tabcol0;
 
             TranslateSystemTables(d);
 
@@ -555,14 +573,8 @@ namespace DBLOG
                     undosql = $"exec sp_rename N'{schemaname}.{objectname}.{val1}',N'{val0}','COLUMN'; ";
 
                     tableinfo0 = tableinfo.FCopy();
-                    foreach (TableColumn col in tableinfo0.Columns)
-                    {
-                        if (col.ColumnName == val1)
-                        {
-                            col.ColumnName = val0;
-                            break;
-                        }
-                    }
+                    tabcol0 = tableinfo0.Columns.First(p => p.ColumnName == val1);
+                    tabcol0.ColumnName = val0;
                     tableinfo0.Version = curlsn;
                     UserTablesAdd($"{schemaname}.{objectname}", tableinfo0);
 
@@ -901,7 +913,7 @@ namespace DBLOG
 
         private void TTruncateTable(out string objectname, out string redosql, out string undosql)
         {
-            string allocunitname, schemaname, tabname, objectid;
+            string allocunitname, schemaname, tabname, objectid, lockinfo;
             KeyValuePair<string, List<TableInfo>> tab;
             TransactionInfo rtran;
             List<string> allocunitids;
@@ -956,6 +968,22 @@ namespace DBLOG
                 }
             }
 
+            if (string.IsNullOrEmpty(schemaname) == true && string.IsNullOrEmpty(objectname) == true)
+            {
+                lockinfo = DDLLogs_Tran.FirstOrDefault(p => string.IsNullOrEmpty(p.Lock_Information) == false)?.Lock_Information;
+                if (string.IsNullOrEmpty(lockinfo) == false) // demo value: HoBt 0:ACQUIRE_LOCK_SCH_M OBJECT: 5:1077578877:0 
+                {
+                    objectid = lockinfo.Split(new string[] { "OBJECT: " }, StringSplitOptions.None)[1].Split(':')[1];
+                    tab = UserTables.FirstOrDefault(p => p.Value.Any(x => x.ObjectID == objectid) == true);
+                    if (tab.Key != null)
+                    {
+                        tabname = tab.Key;
+                        schemaname = tabname.Split('.')[0];
+                        objectname = tabname.Split('.')[1];
+                    }
+                }
+            }
+
             if (string.IsNullOrEmpty(schemaname) == false && string.IsNullOrEmpty(objectname) == false)
             {
                 redosql = $"truncate table [{schemaname}].[{objectname}]; ";
@@ -973,12 +1001,12 @@ namespace DBLOG
             TranslateSystemTables(1);
 
             curlsn = DDLLogs_Tran.Max(p => p.Current_LSN);
-            dsysschobjs = fsysschobjs.First(p => p["type"] == "U");
+            dsysschobjs = lsysschobjs.First(p => p["type"] == "U");
             schemaname = Schemas[Convert.ToInt32(dsysschobjs["nsid"])];
             objectname = dsysschobjs["name"];
             FTableInfo = GetTableInfo(schemaname, objectname, curlsn);
 
-            dsysidxstats = fsysidxstats.First();
+            dsysidxstats = lsysidxstats.First();
             indexname = dsysidxstats["name"];
 
             (findextype, findexcolumns, fincludecolumns) = Tcreateindex_0(indexname, "CREATE INDEX", FTableInfo);
@@ -1044,33 +1072,54 @@ namespace DBLOG
             r = new List<DatabaseLog>();
             foreach (FLOG fplog in SELECTINTO_RS[TransactionID].Where(p => p.Operation == "LOP_FORMAT_PAGE").OrderBy(p => p.Current_LSN))
             {
-                fpage = GetPageInfo(fplog.Page_ID);
-                for (i = 0; i <= fpage.SlotCnt - 1; i = i + 1)
+                GetPrevPages(fplog.Current_LSN);
+                if (PrevPages.Any(p => p.pageid == fplog.Page_ID) == false)
                 {
-                    rc0 = fpage.SlotData[i].ToByteArray();
-                    TranslateData(rc0, FTableInfo.Columns);
-                    ValueList1 = "";
-                    WhereList0 = "";
-                    for (j = 0; j <= FTableInfo.Columns.Length - 1; j++)
+                    fpage = GetPageInfo(fplog.Page_ID);
+                    for (i = 0; i <= fpage.SlotCnt - 1; i = i + 1)
                     {
-                        if (FTableInfo.Columns[j].PhysicalStorageType == SqlDbType.Timestamp
-                            || FTableInfo.Columns[j].IsComputed == true
-                            || FTableInfo.Columns[j].IsHidden == true)
+                        rc0 = fpage.SlotData[i].ToByteArray();
+                        TranslateData(rc0, FTableInfo.Columns);
+                        ValueList1 = "";
+                        WhereList0 = "";
+                        for (j = 0; j <= FTableInfo.Columns.Length - 1; j++)
                         {
-                            continue;
+                            if (FTableInfo.Columns[j].PhysicalStorageType == SqlDbType.Timestamp
+                                || FTableInfo.Columns[j].IsComputed == true
+                                || FTableInfo.Columns[j].IsHidden == true)
+                            {
+                                continue;
+                            }
+
+                            Value = ColumnValue2SQLValue(FTableInfo.Columns[j]);
+                            ValueList1 = ValueList1 + (ValueList1.Length > 0 ? "," : "") + Value;
+                            WhereList0 = WhereList0
+                                         + (WhereList0.Length > 0 ? " and " : "")
+                                         + ColumnName2SQLName(FTableInfo.Columns[j])
+                                         + (FTableInfo.Columns[j].IsNull ? " is " : "=")
+                                         + Value;
                         }
+                        REDOSQL = $"insert into {objectname}({ColumnList}) values({ValueList1}); ";
+                        UNDOSQL = $"delete top(1) from {objectname} where {WhereList0}; ";
 
-                        Value = ColumnValue2SQLValue(FTableInfo.Columns[j]);
-                        ValueList1 = ValueList1 + (ValueList1.Length > 0 ? "," : "") + Value;
-                        WhereList0 = WhereList0
-                                     + (WhereList0.Length > 0 ? " and " : "")
-                                     + ColumnName2SQLName(FTableInfo.Columns[j])
-                                     + (FTableInfo.Columns[j].IsNull ? " is " : "=")
-                                     + Value;
+                        dr = new DatabaseLog();
+                        dr.LSN = DDLLogs_Tran.First().Current_LSN;
+                        dr.Type = "DML";
+                        dr.TransactionID = tranid;
+                        dr.BeginTime = DateTime.ParseExact(BeginTime, "yyyy/MM/dd HH:mm:ss:fff", CultureInfo.InvariantCulture);
+                        dr.EndTime = DateTime.ParseExact(EndTime, "yyyy/MM/dd HH:mm:ss:fff", CultureInfo.InvariantCulture);
+                        dr.Operation = "SELECT INTO_INSERT";
+                        dr.Message = "";
+                        dr.ObjectName = objectname;
+                        dr.RedoSQL = REDOSQL;
+                        dr.UndoSQL = UNDOSQL;
+
+                        r.Add(dr);
                     }
-                    REDOSQL = $"insert into {objectname}({ColumnList}) values({ValueList1}); ";
-                    UNDOSQL = $"delete top(1) from {objectname} where {WhereList0}; ";
-
+                }
+                else
+                {
+                    // NO ROW DATA in SELECT INTO Transaction
                     dr = new DatabaseLog();
                     dr.LSN = DDLLogs_Tran.First().Current_LSN;
                     dr.Type = "DML";
@@ -1080,11 +1129,12 @@ namespace DBLOG
                     dr.Operation = "SELECT INTO_INSERT";
                     dr.Message = "";
                     dr.ObjectName = objectname;
-                    dr.RedoSQL = REDOSQL;
-                    dr.UndoSQL = UNDOSQL;
+                    dr.RedoSQL = "";
+                    dr.UndoSQL = "";
 
                     r.Add(dr);
                 }
+
             }
 
             return r;
@@ -1298,7 +1348,12 @@ namespace DBLOG
             return (columndefin, fcol);
         }
 
-        private (List<string> indextype, List<string> indexcolumns, List<string> includecolumns) Tcreateindex_0(string pindexname, string ptrantype, TableInfo tableinfo)
+        private (List<string> indextype, List<string> indexcolumns, List<string> includecolumns) Tcreateindex_0
+           (
+            string pindexname, 
+            string ptrantype, 
+            TableInfo tableinfo
+           )
         {
             List<string> indextype, indexcolumns, includecolumns;
             string columnname, sorttype;

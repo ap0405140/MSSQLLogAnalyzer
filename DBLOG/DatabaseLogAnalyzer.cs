@@ -273,7 +273,7 @@ namespace DBLOG
                     + $" where [Transaction ID]<>N'0000:00000000' "
                     + $" and exists(select 1 from sys.fn_dblog(null,null) b where b.[Transaction ID]=t.[Transaction ID] and b.Operation=N'LOP_BEGIN_XACT' and b.[Transaction Name] in({string.Join(",", DDLTranName.Select(n => $"N'{n}'"))})) "
                     + "  and exists(select 1 from sys.fn_dblog(null,null) b where b.[Transaction ID]=t.[Transaction ID] and b.Operation=N'LOP_COMMIT_XACT') "
-                    + "  and exists(select 1 from sys.fn_dblog(null,null) b where b.[Transaction ID]=t.[Transaction ID] and b.AllocUnitName is not null) "
+                    //+ "  and exists(select 1 from sys.fn_dblog(null,null) b where b.[Transaction ID]=t.[Transaction ID] and b.AllocUnitName is not null) "
                     + (string.IsNullOrEmpty(minlsn) == false ? $"and [Current LSN]>=N'{minlsn}' " : "")
                     + (string.IsNullOrEmpty(maxlsn) == false ? $"and [Current LSN]<=N'{maxlsn}' " : "");
             dt = DB.Query<FLOG>(_tsql, false);
