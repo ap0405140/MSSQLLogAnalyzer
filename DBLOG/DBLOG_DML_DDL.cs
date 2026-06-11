@@ -141,6 +141,21 @@ namespace DBLOG
             tsql = "select typeid=rtrim(xtype)+'_'+rtrim(xusertype),name from sys.systypes; ";
             Systypes = DB.Query<(string typeid, string name)>(tsql, false).ToDictionary(p => p.typeid, p => p.name);
 
+            tsql = @"if object_id('tempdb..#temppagedata') is not null drop table #temppagedata; 
+                        create table #temppagedata(LSN nvarchar(1000),ParentObject sysname,Object sysname,Field sysname,Value nvarchar(max)); ";
+            DB.ExecuteSQL(tsql, false);
+
+            tsql = "create index ix_#temppagedata on #temppagedata(LSN); ";
+            DB.ExecuteSQL(tsql, false);
+
+            tsql = @"if object_id('tempdb..#temppagedatalob') is not null drop table #temppagedatalob; 
+                        create table #temppagedatalob(ParentObject sysname,Object sysname,Field sysname,Value nvarchar(max)); ";
+            DB.ExecuteSQL(tsql, false);
+
+            tsql = @"if object_id('tempdb..#ModifiedRawData') is not null drop table #ModifiedRawData; 
+                        create table #ModifiedRawData([SlotID] int,[RowLog Contents 0_var] nvarchar(max),[RowLog Contents 0] varbinary(max)); ";
+            DB.ExecuteSQL(tsql, false);
+
         }
 
         public List<DatabaseLog> AnalyzeLog()
@@ -174,21 +189,6 @@ namespace DBLOG
                 DTMRlist.Columns.Add("AllocUnitId", typeof(string));
                 DTMRlist.Columns.Add("MR1", typeof(byte[]));
                 DTMRlist.Columns.Add("MR1TEXT", typeof(string));
-
-                tsql = @"if object_id('tempdb..#temppagedata') is not null drop table #temppagedata; 
-                        create table #temppagedata(LSN nvarchar(1000),ParentObject sysname,Object sysname,Field sysname,Value nvarchar(max)); ";
-                DB.ExecuteSQL(tsql, false);
-
-                tsql = "create index ix_#temppagedata on #temppagedata(LSN); ";
-                DB.ExecuteSQL(tsql, false);
-
-                tsql = @"if object_id('tempdb..#temppagedatalob') is not null drop table #temppagedatalob; 
-                        create table #temppagedatalob(ParentObject sysname,Object sysname,Field sysname,Value nvarchar(max)); ";
-                DB.ExecuteSQL(tsql, false);
-
-                tsql = @"if object_id('tempdb..#ModifiedRawData') is not null drop table #ModifiedRawData; 
-                        create table #ModifiedRawData([SlotID] int,[RowLog Contents 0_var] nvarchar(max),[RowLog Contents 0] varbinary(max)); ";
-                DB.ExecuteSQL(tsql, false);
 
                 stemp = "";
                 if (AllocUnitType == "NORMAL")
@@ -833,7 +833,14 @@ namespace DBLOG
             if (PrevPages.Any(p => p.pageid == PLog.Page_ID) == true)
             {
                 pageinfo = GetPageInfo(PLog.Page_ID);
-                mr1 = pageinfo.SlotData[PLog.Slot_ID ?? 0].ToByteArray();
+                if (pageinfo != null && pageinfo.SlotData.ContainsKey(PLog.Slot_ID ?? 0) == true)
+                {
+                    mr1 = pageinfo.SlotData[PLog.Slot_ID ?? 0].ToByteArray();
+                }
+                else
+                {
+                    mr1 = null;
+                }
             }
             else
             {
@@ -973,7 +980,7 @@ namespace DBLOG
             if (pp.pageid != null)
             {
                 r = GetPrevPageInfo(pp.lsn, pp.pageid);
-
+                
                 if (FPageData.ContainsKey(pageid) == true)
                 {
                     FPageData.Remove(pageid);
@@ -1084,52 +1091,60 @@ namespace DBLOG
                  + "  order by [Current LSN] ";
             prevlogs = DB.Query<FLOG>(tsql, false);
 
-            r = new FPageInfo();
-            r.SlotCnt = (prevlogs.Count > 0 ? prevlogs.Where(p => p.Slot_ID != -1).Max(p => p.Slot_ID ?? 0) + 1 : 0);
-            r.SlotBeginIndex = new List<int>();
-            r.SlotData = new Dictionary<int, string>();
-            for (i = 0; i <= r.SlotCnt - 1; i = i + 1) { r.SlotBeginIndex.Add(0); r.SlotData.Add(i, ""); }
-            foreach (FLOG log in prevlogs.OrderBy(p => (p.Slot_ID ?? 0).ToString().PadLeft(5, '0') + p.Current_LSN))
+            if (prevlogs.Count == 0 
+                || (prevlogs.Count > 0 && prevlogs.Any(p => p.Slot_ID != -1) == false))
             {
-                i = (log.Slot_ID ?? 0);
-
-                switch (log.Operation)
+                r = null;
+            }
+            else
+            {
+                r = new FPageInfo();
+                r.SlotCnt = (prevlogs.Count > 0 ? prevlogs.Where(p => p.Slot_ID != -1).Max(p => p.Slot_ID ?? 0) + 1 : 0);
+                r.SlotBeginIndex = new List<int>();
+                r.SlotData = new Dictionary<int, string>();
+                for (i = 0; i <= r.SlotCnt - 1; i = i + 1) { r.SlotBeginIndex.Add(0); r.SlotData.Add(i, ""); }
+                foreach (FLOG log in prevlogs.OrderBy(p => (p.Slot_ID ?? 0).ToString().PadLeft(5, '0') + p.Current_LSN))
                 {
-                    case "LOP_FORMAT_PAGE":
-                        r.PageType = log.PageFormat_PageType.ToString();
-                        break;
-                    case "LOP_INSERT_ROWS":
-                        r.SlotData[i] = log.RowLog_Contents_0.ToText();
-                        break;
-                    case "LOP_MODIFY_ROW":
-                        if (prevlogs.Any(p => string.Compare(p.Current_LSN, log.Current_LSN) == -1
-                                              && p.Operation == "LOP_INSERT_ROWS"
-                                              && p.Page_ID == log.Page_ID
-                                              && p.Slot_ID == log.Slot_ID) == true)
-                        {
-                            r.SlotData[i] = r.SlotData[i].Stuff(Convert.ToInt32(log.Offset_in_Row) * 2,
-                                                                log.RowLog_Contents_0.Length * 2,
-                                                                log.RowLog_Contents_1.ToText());
-                        }
+                    i = (log.Slot_ID ?? 0);
 
-                        break;
+                    switch (log.Operation)
+                    {
+                        case "LOP_FORMAT_PAGE":
+                            r.PageType = log.PageFormat_PageType.ToString();
+                            break;
+                        case "LOP_INSERT_ROWS":
+                            r.SlotData[i] = log.RowLog_Contents_0.ToText();
+                            break;
+                        case "LOP_MODIFY_ROW":
+                            if (prevlogs.Any(p => string.Compare(p.Current_LSN, log.Current_LSN) == -1
+                                                  && p.Operation == "LOP_INSERT_ROWS"
+                                                  && p.Page_ID == log.Page_ID
+                                                  && p.Slot_ID == log.Slot_ID) == true)
+                            {
+                                r.SlotData[i] = r.SlotData[i].Stuff(Convert.ToInt32(log.Offset_in_Row) * 2,
+                                                                    log.RowLog_Contents_0.Length * 2,
+                                                                    log.RowLog_Contents_1.ToText());
+                            }
+
+                            break;
+                    }
+
+                    if (i >= 0)
+                    {
+                        r.SlotBeginIndex[i] = 96 + r.SlotData.Where(p => p.Key < i).Sum(p => p.Value.Length / 2);
+                    }
                 }
 
-                if (i >= 0)
+                tmpstr = new string(' ', 96 * 2);
+                for (i = 0; i <= r.SlotCnt - 1; i = i + 1)
                 {
-                    r.SlotBeginIndex[i] = 96 + r.SlotData.Where(p => p.Key < i).Sum(p => p.Value.Length / 2);
+                    tmpstr = tmpstr + r.SlotData[i];
                 }
+                tmpstr = tmpstr
+                         + "78".Replicate(1024 * 8 - 96 - 42 - r.SlotData.Sum(p => p.Value.Length / 2))
+                         + new string(' ', 42 * 2);
+                r.PageData = tmpstr;
             }
-
-            tmpstr = new string(' ', 96 * 2);
-            for (i = 0; i <= r.SlotCnt - 1; i = i + 1)
-            {
-                tmpstr = tmpstr + r.SlotData[i];
-            }
-            tmpstr = tmpstr
-                     + "78".Replicate(1024 * 8 - 96 - 42 - r.SlotData.Sum(p => p.Value.Length / 2))
-                     + new string(' ', 42 * 2);
-            r.PageData = tmpstr;
 
             return r;
         }

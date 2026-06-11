@@ -1589,7 +1589,7 @@ namespace DBLOG
                 && ls.Operation == "LOP_MODIFY_ROW"
                 && ls.AllocUnitName == "sys.sysschobjs.clst"
                 && ls.Offset_in_Row == 36
-                && ls.Modify_Size == 1)
+                && (ls.Modify_Size == 1 || ls.Modify_Size == 2))
             {
                 dr0 = DDL_GetColumnValue("sys", "sysschobjs", r).ToDict();
                 if (dr0["type"] != "U")
