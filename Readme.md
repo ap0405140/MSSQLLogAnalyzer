@@ -141,10 +141,11 @@ if exists(select 1 from sys.assemblies where name=N'FCLR')
    drop assembly FCLR;
 
 create assembly FCLR 
- from 'D:\github\MSSQLLogAnalyzer\FCLR\bin\Release\FCLR.dll'
+ from 'D:\github\MSSQLLogAnalyzer\FCLR\bin\Release\FCLR.dll' --> change the path for your environment.
  with permission_set=unsafe;
 
-alter assembly FCLR add file from 'D:\github\MSSQLLogAnalyzer\FCLR\bin\Release\FCLR.pdb';
+alter assembly FCLR 
+ add file from 'D:\github\MSSQLLogAnalyzer\FCLR\bin\Release\FCLR.pdb'; --> change the path for your environment.
 
 -- create function
 if exists(select 1 from sys.objects where name=N'DBAReadLog')
