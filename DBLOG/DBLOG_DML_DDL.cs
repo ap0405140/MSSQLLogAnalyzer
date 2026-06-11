@@ -1084,7 +1084,7 @@ namespace DBLOG
             tsql = "set transaction isolation level read uncommitted; "
                  + "select * "
                  + "  from sys.fn_dblog(null,null) t "
-                 + $" where [Current LSN]<N'{lsn}' "
+                 + $" where [Current LSN]<=N'{lsn}' "
                  + $" and [Current LSN]>=(select max([Current LSN]) from sys.fn_dblog(null,null) b where b.[Current LSN]<N'{lsn}' and b.[Page ID]=t.[Page ID] and b.Operation=N'LOP_FORMAT_PAGE') "
                  + $" and [Page ID]=N'{pageid}' "
                  + "  and Operation in(N'LOP_FORMAT_PAGE',N'LOP_INSERT_ROWS',N'LOP_MODIFY_ROW') "
