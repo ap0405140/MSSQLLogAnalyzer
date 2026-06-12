@@ -1,5 +1,5 @@
 ﻿using DBLOG.Common;
-using Newtonsoft.Json;
+using NLog;
 using System;
 using System.Collections.Generic;
 using System.Data;
@@ -8,6 +8,8 @@ using System.Linq;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Xml;
 using System.Xml.Linq;
 
@@ -18,10 +20,11 @@ namespace DBLOG
     {
         public static List<FLOG> DDLLogs, DDLLogs_Tran;
         private static List<TransactionInfo> DDLLogs_FTranID;
-        private static string DatabaseName, tsql, LogFile;
+        private static string DatabaseName, tsql;
         private static List<string> RowCompressionAffectsStorage;
         private static List<(string pageid, string lsn)> PrevPages; // fileid+pageid 
         private static DatabaseOperation DB, DB_DAC;
+        private static Logger NLogger;
 
         private string TableName,
                        SchemaName,
@@ -100,12 +103,12 @@ namespace DBLOG
 
         }
 
-        public static void Init(string PDatabaseName, DatabaseOperation PDB, string PLogFile)
+        public static void Init(string PDatabaseName, DatabaseOperation PDB, Logger logger)
         {
             DatabaseName = PDatabaseName;
             DB = PDB;
             //DB_DAC = new DatabaseOperation($"ADMIN:{PDB.ServerName}", PDB.DatabaseName, PDB.LoginName, PDB.Password);
-            LogFile = PLogFile;
+            NLogger = logger;
 
             #region RowCompressionAffectsStorage
             RowCompressionAffectsStorage = new List<string>();
@@ -179,6 +182,7 @@ namespace DBLOG
             List<FLOG> wslog, vlog;
             FLOG llog, tlog;
             List<string> ddltranids;
+            JsonSerializerOptions settings;
 
             logs = new List<DatabaseLog>();
             if (DTLogs != null && FTableInfo != null)
@@ -189,6 +193,15 @@ namespace DBLOG
                 DTMRlist.Columns.Add("AllocUnitId", typeof(string));
                 DTMRlist.Columns.Add("MR1", typeof(byte[]));
                 DTMRlist.Columns.Add("MR1TEXT", typeof(string));
+
+                settings = new JsonSerializerOptions
+                {
+                    ReferenceHandler = ReferenceHandler.IgnoreCycles,
+                    PreferredObjectCreationHandling = JsonObjectCreationHandling.Replace,
+                    IncludeFields = true,
+                    PropertyNameCaseInsensitive = true,
+                    WriteIndented = true
+                };
 
                 stemp = "";
                 if (AllocUnitType == "NORMAL")
@@ -313,7 +326,7 @@ namespace DBLOG
                         }
 
 #if DEBUG
-                        FCommon.WriteTextFile(LogFile, $"TRANID={log.Transaction_ID} LSN={log.Current_LSN},LSN2={string.Join(",", wslog.Select(x => x.Current_LSN))},Operation={log.Operation} ");
+                        NLogger.Info($"TRANID={log.Transaction_ID} LSN={log.Current_LSN},LSN2={string.Join(",", wslog.Select(x => x.Current_LSN))},Operation={log.Operation} ");
 #endif
 
                         tsql = $"select top 1 BeginTime=substring(BeginTime,1,19),EndTime=substring(EndTime,1,19) from #TransactionList where TransactionID='{log.Transaction_ID}'; ";
@@ -531,7 +544,7 @@ namespace DBLOG
                                         }
 
                                         FTableInfo.Columns[j].IsNull = false;
-                                        FTableInfo.Columns[j].Value = JsonConvert.SerializeObject(tj);
+                                        FTableInfo.Columns[j].Value = JsonSerializer.Serialize(tj, settings); // JsonConvert.SerializeObject(tj);
                                     }
 
                                     Value = ColumnValue2SQLValue(FTableInfo.Columns[j]);
@@ -620,7 +633,7 @@ namespace DBLOG
                         }
 
 #if DEBUG
-                        FCommon.WriteTextFile(LogFile, $"LSN={log.Current_LSN},Operation={log.Operation},\r\nREDOSQL={REDOSQL},\r\nUNDOSQL={UNDOSQL} ");
+                        NLogger.Info($"LSN={log.Current_LSN},Operation={log.Operation},\r\nREDOSQL={REDOSQL},\r\nUNDOSQL={UNDOSQL} ");
 #endif
 
                         if (string.IsNullOrEmpty(BeginTime) == false)
@@ -655,6 +668,7 @@ namespace DBLOG
                     {
 #if DEBUG
                         stemp = $"Message:{(ex.Message ?? "")}  StackTrace:{(ex.StackTrace ?? "")} ";
+                        NLogger.Error(stemp);
                         throw new Exception(stemp);
 #else
                         tmplog = new DatabaseLog();

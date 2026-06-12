@@ -7,9 +7,10 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
-using Newtonsoft.Json;
 
 namespace DBLOG.Common
 {
@@ -299,7 +300,8 @@ namespace DBLOG.Common
         {
             T y;
             string json;
-            JsonSerializerSettings settings;
+            //JsonSerializerSettings settings;
+            JsonSerializerOptions settings;
 
             if (ReferenceEquals(x, null))
             {
@@ -307,49 +309,59 @@ namespace DBLOG.Common
             }
             else
             {
-                settings = new JsonSerializerSettings
+                //settings = new JsonSerializerSettings
+                //{
+                //    ReferenceLoopHandling = ReferenceLoopHandling.Ignore,
+                //    ObjectCreationHandling = ObjectCreationHandling.Replace
+                //};
+                //json = JsonConvert.SerializeObject(x, settings);
+                //y = JsonConvert.DeserializeObject<T>(json, settings);
+
+                settings = new JsonSerializerOptions
                 {
-                    ReferenceLoopHandling = ReferenceLoopHandling.Ignore,
-                    ObjectCreationHandling = ObjectCreationHandling.Replace
+                    ReferenceHandler = ReferenceHandler.IgnoreCycles,
+                    PreferredObjectCreationHandling = JsonObjectCreationHandling.Replace,
+                    IncludeFields = true,
+                    PropertyNameCaseInsensitive = true
                 };
-                json = JsonConvert.SerializeObject(x, settings);
-                y = JsonConvert.DeserializeObject<T>(json, settings);
+                json = JsonSerializer.Serialize(x, settings);
+                y = JsonSerializer.Deserialize<T>(json, settings);
             }
 
             return y;
         }
 
-        public static void WriteTextFile(string pFileName, string pContent, bool pAppend = true, bool pLogTime = true)
-        {
-            FileStream fs;
-            StreamWriter writer;
-            FileMode fm;
+        //public static void WriteTextFile(string pFileName, string pContent, bool pAppend = true, bool pLogTime = true)
+        //{
+        //    FileStream fs;
+        //    StreamWriter writer;
+        //    FileMode fm;
 
-            if (pLogTime == true)
-            {
-                pContent = $"{DateTime.Now.ToString("yyyy/MM/dd HH:mm:ss.fff")}: {pContent}";
-            }
+        //    if (pLogTime == true)
+        //    {
+        //        pContent = $"{DateTime.Now.ToString("yyyy/MM/dd HH:mm:ss.fff")}: {pContent}";
+        //    }
 
-            if (System.IO.File.Exists(pFileName) == true && pAppend == true)
-            {
-                fm = FileMode.Append;
-            }
-            else
-            {
-                fm = FileMode.Create;
-            }
-            fs = new FileStream(pFileName,
-                                fm,
-                                FileAccess.Write,
-                                FileShare.None);
-            writer = new StreamWriter(fs, Encoding.Unicode);
-            writer.WriteLine(pContent);
+        //    if (System.IO.File.Exists(pFileName) == true && pAppend == true)
+        //    {
+        //        fm = FileMode.Append;
+        //    }
+        //    else
+        //    {
+        //        fm = FileMode.Create;
+        //    }
+        //    fs = new FileStream(pFileName,
+        //                        fm,
+        //                        FileAccess.Write,
+        //                        FileShare.None);
+        //    writer = new StreamWriter(fs, Encoding.Unicode);
+        //    writer.WriteLine(pContent);
 
-            writer.Close();
-            fs.Close();
-            writer.Dispose();
-            fs.Dispose();
-        }
+        //    writer.Close();
+        //    fs.Close();
+        //    writer.Dispose();
+        //    fs.Dispose();
+        //}
 
         public static Dictionary<string, string> ToDict(this TableColumn[] tablecolumns)
         {

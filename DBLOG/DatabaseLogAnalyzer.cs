@@ -1,11 +1,14 @@
-﻿using System;
+﻿using DBLOG.Common;
+using NLog;
+using NLog.Config;
+using NLog.Targets;
+using System;
 using System.Collections.Generic;
 using System.Data;
 using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using DBLOG.Common;
 
 namespace DBLOG
 {
@@ -25,7 +28,7 @@ namespace DBLOG
                        _MinLSN,
                        _tsql;
         public int ReadPercent;       // 读取进度百分比 1->100
-        public string LogFile = "AnalysisLog.txt";
+        public static Logger NLogger;
 
         /// <summary>
         /// Initializes a new instance of the DBLOG.DatabaseLogAnalyzer class.
@@ -38,6 +41,8 @@ namespace DBLOG
         {
             DB = new DatabaseOperation(pservername, pdatabasename, plogin, ppassword);
             DB.RefreshConnect();
+
+            Init();
         }
 
         /// <summary>
@@ -49,8 +54,32 @@ namespace DBLOG
             DB = new DatabaseOperation(pconnectstring);
             DB.RefreshConnect();
 
+            Init();
+        }
+
+        private void Init()
+        {
+            FileTarget LogFile, LogFile_Exception;
+            LoggingConfiguration LogConfig;
+
+            // Init DDLTranName and ExceptTranName
             DDLTranName = new List<string>() { "CREATE TABLE", "DROPOBJ", "create-schema", "DROP SCHEMA", "CREATE INDEX", "DROP INDEX", "user_transaction", "ALTER TABLE", "TRUNCATE TABLE", "SELECT INTO" };
             ExceptTranName = new List<string>() { "AllocHeapPageSimpleXactDML", "AllocFirstPage" };
+
+            // Init NLog
+            LogFile = new NLog.Targets.FileTarget("logfile");
+            LogFile.FileName = $"logs/AnalysisLog_{DateTime.Now.ToString("yyyyMMddHHmmssfff")}.txt";
+            LogFile.Layout = "${date:format=yyyy/MM/dd HH\\:mm\\:ss.fff} ${level:uppercase=true} \r\n${message}\r\n";
+
+            LogFile_Exception = new NLog.Targets.FileTarget("logfile_exception");
+            LogFile_Exception.FileName = $"logs/error_{DateTime.Now.ToString("yyyyMMddHHmmssfff")}.txt";
+            LogFile_Exception.Layout = "${date:format=yyyy/MM/dd HH\\:mm\\:ss.fff} ${level:uppercase=true} \r\n${message}\r\n";
+
+            LogConfig = new LoggingConfiguration();
+            LogConfig.AddRule(NLog.LogLevel.Info, NLog.LogLevel.Info, LogFile);
+            LogConfig.AddRule(NLog.LogLevel.Error, NLog.LogLevel.Error, LogFile_Exception);
+            LogManager.Configuration = LogConfig;
+            NLogger = LogManager.GetCurrentClassLogger();
 
         }
 
@@ -76,11 +105,6 @@ namespace DBLOG
             _objectname = (_objectname.Length > 0 && _objectname.Contains(".") == false ? "dbo." : "") + _objectname;
             _starttime = pStartTime;
             _endtime = pEndTime;
-
-            if (File.Exists(LogFile) == true)
-            {
-                File.Delete(LogFile);
-            }
 
             logs = new List<DatabaseLog>();
             ReadPercent = 0;
@@ -200,7 +224,7 @@ namespace DBLOG
 
             ReadPercent = ReadPercent + 5;
 
-            DBLOG_DML_DDL.Init(databasename, DB, LogFile);
+            DBLOG_DML_DDL.Init(databasename, DB, NLogger);
             DBLOG_DML_DDL.DDLLogs = Loglist_DDL;
 
             if (tables.Count > 0)
@@ -231,7 +255,7 @@ namespace DBLOG
                     }
 
 #if DEBUG
-                    FCommon.WriteTextFile(LogFile, $"Start Analysis Log for [{schemaname}].[{tablename}]. ({allocunitid.ToString()},{maxlsn}) ");
+                    NLogger.Info($"Begin Analysis Log for [{schemaname}].[{tablename}]. (partitionid={partitionid.ToString()},allocunitid={allocunitid.ToString()},maxlsn={maxlsn})");
 #endif
 
                     tmplog = tablelist[i].AnalyzeLog()
@@ -241,7 +265,7 @@ namespace DBLOG
                     ReadPercent = ReadPercent + Convert.ToInt32(Math.Floor((tablelist[i].DTLogs.Count * 1.0) / (Loglist.Count * 1.0) * 50.0));
 
 #if DEBUG
-                    FCommon.WriteTextFile(LogFile, $"End Analysis Log for [{schemaname}].[{tablename}]. ({allocunitid.ToString()},{maxlsn}) ");
+                    NLogger.Info($"End Analysis Log for [{schemaname}].[{tablename}]. (partitionid={partitionid.ToString()},allocunitid={allocunitid.ToString()},maxlsn={maxlsn})");
 #endif
 
                     i = i + 1;

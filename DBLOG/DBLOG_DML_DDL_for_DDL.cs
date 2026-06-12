@@ -1,7 +1,4 @@
-﻿using DBLOG.Common;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
@@ -17,6 +14,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Xml;
 using System.Xml.Linq;
+using DBLOG.Common;
 
 namespace DBLOG
 {
@@ -94,7 +92,7 @@ namespace DBLOG
             if (TransactionName != "SELECT INTO_INSERT")
             {
 #if DEBUG
-                FCommon.WriteTextFile(LogFile, $"DDL TransactionID={TransactionID} TransactionName={TransactionName}");
+                NLogger.Info($"DDL TransactionID={TransactionID} TransactionName={TransactionName}");
 #endif
 
                 dr = new DatabaseLog();
@@ -163,7 +161,7 @@ namespace DBLOG
                 dr.UndoSQL = undosql;
 
 #if DEBUG
-                FCommon.WriteTextFile(LogFile, redosql);
+                NLogger.Info($"RedoSql:{redosql}\r\nUndoSql:{undosql}");
 #endif
 
                 if (ignoretran == false)
@@ -181,7 +179,7 @@ namespace DBLOG
                         {
                             redosql = sublog.First().TransactionID + " => \r\n" 
                                       + string.Join("\r\n", sublog.Select(s => s.RedoSQL));
-                            FCommon.WriteTextFile(LogFile, redosql);
+                            NLogger.Info(redosql);
                         }
 #endif
                     }
