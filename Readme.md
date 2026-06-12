@@ -137,6 +137,13 @@ create assembly [System.Runtime.Serialization]
  from 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319\System.Runtime.Serialization.dll'
  with permission_set=unsafe;
 
+if exists(select 1 from sys.assemblies where name=N'System.ValueTuple')
+   drop assembly [System.ValueTuple];
+
+create assembly [System.ValueTuple]
+ from 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319\System.ValueTuple.dll'
+ with permission_set=unsafe;
+
 if exists(select 1 from sys.assemblies where name=N'FCLR')
    drop assembly FCLR;
 
