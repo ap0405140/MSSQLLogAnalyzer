@@ -63,7 +63,7 @@ namespace DBLOG
             LoggingConfiguration LogConfig;
 
             // Init DDLTranName and ExceptTranName
-            DDLTranName = new List<string>() { "CREATE TABLE", "DROPOBJ", "create-schema", "DROP SCHEMA", "CREATE INDEX", "DROP INDEX", "user_transaction", "ALTER TABLE", "TRUNCATE TABLE", "SELECT INTO" };
+            DDLTranName = new List<string>() { "CREATE TABLE", "DROPOBJ", "create-schema", "DROP SCHEMA", "CREATE INDEX", "DROP INDEX", "user_transaction", "ALTER TABLE", "TRUNCATE TABLE", "SELECT INTO", "CREATE/ALTER VIEW" };
             ExceptTranName = new List<string>() { "AllocHeapPageSimpleXactDML", "AllocFirstPage" };
 
             // Init NLog

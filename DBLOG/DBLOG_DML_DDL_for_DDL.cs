@@ -155,6 +155,9 @@ namespace DBLOG
                     case "DROP INDEX":
                         TDropIndex(out objectname, out redosql, out undosql);
                         break;
+                    case "CREATE/ALTER VIEW":
+                        TCreateAlterView(out objectname, out redosql, out undosql);
+                        break;
                 }
                 dr.ObjectName = objectname;
                 dr.RedoSQL = redosql;
@@ -359,7 +362,7 @@ namespace DBLOG
 
         private void TCreateTable(int d, out string objectname, out string redosql, out string undosql, out List<string> AllocUnitIds, out List<string> PartitionIds)
         {
-            string schemaname, columndefinition, constraint, others, stk;
+            string schemaname, columndefinition, constraint, others, stk, codes;
             bool isnode, isedge;
             List<string> lstemp1, lstemp2, lstemp3;
             string stemp1, stemp2, stemp3, stemp4, stemp5;
@@ -370,123 +373,139 @@ namespace DBLOG
 
             TranslateSystemTables(d);
 
-            dsysschobjs = lsysschobjs.First(p => p["type"] == "U");
+            dsysschobjs = lsysschobjs.First();
             schemaname = Schemas[Convert.ToInt32(dsysschobjs["nsid"])];
             objectname = dsysschobjs["name"];
-            
-            ftabinfo = new TableInfo();
-            ftabinfo.SchemaName = schemaname;
-            ftabinfo.TableName = objectname;
-            ftabinfo.ObjectID = dsysschobjs["id"];
-
-            isnode = ((Convert.ToInt32(dsysschobjs["status2"]) & 0x00000100) != 0 ? true : false);
-            ftabinfo.IsNodeTable = isnode;
-
-            isedge = ((Convert.ToInt32(dsysschobjs["status2"]) & 0x00000200) != 0 ? true : false);
-            ftabinfo.IsEdgeTable = isedge;
 
             AllocUnitIds = new List<string>();
-            foreach (Dictionary<string, string> dr in lsysallocunits)
+            PartitionIds = new List<string>();
+            switch (dsysschobjs["type"])
             {
-                AllocUnitIds.Add(dr["auid"]);
-            }
-            
-            PartitionIds = lsysrowsets.Where(p => Convert.ToInt32(p["idminor"]) <= 1)  // index_id<=1 [sys.partitions]
-                                      .Select(p => p["rowsetid"])
-                                      .Distinct()
-                                      .ToList();
+                case "U":
+                    ftabinfo = new TableInfo();
+                    ftabinfo.SchemaName = schemaname;
+                    ftabinfo.TableName = objectname;
+                    ftabinfo.ObjectID = dsysschobjs["id"];
 
-            lstemp1 = new List<string>();
-            ftabinfo.Columns = new TableColumn[lsyscolpars.Count];
-            i = 0;
-            foreach (Dictionary<string, string> col in lsyscolpars.OrderBy(p => Convert.ToInt32(p["colid"])))
-            {
-                (stemp1, fcol) = Tgetcolumn(col, ftabinfo, d);
-                if (string.IsNullOrEmpty(stemp1) == false) { lstemp1.Add(stemp1); }
-                ftabinfo.Columns[i] = fcol;
+                    isnode = ((Convert.ToInt32(dsysschobjs["status2"]) & 0x00000100) != 0 ? true : false);
+                    ftabinfo.IsNodeTable = isnode;
 
-                i = i + 1;
-            }
-            
-            columndefinition = string.Join(",\r\n ", lstemp1) + ",";
+                    isedge = ((Convert.ToInt32(dsysschobjs["status2"]) & 0x00000200) != 0 ? true : false);
+                    ftabinfo.IsEdgeTable = isedge;
+                    
+                    foreach (Dictionary<string, string> dr in lsysallocunits)
+                    {
+                        AllocUnitIds.Add(dr["auid"]);
+                    }
 
-            constraint = "";
-            //  primary key, unique
-            if (lsysschobjs.Any(p => p["type"] == "PK" || p["type"] == "UQ") == true)
-            {
-                dsysschobjs = lsysschobjs.First(p => p["type"] == "PK" || p["type"] == "UQ");
-                stemp4 = dsysschobjs["name"]; // constraint name
-                stemp5 = (dsysschobjs["type"] == "PK" ? "primary key" : "unique"); // constraint type
+                    PartitionIds = lsysrowsets.Where(p => Convert.ToInt32(p["idminor"]) <= 1)  // index_id<=1 [sys.partitions]
+                                              .Select(p => p["rowsetid"])
+                                              .Distinct()
+                                              .ToList();
 
-                (lstemp1, lstemp2, lstemp3) = Tcreateindex_0(stemp4, "CREATE TABLE", ftabinfo);
-                stemp1 = string.Join(" ", lstemp1); // index type   (clustered/nonclustered)
-                stemp2 = string.Join(",", lstemp2); // index columns
-                stemp3 = string.Join(",", lstemp3); // include columns
+                    lstemp1 = new List<string>();
+                    ftabinfo.Columns = new TableColumn[lsyscolpars.Count];
+                    i = 0;
+                    foreach (Dictionary<string, string> col in lsyscolpars.OrderBy(p => Convert.ToInt32(p["colid"])))
+                    {
+                        (stemp1, fcol) = Tgetcolumn(col, ftabinfo, d);
+                        if (string.IsNullOrEmpty(stemp1) == false) { lstemp1.Add(stemp1); }
+                        ftabinfo.Columns[i] = fcol;
 
-                constraint = $" constraint [{stemp4}] "
-                           + $"{stemp5} {stemp1} "
-                           + $"({stemp2}) "
-                           + $"{(lstemp3.Count > 0 ? $"include({stemp3})" : "")}"
-                           + $"\r\n";
+                        i = i + 1;
+                    }
 
-                if (stemp5 == "primary key")
-                {
-                    ftabinfo.PrimaryKeyColumns = stemp2.Split(',').Select(p => p.Split(' ')[0].Replace("[", "").Replace("]", "")).ToList();
-                }
+                    columndefinition = string.Join(",\r\n ", lstemp1) + ",";
 
-                if (stemp1 == "clustered")
-                {
-                    ftabinfo.ClusteredIndexColumns = stemp2.Split(',').Select(p => p.Split(' ')[0].Replace("[", "").Replace("]", "")).ToList();
-                }
-                
-            }
+                    constraint = "";
+                    //  primary key, unique
+                    if (lsysschobjs.Any(p => p["type"] == "PK" || p["type"] == "UQ") == true)
+                    {
+                        dsysschobjs = lsysschobjs.First(p => p["type"] == "PK" || p["type"] == "UQ");
+                        stemp4 = dsysschobjs["name"]; // constraint name
+                        stemp5 = (dsysschobjs["type"] == "PK" ? "primary key" : "unique"); // constraint type
 
-            // clustered columnstore
-            if (lsysidxstats.Any(p => p["type"] == "5") == true) // CLUSTERED COLUMNSTORE
-            {
-                dsysidxstats = lsysidxstats.First(p => p["type"] == "5");
-                constraint = $" index [{dsysidxstats["name"]}] clustered columnstore\r\n";
-                ftabinfo.IsColumnStore = true;
-            }
-            else
-            {
-                ftabinfo.IsColumnStore = false;
-            }
+                        (lstemp1, lstemp2, lstemp3) = Tcreateindex_0(stemp4, "CREATE TABLE", ftabinfo);
+                        stemp1 = string.Join(" ", lstemp1); // index type   (clustered/nonclustered)
+                        stemp2 = string.Join(",", lstemp2); // index columns
+                        stemp3 = string.Join(",", lstemp3); // include columns
 
-            foreach (Dictionary<string, string> dsysrowsets in lsysrowsets.Where(p => p["ownertype"] == "1"))
-            {
-                partitionid = Convert.ToInt64(dsysrowsets["rowsetid"]);
-                Enum.TryParse<CompressionType>(dsysrowsets["cmprlevel"], out CompressionType enumval);
-                ftabinfo.DataCompressionType.Add(partitionid, enumval);
-            }
+                        constraint = $" constraint [{stemp4}] "
+                                   + $"{stemp5} {stemp1} "
+                                   + $"({stemp2}) "
+                                   + $"{(lstemp3.Count > 0 ? $"include({stemp3})" : "")}"
+                                   + $"\r\n";
 
-            ftabinfo.IsHeapTable = lsysidxstats.Any(p => p["indid"] == "0");
-            ftabinfo.TextInRow = Convert.ToInt32(lsysidxstats.First(p => Convert.ToInt32(p["indid"]) <= 1)["intprop"]);
-            ftabinfo.Version = DDLLogs_Tran.Max(p => p.Current_LSN);
+                        if (stemp5 == "primary key")
+                        {
+                            ftabinfo.PrimaryKeyColumns = stemp2.Split(',').Select(p => p.Split(' ')[0].Replace("[", "").Replace("]", "")).ToList();
+                        }
 
-            objectname = $"[{schemaname}].[{objectname}]";
-            others = "";
-            if (isnode == true)
-            {
-                others = others + " as node";
-            }
-            if (isedge == true)
-            {
-                others = others + " as edge";
-            }
+                        if (stemp1 == "clustered")
+                        {
+                            ftabinfo.ClusteredIndexColumns = stemp2.Split(',').Select(p => p.Split(' ')[0].Replace("[", "").Replace("]", "")).ToList();
+                        }
 
-            if (d == 1)
-            {
-                redosql = $"create table {objectname}\r\n({columndefinition}\r\n{constraint}){others}; ";
-                undosql = $"drop table {objectname}; ";
-            }
-            else
-            {
-                redosql = $"drop table {objectname}; ";
-                undosql = $"create table {objectname}\r\n({columndefinition}\r\n{constraint}){others}; ";
+                    }
 
-                stk = objectname.Replace("[", "").Replace("]", "");
-                UserTablesAdd(stk, ftabinfo);
+                    // clustered columnstore
+                    if (lsysidxstats.Any(p => p["type"] == "5") == true) // CLUSTERED COLUMNSTORE
+                    {
+                        dsysidxstats = lsysidxstats.First(p => p["type"] == "5");
+                        constraint = $" index [{dsysidxstats["name"]}] clustered columnstore\r\n";
+                        ftabinfo.IsColumnStore = true;
+                    }
+                    else
+                    {
+                        ftabinfo.IsColumnStore = false;
+                    }
+
+                    foreach (Dictionary<string, string> dsysrowsets in lsysrowsets.Where(p => p["ownertype"] == "1"))
+                    {
+                        partitionid = Convert.ToInt64(dsysrowsets["rowsetid"]);
+                        Enum.TryParse<CompressionType>(dsysrowsets["cmprlevel"], out CompressionType enumval);
+                        ftabinfo.DataCompressionType.Add(partitionid, enumval);
+                    }
+
+                    ftabinfo.IsHeapTable = lsysidxstats.Any(p => p["indid"] == "0");
+                    ftabinfo.TextInRow = Convert.ToInt32(lsysidxstats.First(p => Convert.ToInt32(p["indid"]) <= 1)["intprop"]);
+                    ftabinfo.Version = DDLLogs_Tran.Max(p => p.Current_LSN);
+
+                    objectname = $"[{schemaname}].[{objectname}]";
+                    others = "";
+                    if (isnode == true)
+                    {
+                        others = others + " as node";
+                    }
+                    if (isedge == true)
+                    {
+                        others = others + " as edge";
+                    }
+
+                    if (d == 1)
+                    {
+                        redosql = $"create table {objectname}\r\n({columndefinition}\r\n{constraint}){others}; ";
+                        undosql = $"drop table {objectname}; ";
+                    }
+                    else
+                    {
+                        redosql = $"drop table {objectname}; ";
+                        undosql = $"create table {objectname}\r\n({columndefinition}\r\n{constraint}){others}; ";
+
+                        stk = objectname.Replace("[", "").Replace("]", "");
+                        UserTablesAdd(stk, ftabinfo);
+                    }
+                    break;
+                case "V":
+                    objectname = $"[{schemaname}].[{objectname}]";
+                    codes = DecodeSQLCode(lsysobjvalues[0]);
+                    redosql = $"drop view {objectname}; ";
+                    undosql = codes;
+                    break;
+                default:
+                    redosql = "";
+                    undosql = "";
+                    break;
             }
 
         }
@@ -1043,6 +1062,68 @@ namespace DBLOG
             undosql = $"create {indextype} index [{indexname}] on [{schemaname}].[{objectname}]({indexcolumns}){(fincludecolumns.Count > 0 ? $" include({includecolumns})" : "")}; ";
             objectname = $"[{schemaname}].[{objectname}].[{indexname}]";
 
+        }
+
+        private void TCreateAlterView(out string objectname, out string redosql, out string undosql)
+        {
+            string schemaname, curlsn, codes0, codes1;
+            
+            TranslateSystemTables(1);
+
+            curlsn = DDLLogs_Tran.Max(p => p.Current_LSN);
+            dsysschobjs = lsysschobjs.First(p => p["type"] == "V");
+            schemaname = Schemas[Convert.ToInt32(dsysschobjs["nsid"])];
+            objectname = dsysschobjs["name"];
+
+            codes1 = DecodeSQLCode(lsysobjvalues[0]);
+            redosql = codes1;
+
+            undosql = $"drop view [{schemaname}].[{objectname}]; ";
+            if (fsysschobjs.Any() == true && fsysschobjs0.Any() == true)
+            {
+                redosql = $"{undosql}\r\ngo" 
+                          + "\r\n" 
+                          + redosql;
+
+                codes0 = DecodeSQLCode(fsysobjvalues0[0]);
+                undosql = $"{undosql}\r\ngo"
+                          + "\r\n"  
+                          + codes0;
+            }
+
+            objectname = $"[{schemaname}].[{objectname}]";
+
+        }
+
+        private string DecodeSQLCode(Dictionary<string, string> psysobjvalue) // sys.sysobjvalues
+        {
+            string r, imageval;
+            byte[] imagevalBA;
+
+            r = string.Empty;
+            imageval = psysobjvalue["imageval"];
+            if (string.IsNullOrEmpty(imageval) == false)
+            {
+                imagevalBA = imageval.Stuff(0, 2, "").ToByteArray();
+
+                if (psysobjvalue["value"] == "2") // without encryption
+                {
+                    r = Encoding.UTF8.GetString(imagevalBA);
+                }
+
+                if (psysobjvalue["value"] == "0") // with encryption
+                {
+                    // TODO
+                    r = "[ENCRYPTION CODE]";
+                }
+
+                while (r.StartsWith("\r\n"))
+                {
+                    r = r.Substring(2);
+                }
+            }
+
+            return r;
         }
 
         private List<DatabaseLog> T_SELECT_INTO_INSERT(string TransactionID, string objectname)
