@@ -21,7 +21,7 @@ namespace DBLOG
     [Serializable]
     public class DatabaseLogAnalyzer
     {
-        private static DatabaseOperation DB;
+        private static DatabaseOperation DB, DB_DAC;
         private static List<string> DDLTranName, ExceptTranName;
         private string _objectname,
                        _starttime, _endtime,
@@ -40,7 +40,6 @@ namespace DBLOG
         public DatabaseLogAnalyzer(string pservername, string pdatabasename, string plogin, string ppassword)
         {
             DB = new DatabaseOperation(pservername, pdatabasename, plogin, ppassword);
-            DB.RefreshConnect();
 
             Init();
         }
@@ -52,7 +51,6 @@ namespace DBLOG
         public DatabaseLogAnalyzer(string pconnectstring)
         {
             DB = new DatabaseOperation(pconnectstring);
-            DB.RefreshConnect();
 
             Init();
         }
@@ -61,6 +59,14 @@ namespace DBLOG
         {
             FileTarget LogFile, LogFile_Exception;
             LoggingConfiguration LogConfig;
+
+            // Init DAC connect
+            DB.RefreshConnect();
+            if (DB_DAC != null)
+            {
+                DB_DAC.Dispose();
+            }
+            DB_DAC = new DatabaseOperation($"ADMIN:{DB.ServerName}", DB.DatabaseName, DB.LoginName, DB.Password);
 
             // Init DDLTranName and ExceptTranName
             DDLTranName = new List<string>() { "CREATE TABLE", "DROPOBJ", "create-schema", "DROP SCHEMA", "CREATE INDEX", "DROP INDEX", "user_transaction", "ALTER TABLE", "TRUNCATE TABLE", "SELECT INTO", "CREATE/ALTER VIEW" };
@@ -224,7 +230,7 @@ namespace DBLOG
 
             ReadPercent = ReadPercent + 5;
 
-            DBLOG_DML_DDL.Init(databasename, DB, NLogger);
+            DBLOG_DML_DDL.Init(databasename, DB, DB_DAC, NLogger);
             DBLOG_DML_DDL.DDLLogs = Loglist_DDL;
 
             if (tables.Count > 0)

@@ -1,4 +1,4 @@
-## DBLOG.DatabaseLogAnalyzer can read the SQL Server transaction logs online, and return RedoSQL and UndoSQL for every transaction. It base on SQL Server sys.fn_dblog() function and develop some extension. 
+## Microsoft SQL Server Log Analyzer. Base on sys.fn_dblog() function and develop some extension, Read SQL Server transaction logs online, return Redo SQL and Undo SQL for every transaction. 
 
 #### below is a use demo:
 Connect to SQL Server, create a table dbo.OrderDetail, and run some sql on this table.
@@ -96,12 +96,11 @@ Query recovery result:
 ----
 #### Some Tips:
 #### 1. The SQL Server to be analyzed needs 2008 or later version.
-#### 2. Target Database Recovery model must be 'Full'.
-#### 3. This module only analyzes for DML and DDL transaction.
-#### 4. For develop, please install Visual Studio 2017 or later version and .NET Framework 4.8.
+#### 2. This module only analyzes for DML and DDL transaction.
+#### 3. Target Database Recovery model must be 'Full'.
+#### 4. The database connection account must be a member of the 'sysadmin' server role.
 #### 5. Please contact me when have any question: ap0405140@163.com
-#### 6. This project is open source, welcome to contribute code or give me some advice to make it better.
-#### 7. This project use GPL-3.0 license, For commercial use or to obtain a commercial license, please contact the author.
+#### 6. This project use GPL-3.0 license, For commercial use or to obtain a commercial license, please contact the author.
 ----
 
 #### SQLCLR use example:

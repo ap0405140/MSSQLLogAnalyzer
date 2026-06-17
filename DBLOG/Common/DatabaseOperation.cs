@@ -12,7 +12,7 @@ using static System.Net.Mime.MediaTypeNames;
 
 namespace DBLOG.Common
 {
-    public class DatabaseOperation
+    public class DatabaseOperation : IDisposable
     {
         public string ServerName,
                       DatabaseName,
@@ -20,7 +20,9 @@ namespace DBLOG.Common
                       Password,
                       ApplicationName,
                       ErrorMessage,
-                      ConnectString;
+                      ConnectString,
+                      DatabaseGuid,
+                      FamilyGuid;
         public int Vesion;
         private SqlConnection scn;
         private SqlCommand scm;
@@ -29,19 +31,24 @@ namespace DBLOG.Common
 
         public DatabaseOperation(string pservername, string pdatabasename, string plogin, string ppassword, string papplicationname = "")
         {
+            string pooling;
+
             ServerName = pservername;
             DatabaseName = pdatabasename;
             LoginName = plogin;
             Password = ppassword;
             ApplicationName = papplicationname;
+            pooling = (pservername.ToUpper().StartsWith("ADMIN:") == true ? "false" : "true");
 
-            ConnectString = string.Format("server={0};database={1};uid={2};pwd={3};Application Name={4};Connection Timeout=5;Integrated Security=false;",
+            ConnectString = string.Format("server={0};database={1};uid={2};pwd={3};Application Name={4};Connection Timeout=5;Integrated Security=false;Pooling={5};",
                                           ServerName,
                                           DatabaseName,
                                           LoginName,
                                           Password,
-                                          ApplicationName);
-            GetDatabaseInfo();
+                                          ApplicationName,
+                                          pooling);
+
+            Init();
         }
 
         public DatabaseOperation(string pconnectionstring)
@@ -49,7 +56,6 @@ namespace DBLOG.Common
             SqlConnectionStringBuilder builder;
 
             ConnectString = pconnectionstring;
-            GetDatabaseInfo();
 
             builder = new System.Data.SqlClient.SqlConnectionStringBuilder(pconnectionstring);
             ServerName = builder.DataSource;
@@ -57,12 +63,20 @@ namespace DBLOG.Common
             LoginName = builder.UserID;
             Password = builder.Password;
 
+            if (ServerName.ToUpper().StartsWith("ADMIN:") == true
+                && pconnectionstring.ToLower().Contains("pooling=false;") == false)
+            {
+                ConnectString = ConnectString + "Pooling=false;";
+            }
+
+            Init();
         }
 
-        private void GetDatabaseInfo()
+        private void Init()
         {
             string tsql, runresult;
 
+            // get database info
             tsql = "select @@version; ";
             runresult = Query11(tsql, false);
             Vesion = Convert.ToInt32(runresult.Substring(21, 4));
@@ -73,6 +87,37 @@ namespace DBLOG.Common
             //tsql = "select @@servername; ";
             //ServerName = Query11(tsql, false);
 
+            tsql = $"select "
+                 + $"  DatabaseGuid=convert(nvarchar(50),r.database_guid), "
+                 + $"  FamilyGuid=convert(nvarchar(50),r.family_guid) "
+                 + $"from sys.databases d with(nolock) "
+                 + $"join sys.database_recovery_status r with(nolock) on d.database_id=r.database_id "
+                 + $"where d.name=N'{DatabaseName}' ";
+            (DatabaseGuid, FamilyGuid) = Query<(string, string)>(tsql, false).FirstOrDefault();
+
+        }
+
+        public void Dispose()
+        {
+            if (scn != null)
+            {
+                try
+                {
+                    if (scn.State != ConnectionState.Closed)
+                    {
+                        scn.Close();
+                    }
+                }
+                catch 
+                {  
+                
+                }
+                finally
+                {
+                    scn.Dispose();
+                    scn = null;
+                }
+            }
         }
 
         public void RefreshConnect()

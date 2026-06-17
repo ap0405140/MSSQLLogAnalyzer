@@ -376,6 +376,44 @@ namespace DBLOG.Common
             return r;
         }
 
+        public static byte[] DecryptRC4(byte[] key, byte[] data)
+        {
+            byte[] r, s;
+            int i, j, x, y;
+            byte tb;
+
+            r = new byte[data.Length];
+
+            s = new byte[256];
+            for (i = 0; i <= 255; i = i + 1)
+            {
+                s[i] = (byte)i;
+            }
+
+            j = 0;
+            for (i = 0; i <= 255; i = i + 1)
+            {
+                j = (j + s[i] + key[i % key.Length]) % 256;
+                tb = s[i];
+                s[i] = s[j];
+                s[j] = tb;
+            }
+
+            x = 0;
+            y = 0;
+            for (i = 0; i <= data.Length - 1; i = i + 1)
+            {
+                x = (x + 1) % 256;
+                y = (y + s[x]) % 256;
+                tb = s[x];
+                s[x] = s[y];
+                s[y] = tb;
+
+                r[i] = (byte)(data[i] ^ s[(s[x] + s[y]) % 256]);
+            }
+
+            return r;
+        }
 
     }
     

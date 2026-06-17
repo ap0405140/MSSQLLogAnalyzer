@@ -1,4 +1,5 @@
-﻿using System;
+﻿using DBLOG.Common;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
@@ -9,12 +10,12 @@ using System.Linq;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices.ComTypes;
+using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Xml;
 using System.Xml.Linq;
-using DBLOG.Common;
 
 namespace DBLOG
 {
@@ -497,10 +498,10 @@ namespace DBLOG
                     }
                     break;
                 case "V":
-                    objectname = $"[{schemaname}].[{objectname}]";
-                    codes = DecodeSQLCode(lsysobjvalues[0]);
+                    codes = DecodeSQLCode("V", schemaname, objectname, lsysobjvalues[0]);
                     redosql = $"drop view {objectname}; ";
                     undosql = codes;
+                    objectname = $"[{schemaname}].[{objectname}]";
                     break;
                 default:
                     redosql = "";
@@ -1075,7 +1076,7 @@ namespace DBLOG
             schemaname = Schemas[Convert.ToInt32(dsysschobjs["nsid"])];
             objectname = dsysschobjs["name"];
 
-            codes1 = DecodeSQLCode(lsysobjvalues[0]);
+            codes1 = DecodeSQLCode("V", schemaname, objectname, lsysobjvalues[0]);
             redosql = codes1;
 
             undosql = $"drop view [{schemaname}].[{objectname}]; ";
@@ -1085,7 +1086,7 @@ namespace DBLOG
                           + "\r\n" 
                           + redosql;
 
-                codes0 = DecodeSQLCode(fsysobjvalues0[0]);
+                codes0 = DecodeSQLCode("V", schemaname, objectname, fsysobjvalues0[0]);
                 undosql = $"{undosql}\r\ngo"
                           + "\r\n"  
                           + codes0;
@@ -1095,10 +1096,19 @@ namespace DBLOG
 
         }
 
-        private string DecodeSQLCode(Dictionary<string, string> psysobjvalue) // sys.sysobjvalues
+        private string DecodeSQLCode
+            (
+              string objtype,
+              string schemaname,
+              string objectname,    
+              Dictionary<string, string> psysobjvalue // sys.sysobjvalues
+            ) 
         {
-            string r, imageval;
-            byte[] imagevalBA;
+            string r, imageval, fake;
+            byte[] imagevalBA, imagevalBAF, fakeba, decryptedba, objectidba, dbguidba, subobjba, rc4hashba, rc4key;
+            bool isexists;
+            int i, objid;
+            short subobjval;
 
             r = string.Empty;
             imageval = psysobjvalue["imageval"];
@@ -1113,8 +1123,70 @@ namespace DBLOG
 
                 if (psysobjvalue["value"] == "0") // with encryption
                 {
-                    // TODO
-                    r = "[ENCRYPTION CODE]";
+                    tsql = $"select isexists=cast(case when object_id(N'[{schemaname}].[{objectname}]',N'{objtype}')={psysobjvalue["objid"]} then 1 else 0 end as bit) ";
+                    isexists = DB.Query<bool>(tsql, false).FirstOrDefault();
+
+                    if (isexists == true)
+                    {
+                        fake = "";
+                        switch (objtype)
+                        {
+                            case "V":
+                                fake = $"alter view [{schemaname}].[{objectname}] with encryption as select X='{new string('-', 40003)}'; ";
+                                break;
+                            case "P":
+                                //fake = $"alter proc [{schemaname}].[{objectname}] with encryption as select X='{new string('-', 40003)}'; ";
+                                break;
+                        }
+
+                        if (string.IsNullOrEmpty(fake) == false)
+                        {
+                            DB_DAC.ExecuteSQL("begin tran;", false);
+                            DB_DAC.ExecuteSQL(fake, false);
+                            tsql = $"select top 1 imageval from sys.sysobjvalues with(nolock) where objid=object_id(N'[{schemaname}].[{objectname}]',N'{objtype}') and valclass=1 ";
+                            imagevalBAF = DB_DAC.Query<byte[]>(tsql, false).FirstOrDefault();
+                            DB_DAC.ExecuteSQL("rollback tran;", true);
+                            
+                            fake = fake.Stuff(0, 6, "create ");
+                            fakeba = Encoding.Unicode.GetBytes(fake);
+
+                            decryptedba = new byte[imagevalBA.Length];
+                            for (i = 0; i <= imagevalBA.Length - 1; i = i + 1)
+                            {
+                                decryptedba[i] = (byte)(imagevalBA[i] ^ (fakeba[i] ^ imagevalBAF[i]));
+                            }
+                            r = Encoding.Unicode.GetString(decryptedba);
+                        }
+                    }
+                    else
+                    {
+                        // Reference: https://www.sql.kiwi/2016/05/the-internals-of-with-encryption/
+                        dbguidba = Guid.Parse(DB.FamilyGuid).ToByteArray();
+
+                        objid = Convert.ToInt32(psysobjvalue["objid"]);
+                        objectidba = BitConverter.GetBytes(objid);
+
+                        subobjval = Convert.ToInt16(objtype == "P" ? 1 : 0);
+                        subobjba = BitConverter.GetBytes(subobjval);
+
+                        rc4hashba = new byte[dbguidba.Length + objectidba.Length + subobjba.Length];
+                        Buffer.BlockCopy(dbguidba, 0, rc4hashba, 0, dbguidba.Length);
+                        Buffer.BlockCopy(objectidba, 0, rc4hashba, dbguidba.Length, objectidba.Length);
+                        Buffer.BlockCopy(subobjba, 0, rc4hashba, dbguidba.Length + objectidba.Length, subobjba.Length);
+                        
+                        using (var sha1 = System.Security.Cryptography.SHA1.Create())
+                        {
+                            rc4key = sha1.ComputeHash(rc4hashba);
+                        }
+
+                        decryptedba = FCommon.DecryptRC4(rc4key, imagevalBA);
+                        r = Encoding.Unicode.GetString(decryptedba);
+                    }
+
+                    while (r.StartsWith("-*"))
+                    {
+                        r = r.Stuff(0, 2, "");
+                    }
                 }
 
                 while (r.StartsWith("\r\n"))

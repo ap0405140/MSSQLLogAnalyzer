@@ -103,11 +103,11 @@ namespace DBLOG
 
         }
 
-        public static void Init(string PDatabaseName, DatabaseOperation PDB, Logger logger)
+        public static void Init(string PDatabaseName, DatabaseOperation PDB, DatabaseOperation PDB_DAC, Logger logger)
         {
             DatabaseName = PDatabaseName;
             DB = PDB;
-            //DB_DAC = new DatabaseOperation($"ADMIN:{PDB.ServerName}", PDB.DatabaseName, PDB.LoginName, PDB.Password);
+            DB_DAC = PDB_DAC;
             NLogger = logger;
 
             #region RowCompressionAffectsStorage
