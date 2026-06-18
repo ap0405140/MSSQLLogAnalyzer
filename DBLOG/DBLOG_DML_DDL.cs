@@ -55,7 +55,7 @@ namespace DBLOG
 
             if (traninfo == null)
             {
-                wstrans = DDLLogs.Where(p => string.Compare(p.Current_LSN, PMaxLsn) == 1
+                wstrans = DDLLogs.Where(p => string.Compare(p.Current_LSN, PMaxLsn) > 0
                                               && DDLLogs.Any(e => e.Transaction_ID == p.Transaction_ID 
                                                                   && (e.Transaction_Name == "DROPOBJ" || e.Transaction_Name == "ALTER TABLE")) == true
                                               && DDLLogs_FTranID.Any(t => t.TransactionID == p.Transaction_ID) == false)
@@ -86,7 +86,7 @@ namespace DBLOG
         {
             TransactionInfo r;
 
-            r = DDLLogs_FTranID.FirstOrDefault(t => string.Compare(t.LSNList.Min(), PMaxLsn) == 1
+            r = DDLLogs_FTranID.FirstOrDefault(t => string.Compare(t.LSNList.Min(), PMaxLsn) > 0
                                                     && (t.TransactionName == "DROPOBJ" || t.TransactionName == "ALTER TABLE")
                                                     && t.AllocUnitId.Contains(PAllocUnitId.ToString()) == true
                                                     && (t.PartitionID.Contains(PPartitionId.ToString()) == true || t.TransactionName == "ALTER TABLE")
@@ -305,7 +305,7 @@ namespace DBLOG
                         {
                             llog = DTLogs
                                    .Where(p => p.Transaction_ID == log.Transaction_ID
-                                               && string.Compare(p.Current_LSN, log.Current_LSN) == -1
+                                               && string.Compare(p.Current_LSN, log.Current_LSN) < 0
                                                && IsLCXTEXT(p) == false)
                                    .OrderByDescending(p => p.Current_LSN)
                                    .FirstOrDefault();
@@ -313,8 +313,8 @@ namespace DBLOG
                             wslog = DTLogs
                                     .Where(p => p.Transaction_ID == log.Transaction_ID
                                                 && IsLCXTEXT(p) == true
-                                                && string.Compare(p.Current_LSN, log.Current_LSN) == -1
-                                                && string.Compare(p.Current_LSN, stemp) == 1)
+                                                && string.Compare(p.Current_LSN, log.Current_LSN) < 0
+                                                && string.Compare(p.Current_LSN, stemp) > 0)
                                     .ToList();
                         }
                         else
@@ -745,7 +745,7 @@ namespace DBLOG
             {
                 if (log.Operation != "LOP_FORMAT_PAGE" 
                     && wslog.Any(p => p.Page_ID == log.Page_ID
-                                      && string.Compare(p.Current_LSN, log.Current_LSN) == -1
+                                      && string.Compare(p.Current_LSN, log.Current_LSN) < 0
                                       && p.Operation == "LOP_FORMAT_PAGE"
                                 ) == true)
                 {
@@ -1130,7 +1130,7 @@ namespace DBLOG
                             r.SlotData[i] = log.RowLog_Contents_0.ToText();
                             break;
                         case "LOP_MODIFY_ROW":
-                            if (prevlogs.Any(p => string.Compare(p.Current_LSN, log.Current_LSN) == -1
+                            if (prevlogs.Any(p => string.Compare(p.Current_LSN, log.Current_LSN) < 0
                                                   && p.Operation == "LOP_INSERT_ROWS"
                                                   && p.Page_ID == log.Page_ID
                                                   && p.Slot_ID == log.Slot_ID) == true)

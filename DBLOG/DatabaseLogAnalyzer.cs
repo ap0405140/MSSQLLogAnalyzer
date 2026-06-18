@@ -69,7 +69,7 @@ namespace DBLOG
             DB_DAC = new DatabaseOperation($"ADMIN:{DB.ServerName}", DB.DatabaseName, DB.LoginName, DB.Password);
 
             // Init DDLTranName and ExceptTranName
-            DDLTranName = new List<string>() { "CREATE TABLE", "DROPOBJ", "create-schema", "DROP SCHEMA", "CREATE INDEX", "DROP INDEX", "user_transaction", "ALTER TABLE", "TRUNCATE TABLE", "SELECT INTO", "CREATE/ALTER VIEW" };
+            DDLTranName = new List<string>() { "CREATE TABLE", "DROPOBJ", "create-schema", "DROP SCHEMA", "CREATE INDEX", "DROP INDEX", "user_transaction", "ALTER TABLE", "TRUNCATE TABLE", "SELECT INTO", "CREATE/ALTER VIEW", "CREATE/ALTER PROCEDURE", "CREATE/ALTER FUNCTION" };
             ExceptTranName = new List<string>() { "AllocHeapPageSimpleXactDML", "AllocFirstPage" };
 
             // Init NLog
