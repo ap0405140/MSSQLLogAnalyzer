@@ -165,6 +165,9 @@ namespace DBLOG
                     case "CREATE/ALTER FUNCTION":
                         TCreateAlterSQLModule("FUN", out objectname, out redosql, out undosql); // FUN = IF / FN / TF
                         break;
+                    case "CREATE/ALTER TRIGGER":
+                        TCreateAlterSQLModule("TR", out objectname, out redosql, out undosql);
+                        break;
                 }
                 dr.ObjectName = objectname;
                 dr.RedoSQL = redosql;
@@ -508,6 +511,7 @@ namespace DBLOG
         {
             string schemaname, codes;
             List<string> objtypes;
+            List<Dictionary<string, string>> dls;
 
             TranslateSystemTables(d);
 
@@ -517,8 +521,23 @@ namespace DBLOG
             AllocUnitIds = new List<string>();
             PartitionIds = new List<string>();
 
-            objtypes = new List<string>() { "U", "V", "P", "IF", "FN", "TF" }; // , "TR"
-            dsysschobjs = lsysschobjs.FirstOrDefault(p => objtypes.Contains(p["type"]) == true);
+            dsysschobjs = null;
+            objtypes = new List<string>() { "U", "V", "P", "IF", "FN", "TF", "TR" };
+            dls = lsysschobjs.Where(p => objtypes.Contains(p["type"]) == true).ToList();
+            if (dls.Count == 1)
+            {
+                dsysschobjs = dls[0];
+            }
+            else
+            {
+                if (dls.Any(p => p["type"] == "U") == true
+                    && fsysschobjs.Any(p => p["type"] == "U") == true)
+                {
+                    dls.RemoveAll(p => p["type"] == "U");
+                    dsysschobjs = dls[0];
+                }
+            }
+
             if (dsysschobjs != null)
             {
                 schemaname = Schemas[Convert.ToInt32(dsysschobjs["nsid"])];
@@ -559,9 +578,11 @@ namespace DBLOG
                         redosql = $"drop function {objectname}; ";
                         undosql = codes;
                         break;
-                    default:
-                        redosql = "";
-                        undosql = "";
+                    case "TR": // trigger
+                        codes = DecodeSQLCode("TR", schemaname, objectname, lsysobjvalues.FirstOrDefault(p => p["imageval"] != "nullvalue"));
+                        objectname = $"[{schemaname}].[{objectname}]";
+                        redosql = $"drop trigger {objectname}; ";
+                        undosql = codes;
                         break;
                 }
             }
@@ -636,7 +657,7 @@ namespace DBLOG
                 diff = DDL_Compare(syscolpars0, syscolpars1);
                 if (diff.Any(p => p.ColumnName == "name") == true)
                 {
-                    dsysschobjs = fsysschobjs.First(p => p["id"] == syscolpars1["id"]);
+                    dsysschobjs = fsysschobjs.First(); // p => p["id"] == syscolpars1["id"]
                     schemaname = Schemas[Convert.ToInt32(dsysschobjs["nsid"])];
                     objectname = dsysschobjs["name"];
                     tableinfo = GetTableInfo(schemaname, objectname, curlsn, true);
@@ -1170,7 +1191,8 @@ namespace DBLOG
             redosql = codes1;
 
             undosql = $"drop {typename} [{schemaname}].[{objectname}]; ";
-            if (fsysschobjs.Any() == true && fsysschobjs0.Any() == true)
+            if (fsysschobjs.Any(p => p["type"] != "U") == true 
+                && fsysschobjs0.Any(p => p["type"] != "U") == true)
             {
                 redosql = $"{undosql}\r\ngo" 
                           + "\r\n" 
@@ -1792,6 +1814,9 @@ namespace DBLOG
             string slotid, tmpstr;
             FLOG dlog;
             List<FLOG> prevlogs;
+            List<string> rechecktrantypes;
+
+            rechecktrantypes = new List<string>() { "ALTER TABLE", "CREATE INDEX" };
 
             slotid = ls.Slot_ID.ToString();
             tsql = "set transaction isolation level read uncommitted; "
@@ -1830,15 +1855,15 @@ namespace DBLOG
             }
             r = tmpstr.ToByteArray();
             
-            if (DDLLogs_Tran.First().Transaction_Name == "ALTER TABLE"
+            if (rechecktrantypes.Contains(DDLLogs_Tran.First().Transaction_Name) == true
                 && ls.Operation == "LOP_MODIFY_ROW"
                 && ls.AllocUnitName == "sys.sysschobjs.clst"
                 && ls.Offset_in_Row == 36
                 && (ls.Modify_Size == 1 || ls.Modify_Size == 2))
             {
                 dr0 = DDL_GetColumnValue("sys", "sysschobjs", r).ToDict();
-                if ((dr0["type"] == "U" 
-                     && DDLLogs_Tran.Any(p => p.Operation == "LOP_LOCK_XACT" && p.Lock_Information.Contains(":" + dr0["id"] + ":")) == true
+                if ((dr0["type"] == "U"
+                     && DDLLogs_Tran.Any(p => p.Operation == "LOP_LOCK_XACT" && p.Lock_Information.Contains(dr0["id"])) == true
                     ) == false)
                 {
                     found = false;
