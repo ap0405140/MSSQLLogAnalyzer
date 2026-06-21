@@ -25,10 +25,10 @@ namespace DBLOG
         public static Dictionary<string, List<TableInfo>> UserTables;
         public static Dictionary<int, string> Schemas;
         public static Dictionary<string, string> Systypes;
-        private static List<Dictionary<string, string>> fsysschobjs, fsysiscols, fsyscolpars, fsysidxstats, fsysobjvalues, fsysrscols, fsysclsobjs, fsysallocunits, fsysrowsets,
-                                                        fsysschobjs0, fsysiscols0, fsyscolpars0, fsysidxstats0, fsysobjvalues0, fsysrscols0, fsysclsobjs0, fsysallocunits0, fsysrowsets0,
-                                                        lsysschobjs, lsysiscols, lsyscolpars, lsysidxstats, lsysobjvalues, lsysrscols, lsysclsobjs, lsysallocunits, lsysrowsets;
-        private static Dictionary<string, string> dsysschobjs, dsysiscols, dsyscolpars, dsysidxstats, dsysobjvalues, dsysrscols, dsysclsobjs;
+        private static List<Dictionary<string, string>> fsysschobjs, fsysiscols, fsyscolpars, fsysidxstats, fsysobjvalues, fsysrscols, fsysclsobjs, fsysallocunits, fsysrowsets, fsysscalartypes,
+                                                        fsysschobjs0, fsysiscols0, fsyscolpars0, fsysidxstats0, fsysobjvalues0, fsysrscols0, fsysclsobjs0, fsysallocunits0, fsysrowsets0, fsysscalartypes0,
+                                                        lsysschobjs, lsysiscols, lsyscolpars, lsysidxstats, lsysobjvalues, lsysrscols, lsysclsobjs, lsysallocunits, lsysrowsets, lsysscalartypes;
+        private static Dictionary<string, string> dsysschobjs, dsysiscols, dsyscolpars, dsysidxstats, dsysobjvalues, dsysrscols, dsysclsobjs, dsysscalartypes;
         private static Dictionary<string, List<FLOG>> SELECTINTO_RS; // key:[SELECT INTO_CREATE] tranid  value:[SELECT INTO_INSERT] tran list
 
         public List<DatabaseLog> AnalyzeDDLLog()
@@ -168,6 +168,15 @@ namespace DBLOG
                     case "CREATE/ALTER TRIGGER":
                         TCreateAlterSQLModule("TR", out objectname, out redosql, out undosql);
                         break;
+                    case "CREATE SYNONYM":
+                        TCreateSynonym(out objectname, out redosql, out undosql);
+                        break;
+                    case "CREATE TYPE":
+                        TCreateType(out objectname, out redosql, out undosql);
+                        break;
+                    case "DROP TYPE":
+                        TDropType(out objectname, out redosql, out undosql);
+                        break;
                 }
                 dr.ObjectName = objectname;
                 dr.RedoSQL = redosql;
@@ -268,7 +277,8 @@ namespace DBLOG
                         "sys.sysrscols.clst",
                         "sys.syscolpars.clst",
                         "sys.sysallocunits.clust",
-                        "sys.sysrowsets.clust" };
+                        "sys.sysrowsets.clust",
+                        "sys.sysscalartypes.clst" };
 
             transystabs = DDLLogs_Tran.Where(p => string.IsNullOrEmpty(p.AllocUnitName) == false)
                                       .Select(p => p.AllocUnitName)
@@ -307,6 +317,9 @@ namespace DBLOG
                     case "sys.sysrowsets.clust":
                         TranslateSystemTable(tabname, out fsysrowsets0, out fsysrowsets);
                         break;
+                    case "sys.sysscalartypes.clst":
+                        TranslateSystemTable(tabname, out fsysscalartypes0, out fsysscalartypes);
+                        break;
                 }
             }
 
@@ -327,6 +340,7 @@ namespace DBLOG
                 lsysclsobjs = fsysclsobjs;
                 lsysallocunits = fsysallocunits;
                 lsysrowsets = fsysrowsets;
+                lsysscalartypes = fsysscalartypes;
             }
             else
             {
@@ -339,6 +353,7 @@ namespace DBLOG
                 lsysclsobjs = fsysclsobjs0;
                 lsysallocunits = fsysallocunits0;
                 lsysrowsets = fsysrowsets0;
+                lsysscalartypes = fsysscalartypes0;
             }
 
         }
@@ -522,7 +537,7 @@ namespace DBLOG
             PartitionIds = new List<string>();
 
             dsysschobjs = null;
-            objtypes = new List<string>() { "U", "V", "P", "IF", "FN", "TF", "TR" };
+            objtypes = new List<string>() { "U", "V", "P", "IF", "FN", "TF", "TR", "SN" };
             dls = lsysschobjs.Where(p => objtypes.Contains(p["type"]) == true).ToList();
             if (dls.Count == 1)
             {
@@ -583,6 +598,11 @@ namespace DBLOG
                         objectname = $"[{schemaname}].[{objectname}]";
                         redosql = $"drop trigger {objectname}; ";
                         undosql = codes;
+                        break;
+                    case "SN": // synonym
+                        objectname = $"[{schemaname}].[{objectname}]";
+                        redosql = $"drop synonym {objectname}; ";
+                        undosql = $"create synonym {objectname} for {lsysobjvalues[0]["value"]}; ";
                         break;
                 }
             }
@@ -1205,6 +1225,75 @@ namespace DBLOG
             }
 
             objectname = $"[{schemaname}].[{objectname}]";
+        }
+
+        private void TCreateSynonym(out string objectname, out string redosql, out string undosql)
+        {
+            string schemaname;
+
+            TranslateSystemTables(1);
+
+            dsysschobjs = lsysschobjs.First();
+            schemaname = Schemas[Convert.ToInt32(dsysschobjs["nsid"])];
+            objectname = dsysschobjs["name"];
+            
+            redosql = $"create synonym [{schemaname}].[{objectname}] for {lsysobjvalues[0]["value"]}; ";
+            undosql = $"drop synonym [{schemaname}].[{objectname}]; ";
+            objectname = $"[{schemaname}].[{objectname}]";
+        }
+
+        private void TCreateType(out string objectname, out string redosql, out string undosql)
+        {
+            string schemaname, defins;
+
+            TranslateSystemTables(1);
+
+            dsysscalartypes = lsysscalartypes.First();
+            schemaname = Schemas[Convert.ToInt32(dsysscalartypes["schid"])];
+            objectname = dsysscalartypes["name"];
+
+            defins = GetTypeDefinition(dsysscalartypes);
+
+            redosql = $"create type [{schemaname}].[{objectname}] from {defins}; ";
+            undosql = $"drop type [{schemaname}].[{objectname}]; ";
+            objectname = $"[{schemaname}].[{objectname}]";
+        }
+
+        private void TDropType(out string objectname, out string redosql, out string undosql)
+        {
+            string schemaname, basetype, defins;
+
+            TranslateSystemTables(-1);
+
+            dsysscalartypes = lsysscalartypes.First();
+            schemaname = Schemas[Convert.ToInt32(dsysscalartypes["schid"])];
+            objectname = dsysscalartypes["name"];
+
+            defins = GetTypeDefinition(dsysscalartypes);
+
+            redosql = $"drop type [{schemaname}].[{objectname}]; ";
+            undosql = $"create type [{schemaname}].[{objectname}] from {defins}; ";
+            objectname = $"[{schemaname}].[{objectname}]";
+        }
+
+        private string GetTypeDefinition(Dictionary<string, string> psysscalartypes)
+        {
+            string basetype, defins, typelen, nullable;
+
+            tsql = $"select top 1 name from sys.systypes where xusertype={dsysscalartypes["xtype"]} ";
+            basetype = DB.Query11(tsql, false);
+
+            typelen = dsysscalartypes["length"];
+            if (dsysscalartypes["prec"] != "0")
+            {
+                typelen = $"{dsysscalartypes["prec"]},{dsysscalartypes["scale"]}";
+            }
+
+            nullable = (dsysscalartypes["status"] == "1" ? "not null" : "null");
+
+            defins = $"[{basetype}]({typelen}) {nullable}";
+
+            return defins;
         }
 
         private string DecodeSQLCode
