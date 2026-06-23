@@ -8,7 +8,9 @@ using System.Data.SqlTypes;
 using System.Globalization;
 using System.Linq;
 using System.Numerics;
+using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.ComTypes;
 using System.Security.Cryptography;
 using System.Security.Principal;
@@ -24,7 +26,7 @@ namespace DBLOG
         public static Dictionary<string, TableInfo> SystemTables;
         public static Dictionary<string, List<TableInfo>> UserTables;
         public static Dictionary<int, string> Schemas;
-        public static Dictionary<string, string> Systypes;
+        public static Dictionary<string, List<FTypeInfo>> SysTypes;
         private static List<Dictionary<string, string>> fsysschobjs, fsysiscols, fsyscolpars, fsysidxstats, fsysobjvalues, fsysrscols, fsysclsobjs, fsysallocunits, fsysrowsets, fsysscalartypes,
                                                         fsysschobjs0, fsysiscols0, fsyscolpars0, fsysidxstats0, fsysobjvalues0, fsysrscols0, fsysclsobjs0, fsysallocunits0, fsysrowsets0, fsysscalartypes0,
                                                         lsysschobjs, lsysiscols, lsyscolpars, lsysidxstats, lsysobjvalues, lsysrscols, lsysclsobjs, lsysallocunits, lsysrowsets, lsysscalartypes;
@@ -1261,7 +1263,8 @@ namespace DBLOG
 
         private void TDropType(out string objectname, out string redosql, out string undosql)
         {
-            string schemaname, basetype, defins;
+            string schemaname, defins, typeid;
+            FTypeInfo typeinfo;
 
             TranslateSystemTables(-1);
 
@@ -1274,6 +1277,15 @@ namespace DBLOG
             redosql = $"drop type [{schemaname}].[{objectname}]; ";
             undosql = $"create type [{schemaname}].[{objectname}] from {defins}; ";
             objectname = $"[{schemaname}].[{objectname}]";
+
+            typeid = dsysscalartypes["xtype"] + "_" + dsysscalartypes["id"];
+            typeinfo = new FTypeInfo();
+            typeinfo.ID = typeid;
+            typeinfo.SchemaName = schemaname;
+            typeinfo.TypeName = dsysscalartypes["name"];
+            typeinfo.Version = DDLLogs_Tran.Max(p => p.Current_LSN);
+            SysTypesAdd(typeid, typeinfo);
+            
         }
 
         private string GetTypeDefinition(Dictionary<string, string> psysscalartypes)
@@ -1539,7 +1551,7 @@ namespace DBLOG
                 int d
             )
         {
-            string columndefin, columnname, datatype, graphtype, collationname, constraintname, defaultvalue, computedcolumndefin, temp, partitionid;
+            string columndefin, columnname, datatype, physicalstoragetype, graphtype, collationname, constraintname, defaultvalue, computedcolumndefin, temp, partitionid;
             short maxlength, colid;
             long seed, increment;
             bool nullable, isidentity, iscomputed, ishidden;
@@ -1551,6 +1563,7 @@ namespace DBLOG
             colid = Convert.ToInt16(dsyscolpars["colid"]);
             columnname = dsyscolpars["name"];
             datatype = "";
+            physicalstoragetype = "";
             nullable = true;
             isidentity = false;
             maxlength = 0;
@@ -1578,7 +1591,17 @@ namespace DBLOG
 
             if (iscomputed == false)
             {
-                datatype = Systypes[dsyscolpars["xtype"] + "_" + dsyscolpars["utype"]];
+                temp = dsyscolpars["xtype"] + "_" + dsyscolpars["utype"]; // typeid
+                datatype = SysTypesGet(temp, DDLLogs_Tran.Max(p => p.Current_LSN)).TypeName;
+                if (datatype == "geography" || datatype == "geometry" || datatype == "hierarchyid")
+                {
+                    physicalstoragetype = "varbinary";
+                }
+                else
+                {
+                    physicalstoragetype = SysTypes.First(p => p.Key.EndsWith("_" + dsyscolpars["xtype"]) == true).Value.First().TypeName;
+                }
+                
                 maxlength = Convert.ToInt16(dsyscolpars["length"]);
                 nullable = (1 - (Convert.ToInt32(dsyscolpars["status"]) & 0x1) == 0 ? false : true);
 
@@ -1657,7 +1680,7 @@ namespace DBLOG
             }
             
             fcol.DataType = datatype;
-            fcol.PhysicalStorageType = GetPhysicalStorageType(datatype);
+            fcol.PhysicalStorageType = GetPhysicalStorageType(physicalstoragetype);
             fcol.GraphType = (string.IsNullOrEmpty(graphtype) ? -1 : Convert.ToInt32(graphtype));
             fcol.Length = maxlength;
             fcol.Precision = Convert.ToInt16(dsyscolpars["prec"]);

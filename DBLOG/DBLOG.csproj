@@ -93,8 +93,9 @@
     <Compile Include="Common\FVarColumnInfo.cs" />
     <Compile Include="Common\SQLGraphNode.cs" />
     <Compile Include="Common\TableColumn.cs" />
-    <Compile Include="Common\TableInformation.cs" />
+    <Compile Include="Common\TableInfo.cs" />
     <Compile Include="Common\TransactionInfo.cs" />
+    <Compile Include="Common\FTypeInfo.cs" />
     <Compile Include="DatabaseLogAnalyzer.cs" />
     <Compile Include="Common\DatabaseOperation.cs" />
     <Compile Include="DBLOG_DML_DDL.cs" />
